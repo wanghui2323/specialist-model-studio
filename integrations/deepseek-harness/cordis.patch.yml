@@ -1,3 +1,8 @@
 - insert:
     - id: ai-pm-model-harness
       name: ai-pm-model-harness-dsh-plugin
+
+- id: agent-presets
+  config:
+    default: model-training
+    includeUserRoot: true

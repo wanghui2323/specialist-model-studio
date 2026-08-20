@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ def create_app(
     runs_dir: str | Path = "runs",
     max_workers: int = 1,
     workspace_dir: str | Path | None = None,
+    conversation_url: str | None = None,
 ) -> Any:
     try:
         from fastapi import Body, FastAPI, Header, HTTPException, Query
@@ -45,6 +47,11 @@ def create_app(
     )
     chat = ChatController(service)
     web_dir = Path(__file__).parent / "web"
+    resolved_conversation_url = (
+        conversation_url
+        or os.environ.get("MODEL_HARNESS_CONVERSATION_URL")
+        or "http://127.0.0.1:3080"
+    ).rstrip("/")
 
     @asynccontextmanager
     async def lifespan(_app: Any) -> Any:
@@ -55,8 +62,8 @@ def create_app(
 
     app = FastAPI(
         title="AI PM Model Harness",
-        version="0.4.0-alpha.1",
-        description="Local-first job API for auditable specialist-model training.",
+        version="0.5.0-alpha.1",
+        description="Domain runtime and evidence API for conversational specialist-model training.",
         lifespan=lifespan,
     )
     app.state.run_service = service
@@ -68,13 +75,24 @@ def create_app(
     def health() -> dict[str, Any]:
         return {
             "ok": True,
-            "version": "0.4.0-alpha.1",
+            "version": "0.5.0-alpha.1",
             "recovered_runs": service.recovered_runs,
+            "primary_experience": "conversation",
+            "conversation_url": resolved_conversation_url,
+            "workbench_url": "/app",
+        }
+
+    @app.get("/runtime")
+    def runtime() -> dict[str, Any]:
+        return {
+            "primary_experience": "conversation",
+            "conversation_url": resolved_conversation_url,
+            "workbench_url": "/app",
         }
 
     @app.get("/", include_in_schema=False)
     def root() -> RedirectResponse:
-        return RedirectResponse(url="/app")
+        return RedirectResponse(url=resolved_conversation_url)
 
     @app.get("/app", include_in_schema=False)
     def console() -> FileResponse:

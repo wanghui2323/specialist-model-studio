@@ -15,11 +15,21 @@ from model_harness.server import create_app
 class ServerTests(unittest.TestCase):
     def test_health_and_recipe_endpoints(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            app = create_app(temp_dir)
+            app = create_app(temp_dir, conversation_url="http://127.0.0.1:3999")
             with TestClient(app) as client:  # type: ignore[misc]
                 health = client.get("/health")
                 self.assertEqual(health.status_code, 200)
                 self.assertTrue(health.json()["ok"])
+                self.assertEqual(health.json()["primary_experience"], "conversation")
+                self.assertEqual(health.json()["conversation_url"], "http://127.0.0.1:3999")
+
+                runtime = client.get("/runtime")
+                self.assertEqual(runtime.status_code, 200)
+                self.assertEqual(runtime.json()["workbench_url"], "/app")
+
+                root = client.get("/", follow_redirects=False)
+                self.assertEqual(root.status_code, 307)
+                self.assertEqual(root.headers["location"], "http://127.0.0.1:3999")
 
                 recipes = client.get("/recipes")
                 self.assertEqual(recipes.status_code, 200)
@@ -37,7 +47,8 @@ class ServerTests(unittest.TestCase):
 
                 console = client.get("/app")
                 self.assertEqual(console.status_code, 200)
-                self.assertIn("Model Harness · 真实训练工作台", console.text)
+                self.assertIn("Model Harness · 训练证据工作台", console.text)
+                self.assertIn("开始和训练 Agent 对话", console.text)
 
                 chat = client.post("/chat", json={"message": "有哪些能力"})
                 self.assertEqual(chat.status_code, 200)

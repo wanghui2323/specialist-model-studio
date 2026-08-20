@@ -9,7 +9,7 @@ const ui = Object.fromEntries([
   "macroF1Gate", "recallGate", "imageSize", "saveContractButton", "confirmAuthorization", "confirmLabels", "confirmGates", "confirmContractButton",
   "runStepState", "startRunButton", "cancelRunButton", "runDuration", "runIdLabel", "eventLog", "gateSummary", "metricGrid", "candidateTable",
   "failureBlock", "failureGrid", "strategyBlock", "strategyList", "artifactBlock", "artifactList", "createTaskDialog", "createTaskForm", "newTaskName",
-  "newTaskGoal", "createTaskError", "cancelCreateButton", "approvalDialog", "approvalTitle", "approvalDescription"
+  "newTaskGoal", "createTaskError", "cancelCreateButton", "approvalDialog", "approvalTitle", "approvalDescription", "conversationLink", "welcomeConversationLink"
 ].map((id) => [id, document.getElementById(id)]));
 
 const appState = {
@@ -60,6 +60,14 @@ function hideNotice() { ui.notice.hidden = true; ui.notice.textContent = ""; }
 function setStepState(element, text, state) {
   element.textContent = text;
   element.dataset.state = state;
+}
+
+async function loadRuntime() {
+  const runtime = await request("/runtime");
+  if (runtime.conversation_url) {
+    ui.conversationLink.href = runtime.conversation_url;
+    ui.welcomeConversationLink.href = runtime.conversation_url;
+  }
 }
 
 async function loadTasks({ selectFromUrl = false } = {}) {
@@ -124,7 +132,7 @@ async function refreshTask({ resetEvents = false } = {}) {
 function renderTask(task) {
   ui.welcomePanel.hidden = true;
   ui.taskWorkspace.hidden = false;
-  ui.pageTitle.textContent = "模型训练工作台";
+  ui.pageTitle.textContent = "训练证据工作台";
   ui.taskIdLabel.textContent = task.task_id;
   ui.taskName.textContent = task.name;
   ui.taskGoal.textContent = task.business_goal;
@@ -435,4 +443,4 @@ ui.approvalDialog.addEventListener("close", async () => {
 });
 window.addEventListener("beforeunload", closeRunChannel);
 
-loadTasks({ selectFromUrl: true }).catch(handleGlobalError);
+Promise.all([loadRuntime(), loadTasks({ selectFromUrl: true })]).catch(handleGlobalError);

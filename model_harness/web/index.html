@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="AI PM Model Harness 本地图片模型训练工作台" />
-    <title>Model Harness · 真实训练工作台</title>
+    <meta name="description" content="AI PM Model Harness 本地训练任务证据工作台" />
+    <title>Model Harness · 训练证据工作台</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/app/static/styles.css" />
   </head>
@@ -14,7 +14,7 @@
       <aside class="sidebar" aria-label="训练任务">
         <div class="brand-row">
           <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-          <div><strong>Model Harness</strong><span>本地训练工作台 · v0.4 Alpha</span></div>
+          <div><strong>Model Harness</strong><span>训练证据工作台 · v0.5 Alpha</span></div>
         </div>
         <button class="button button-primary new-task-button" id="newTaskButton" type="button"><span aria-hidden="true">＋</span>新建训练任务</button>
         <div class="sidebar-heading"><span>训练任务</span><button class="icon-button" id="refreshTasksButton" type="button" aria-label="刷新训练任务">↻</button></div>
@@ -24,16 +24,22 @@
 
       <main class="workspace" id="workspace">
         <header class="topbar">
-          <div><span class="eyebrow">用户数据训练闭环</span><h1 id="pageTitle">训练一个真正属于你的图片模型</h1></div>
-          <div class="service-state" id="serviceState"><span></span><b>本地服务已连接</b></div>
+          <div><span class="eyebrow">对话驱动 · 证据可追溯</span><h1 id="pageTitle">训练证据工作台</h1></div>
+          <div class="topbar-actions">
+            <a class="button button-agent" id="conversationLink" href="http://127.0.0.1:3080">回到训练 Agent <span aria-hidden="true">→</span></a>
+            <div class="service-state" id="serviceState"><span></span><b>本地服务已连接</b></div>
+          </div>
         </header>
 
         <section class="welcome-panel" id="welcomePanel">
           <div class="welcome-copy">
-            <span class="mode-tag">第一条真实 Recipe</span>
-            <h2>从自己的图片开始，不再重复播放数字识别 Demo</h2>
-            <p>准备一个 ZIP：每个类别一个文件夹，每类至少 5 张图片。Harness 会先体检数据，再让你确认合同，然后才开始训练。</p>
-            <button class="button button-primary" id="welcomeCreateButton" type="button">创建训练任务</button>
+            <span class="mode-tag">这里是证据视图，不是聊天入口</span>
+            <h2>先告诉训练 Agent 你想解决什么问题</h2>
+            <p>它会通过对话创建任务、向你索取数据、解释体检结果并请求关键批准。这里负责展示同一个任务的合同、运行事件、指标、失败样本和制品。</p>
+            <div class="welcome-actions">
+              <a class="button button-primary" id="welcomeConversationLink" href="http://127.0.0.1:3080">开始和训练 Agent 对话</a>
+              <button class="button button-secondary" id="welcomeCreateButton" type="button">手动创建任务</button>
+            </div>
           </div>
           <ol class="loop-overview" aria-label="训练闭环">
             <li><b>1</b><span><strong>定义任务</strong><small>名称与业务目标</small></span></li>

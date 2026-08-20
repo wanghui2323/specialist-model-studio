@@ -1,6 +1,6 @@
 {
   "name": "ai-pm-model-harness-dsh-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DeepSeek Harness tools for AI PM Model Harness",
   "type": "module",
   "main": "index.js",
@@ -11,7 +11,8 @@
   "files": [
     "index.js",
     "client.js",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "presets/model-training/*"
   ],
   "license": "MIT",
   "dsh": {

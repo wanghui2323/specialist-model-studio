@@ -81,11 +81,16 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .service-state { display: flex; align-items: center; gap: 8px; color: var(--ink-soft); font-size: 12px; white-space: nowrap; }
 .service-state span { width: 8px; height: 8px; border-radius: 50%; background: #55ad79; box-shadow: 0 0 0 4px rgb(85 173 121 / 12%); }
 .service-state[data-state="error"] span { background: var(--danger); }
+.topbar-actions { display: flex; align-items: center; gap: 16px; }
+.button-agent { border-color: #c9dcd5; background: #edf6f3; color: #195e57; text-decoration: none; }
+.button-agent:hover { border-color: #9fc3b8; background: #e2f0ec; }
 
 .welcome-panel { display: grid; max-width: 1080px; grid-template-columns: minmax(0, 1.1fr) minmax(300px, .9fr); gap: 48px; margin: 52px auto 0; padding: 46px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
 .mode-tag { display: inline-flex; min-height: 26px; align-items: center; border-radius: 99px; padding: 0 10px; background: #e8f3f0; color: var(--teal); font-size: 11px; font-weight: 720; }
 .welcome-copy h2 { max-width: 620px; margin: 18px 0 14px; font-size: clamp(26px, 3.4vw, 42px); line-height: 1.13; letter-spacing: -.035em; }
 .welcome-copy p { max-width: 600px; margin: 0 0 28px; color: var(--ink-soft); font-size: 15px; line-height: 1.75; }
+.welcome-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.welcome-actions a { text-decoration: none; }
 .loop-overview { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
 .loop-overview li { position: relative; display: flex; min-height: 68px; gap: 14px; }
 .loop-overview li:not(:last-child)::after { position: absolute; top: 34px; bottom: 0; left: 15px; width: 1px; background: var(--line); content: ""; }
@@ -223,6 +228,8 @@ textarea { min-height: 88px; padding: 10px; resize: vertical; }
   .workspace { padding: 0 16px 40px; }
   .topbar { min-height: 82px; }
   .topbar h1 { font-size: 19px; }
+  .topbar-actions { gap: 8px; }
+  .button-agent { min-height: 36px; padding: 0 11px; font-size: 11px; }
   .service-state b { display: none; }
   .welcome-panel { margin-top: 24px; padding: 24px; border-radius: 10px; }
   .welcome-copy h2 { font-size: 28px; }

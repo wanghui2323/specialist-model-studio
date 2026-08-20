@@ -1,16 +1,31 @@
+import { readFile, stat } from "node:fs/promises";
+import { basename, extname, resolve } from "node:path";
+
 const DEFAULT_BASE_URL = "http://127.0.0.1:8765";
+const MAX_DATASET_BYTES = 200 * 1024 * 1024;
 
 export class ModelHarnessClient {
   constructor(baseUrl = process.env.MODEL_HARNESS_URL || DEFAULT_BASE_URL) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
   }
 
-  async request(path, { method = "GET", body, signal } = {}) {
+  async request(path, { method = "GET", body, rawBody, headers = {}, signal } = {}) {
+    if (body !== undefined && rawBody !== undefined) {
+      throw new Error("request cannot contain both JSON and raw bodies");
+    }
+    const requestHeaders = { ...headers };
+    let requestBody;
+    if (body !== undefined) {
+      requestHeaders["Content-Type"] = "application/json";
+      requestBody = JSON.stringify(body);
+    } else if (rawBody !== undefined) {
+      requestBody = rawBody;
+    }
     const response = await fetch(`${this.baseUrl}${path}`, {
       method,
       signal,
-      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: Object.keys(requestHeaders).length ? requestHeaders : undefined,
+      body: requestBody,
     });
     const contentType = response.headers.get("content-type") || "";
     const value = contentType.includes("application/json")
@@ -25,6 +40,79 @@ export class ModelHarnessClient {
 
   recipes(signal) {
     return this.request("/recipes", { signal });
+  }
+
+  listTasks(signal) {
+    return this.request("/tasks", { signal });
+  }
+
+  createTask(name, businessGoal, signal) {
+    return this.request("/tasks", {
+      method: "POST",
+      signal,
+      body: { name, business_goal: businessGoal },
+    });
+  }
+
+  getTask(taskId, signal) {
+    return this.request(`/tasks/${encodeURIComponent(taskId)}`, { signal });
+  }
+
+  async importDataset(taskId, datasetZipPath, signal) {
+    const resolved = resolve(datasetZipPath);
+    if (extname(resolved).toLowerCase() !== ".zip") {
+      throw new Error("Dataset path must point to a ZIP file");
+    }
+    const details = await stat(resolved);
+    if (!details.isFile()) throw new Error("Dataset path is not a file");
+    if (details.size > MAX_DATASET_BYTES) {
+      throw new Error("Dataset ZIP exceeds the 200MB local import limit");
+    }
+    const payload = await readFile(resolved);
+    return this.request(`/tasks/${encodeURIComponent(taskId)}/dataset`, {
+      method: "POST",
+      signal,
+      rawBody: payload,
+      headers: {
+        "Content-Type": "application/zip",
+        "X-Filename": encodeURIComponent(basename(resolved)),
+      },
+    });
+  }
+
+  configureContract(taskId, { accuracyMin, macroF1Min, worstClassRecallMin, imageSize }, signal) {
+    const releaseGates = {};
+    if (accuracyMin !== undefined) releaseGates.clean_test_accuracy_min = accuracyMin;
+    if (macroF1Min !== undefined) releaseGates.clean_test_macro_f1_min = macroF1Min;
+    if (worstClassRecallMin !== undefined) {
+      releaseGates.clean_test_worst_class_recall_min = worstClassRecallMin;
+    }
+    const recipeOptions = {};
+    if (imageSize !== undefined) recipeOptions.image_size = imageSize;
+    return this.request(`/tasks/${encodeURIComponent(taskId)}/contract`, {
+      method: "PATCH",
+      signal,
+      body: { release_gates: releaseGates, recipe_options: recipeOptions },
+    });
+  }
+
+  confirmContract(taskId, confirmations, signal) {
+    const required = ["data_authorized", "labels_reviewed", "gates_reviewed"];
+    if (required.some((name) => confirmations?.[name] !== true)) {
+      throw new Error("All three human confirmations must be explicitly true");
+    }
+    return this.request(`/tasks/${encodeURIComponent(taskId)}/confirm`, {
+      method: "POST",
+      signal,
+      body: Object.fromEntries(required.map((name) => [name, true])),
+    });
+  }
+
+  startTaskRun(taskId, signal) {
+    return this.request(`/tasks/${encodeURIComponent(taskId)}/runs`, {
+      method: "POST",
+      signal,
+    });
   }
 
   async startRun({ recipe = "digit-classification", businessGoal, taskId, runId, signal } = {}) {
@@ -66,6 +154,24 @@ export class ModelHarnessClient {
         body: { approval_confirmed: true },
       },
     );
+  }
+
+  applyTaskStrategy(taskId, runId, strategyId, approvalConfirmed, signal) {
+    if (approvalConfirmed !== true) {
+      throw new Error("Explicit user approval is required before applying a strategy");
+    }
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}/strategies/${encodeURIComponent(strategyId)}/apply`,
+      {
+        method: "POST",
+        signal,
+        body: { approval_confirmed: true },
+      },
+    );
+  }
+
+  workbenchUrl(taskId) {
+    return `${this.baseUrl}/app?task=${encodeURIComponent(taskId)}`;
   }
 
   cancel(runId, signal) {
