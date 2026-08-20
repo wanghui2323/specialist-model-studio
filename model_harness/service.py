@@ -137,6 +137,37 @@ class RunService:
             / "optimization_strategies.json"
         )
 
+    def result(self, run_id: str) -> dict[str, Any]:
+        run_dir = self._run_dir(run_id)
+        state = read_json(run_dir / "run_state.json")
+        contract = read_json(run_dir / "task_contract.json")
+        artifact_dir = run_dir / "artifacts"
+        metrics_path = artifact_dir / "metrics.json"
+        strategies_path = artifact_dir / "optimization_strategies.json"
+        child_run_ids = [
+            item["run_id"]
+            for item in self.list_runs()
+            if item.get("parent_run_id") == run_id
+        ]
+        return {
+            "run_id": run_id,
+            "task_id": state["task_id"],
+            "recipe": contract["recipe"],
+            "business_goal": contract["business_goal"],
+            "status": state["status"],
+            "parent_run_id": state.get("parent_run_id"),
+            "child_run_ids": child_run_ids,
+            "offline_gates_passed": state.get("offline_gates_passed"),
+            "metrics": read_json(metrics_path) if metrics_path.is_file() else None,
+            "strategies": (
+                read_json(strategies_path)["strategies"]
+                if strategies_path.is_file()
+                else []
+            ),
+            "optimization_history": contract.get("optimization_history", []),
+            "error": state.get("error"),
+        }
+
     def apply_strategy(
         self,
         run_id: str,

@@ -28,6 +28,32 @@ class ServerTests(unittest.TestCase):
                     "digit-classification",
                 )
 
+                template = client.get("/recipes/digit-classification/template")
+                self.assertEqual(template.status_code, 200)
+                self.assertEqual(
+                    template.json()["contract"]["recipe"],
+                    "digit-classification",
+                )
+
+                console = client.get("/app")
+                self.assertEqual(console.status_code, 200)
+                self.assertIn("Model Harness Console", console.text)
+
+                chat = client.post("/chat", json={"message": "有哪些能力"})
+                self.assertEqual(chat.status_code, 200)
+                self.assertEqual(chat.json()["kind"], "recipes")
+
+    def test_strategy_api_requires_explicit_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = create_app(temp_dir)
+            with TestClient(app) as client:  # type: ignore[misc]
+                response = client.post(
+                    "/runs/missing/strategies/add-shift-augmentation/apply",
+                    json={},
+                )
+                self.assertEqual(response.status_code, 409)
+                self.assertIn("approval_confirmed=true", response.json()["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()

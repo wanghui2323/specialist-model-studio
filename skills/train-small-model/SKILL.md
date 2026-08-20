@@ -25,7 +25,7 @@ Freeze release gates before model selection. Never weaken them merely because a 
 
 Prefer a registered, deterministic Recipe. Check the framework, code, model-weight and dataset licenses separately. Keep downloaded datasets, weights, private data and credentials outside the public repository.
 
-For the implemented v0.2 alpha reference lab, run:
+For the implemented v0.3 alpha reference lab, run:
 
 ```bash
 python -m model_harness.cli init --recipe digit-classification --output workspaces/my-first-model
@@ -71,7 +71,11 @@ Compare parent and child metrics, including clean-set regressions and stress-tes
 
 Use `events` to report progress from the versioned event stream. A cancellation request is honored at a safe stage boundary, so distinguish “cancel requested” from “cancelled.” After a process restart, active work becomes `interrupted`; `resume` creates an auditable child run from the frozen contract instead of silently continuing the old run.
 
-The optional HTTP/SSE service is an adapter boundary for chat frontends. Bind it to `127.0.0.1` unless authentication and network controls have been added. Do not claim the DeepSeek Harness frontend adapter exists until its package and interaction tests are present.
+The optional HTTP/SSE service is the adapter boundary for chat frontends. Bind it to `127.0.0.1` unless authentication and network controls have been added.
+
+For a learning-first interactive run, start the local service and use `/app`. Its current chat layer is deterministic command routing, not general model reasoning. Treat persisted run state and events as canonical; ordinary chat text is not a durable record.
+
+DeepSeek Harness can optionally load the bundle in `integrations/deepseek-harness`. Use its tools to list Recipes, start runs, read status/events/strategies, request cancellation and apply an explicitly approved strategy. Keep DSH as a thin orchestration host: do not move task state or approval truth into the model conversation, and do not require DSH for CLI or standalone Console users.
 
 ## Human-owned decisions
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +18,14 @@ def main() -> int:
         "SECURITY.md",
         "THIRD_PARTY.md",
         "pyproject.toml",
+        "docs/v0.3-conversation-console.md",
+        "model_harness/chat.py",
+        "model_harness/web/index.html",
+        "model_harness/web/styles.css",
+        "model_harness/web/app.js",
+        "integrations/deepseek-harness/package.json",
+        "integrations/deepseek-harness/index.js",
+        "integrations/deepseek-harness/cordis.patch.yml",
         "skills/train-small-model/SKILL.md",
         "examples/digit-classification/task_contract.json",
     ]
@@ -31,13 +40,26 @@ def main() -> int:
         cwd=ROOT,
         check=False,
     )
+    node_available = shutil.which("npm") is not None
+    node_checks_passed = False
+    if node_available:
+        integration_dir = ROOT / "integrations" / "deepseek-harness"
+        node_test = subprocess.run(
+            ["npm", "test"], cwd=integration_dir, check=False
+        )
+        node_check = subprocess.run(
+            ["npm", "run", "check"], cwd=integration_dir, check=False
+        )
+        node_checks_passed = node_test.returncode == 0 and node_check.returncode == 0
     summary = {
         "required_files_present": not missing,
         "missing": missing,
         "tests_passed": result.returncode == 0,
+        "node_available": node_available,
+        "dsh_adapter_checks_passed": node_checks_passed,
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    return 0 if not missing and result.returncode == 0 else 1
+    return 0 if not missing and result.returncode == 0 and node_checks_passed else 1
 
 
 if __name__ == "__main__":

@@ -1,0 +1,3 @@
+- insert:
+    - id: ai-pm-model-harness
+      name: ai-pm-model-harness-dsh-plugin
