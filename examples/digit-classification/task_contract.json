@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.1",
+  "schema_version": "0.2",
   "task_id": "my-first-digit-model",
   "business_goal": "识别8×8灰度手写数字0—9，学习一条可审计的小模型训练闭环",
   "recipe": "digit-classification",
@@ -30,6 +30,14 @@
       "random_forest"
     ],
     "test_set_policy": "测试集不得用于模型选择或调参，只在候选模型确定并重训后评估"
+  },
+  "recipe_options": {
+    "augmentations": []
+  },
+  "optimization": {
+    "mode": "recommend",
+    "max_iterations": 3,
+    "require_approval": true
   },
   "release_gates": {
     "clean_test_accuracy_min": 0.96,

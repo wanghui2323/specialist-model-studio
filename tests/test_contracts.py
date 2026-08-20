@@ -39,6 +39,12 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, "exceeds compute budget"):
             validate_contract(contract)
 
+    def test_optimization_cannot_bypass_human_approval(self) -> None:
+        contract = deepcopy(DIGIT_CLASSIFICATION_TEMPLATE)
+        contract["optimization"]["require_approval"] = False
+        with self.assertRaisesRegex(ContractError, "require_approval=true"):
+            validate_contract(contract)
+
 
 if __name__ == "__main__":
     unittest.main()

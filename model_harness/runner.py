@@ -1,21 +1,25 @@
 from __future__ import annotations
 
-import json
 import platform
 import re
 import sys
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import joblib
 import numpy as np
 import sklearn
 
-from .contracts import TaskContract, load_contract
+from .contracts import load_contract, validate_contract
+from .errors import RunCancelled
 from .io_utils import read_json, sha256_file, write_json
-from .recipes import digit_classification
+from .plugins import PluginRegistry, default_registry
 from .state import RunState
+
+
+CancelCheck = Callable[[], bool]
 
 
 def _safe_slug(value: str) -> str:
@@ -24,79 +28,27 @@ def _safe_slug(value: str) -> str:
 
 
 def _default_run_id(task_id: str) -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     return f"{stamp}-{_safe_slug(task_id)}"
 
 
-def _learning_report(contract: dict[str, Any], metrics: dict[str, Any]) -> str:
-    candidates = "\n".join(
-        f"- `{name}`：validation Macro-F1 {values['macro_f1']:.4f}"
-        for name, values in metrics["validation_candidates"].items()
-    )
-    stresses = "\n".join(
-        f"- `{name}`：Accuracy {values['accuracy']:.4f}，最差类别Recall {values['worst_class_recall']:.4f}"
-        for name, values in metrics["stress_tests"].items()
-    )
-    failed = [
-        name
-        for name, passed in metrics["gate_checks"].items()
-        if name != "all_offline_gates_passed" and not passed
-    ]
-    gate_summary = "全部通过" if not failed else f"未通过：{', '.join(failed)}"
-    return f"""# Learning Report
-
-## 这次任务是什么
-
-{contract['business_goal']}
-
-Harness使用 `{contract['recipe']}` Recipe。当前任务是多类别分类：输入固定长度的像素特征，输出0—9中的一个类别。
-
-## 为什么需要三份数据
-
-- 训练集用于拟合候选模型；
-- 验证集用于比较候选模型，决定谁胜出；
-- 测试集不参与选择，只在最终模型确定后检查未知样本表现。
-
-本次切分为训练 {metrics['split_counts']['train']}、验证 {metrics['split_counts']['validation']}、测试 {metrics['split_counts']['test']}。
-
-## Agent比较了什么
-
-{candidates}
-
-胜出模型是 `{metrics['selected_model']}`。选择依据是合同中冻结的验证集Macro-F1，而不是最终测试集分数。
-
-## 最终结果怎样理解
-
-- Clean Accuracy：{metrics['clean_test']['accuracy']:.4f}
-- Clean Macro-F1：{metrics['clean_test']['macro_f1']:.4f}
-- Worst-class Recall：{metrics['clean_test']['worst_class_recall']:.4f}
-- Model size：{metrics['model_size_mb']:.4f} MB
-- Single-sample p95：{metrics['latency']['p95_ms']:.4f} ms
-- Offline gates：{gate_summary}
-
-Accuracy看整体答对比例；Macro-F1让每个数字类别获得相同权重；Worst-class Recall直接暴露最容易漏掉的类别。
-
-## 为什么高分仍然不能直接上线
-
-{stresses}
-
-压力测试通过人为加入噪声或移动像素，检查输入分布变化时模型是否脆弱。它们只负责暴露风险，不代表真实业务中的发生概率，也不会被Agent用来自动修改用户冻结的门槛。
-
-## 人还需要决定什么
-
-- 真实任务中的错误代价和标签语义；
-- 客户数据是否授权、是否代表真实设备和环境；
-- 哪些失败切片必须进入独立发布集；
-- 何时进入影子测试、灰度和生产发布。
-
-这份报告帮助用户理解本次运行，但不把教学实验包装成生产验收。
-"""
+def _resolve_contract(
+    contract: str | Path | dict[str, Any],
+    registry: PluginRegistry,
+) -> dict[str, Any]:
+    if isinstance(contract, dict):
+        raw = deepcopy(contract)
+        validate_contract(raw, registry=registry)
+        return raw
+    return load_contract(contract, registry=registry).raw
 
 
 def _write_manifest(
     run_dir: Path,
-    contract: TaskContract,
+    contract: dict[str, Any],
     artifact_dir: Path,
+    state: RunState,
+    plugin_version: str,
 ) -> dict[str, Any]:
     artifacts = {
         path.name: {
@@ -107,9 +59,12 @@ def _write_manifest(
         if path.is_file()
     }
     manifest = {
-        "schema_version": "0.1",
-        "task_id": contract.task_id,
-        "recipe": contract.recipe,
+        "schema_version": "0.2",
+        "task_id": contract["task_id"],
+        "run_id": state.data["run_id"],
+        "parent_run_id": state.data.get("parent_run_id"),
+        "recipe": contract["recipe"],
+        "plugin_version": plugin_version,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "python": sys.version,
         "platform": platform.platform(),
@@ -126,65 +81,140 @@ def _write_manifest(
     return manifest
 
 
-def run_task(
-    contract_path: str | Path,
+def prepare_run(
+    contract: str | Path | dict[str, Any],
     runs_dir: str | Path = "runs",
     run_id: str | None = None,
+    registry: PluginRegistry | None = None,
+    parent_run_id: str | None = None,
 ) -> Path:
-    contract = load_contract(contract_path)
+    selected_registry = registry or default_registry()
+    raw = _resolve_contract(contract, selected_registry)
+    plugin = selected_registry.get_recipe(str(raw["recipe"]))
     resolved_runs_dir = Path(runs_dir).expanduser().resolve()
-    selected_run_id = _safe_slug(run_id or _default_run_id(contract.task_id))
+    selected_run_id = _safe_slug(run_id or _default_run_id(str(raw["task_id"])))
     run_dir = resolved_runs_dir / selected_run_id
     if run_dir.exists():
         raise FileExistsError(f"run directory already exists: {run_dir}")
     run_dir.mkdir(parents=True)
-    state = RunState(run_dir, contract.task_id, selected_run_id)
+    state = RunState(
+        run_dir,
+        str(raw["task_id"]),
+        selected_run_id,
+        plugin.manifest.plugin_id,
+        parent_run_id=parent_run_id,
+    )
+    write_json(run_dir / "task_contract.json", raw)
+    state.transition("queued")
+    state.event(
+        "run.queued",
+        {
+            "recipe": raw["recipe"],
+            "mode": raw["interaction"]["mode"],
+            "parent_run_id": parent_run_id,
+        },
+    )
+    return run_dir
+
+
+def _check_cancel(state: RunState, cancel_check: CancelCheck | None) -> None:
+    persisted = read_json(state.state_path)
+    requested = bool(persisted.get("cancel_requested"))
+    externally_requested = bool(cancel_check and cancel_check())
+    if requested or externally_requested:
+        reason = str(persisted.get("cancel_reason", "requested by user"))
+        state.data = persisted
+        raise RunCancelled(reason)
+
+
+def execute_run(
+    run_dir: str | Path,
+    registry: PluginRegistry | None = None,
+    cancel_check: CancelCheck | None = None,
+) -> Path:
+    resolved = Path(run_dir).expanduser().resolve()
+    selected_registry = registry or default_registry()
+    state = RunState.load(resolved)
+    if state.status != "queued":
+        raise RuntimeError(f"run must be queued before execution, got {state.status}")
+    raw = read_json(resolved / "task_contract.json")
+    validate_contract(raw, registry=selected_registry)
+    plugin = selected_registry.get_recipe(str(raw["recipe"]))
     try:
+        _check_cancel(state, cancel_check)
         state.transition("preflight")
-        write_json(run_dir / "task_contract.json", contract.raw)
         state.event(
-            "preflight_completed",
+            "preflight.completed",
             {
-                "recipe": contract.recipe,
-                "mode": contract.mode,
-                "candidate_count": len(
-                    contract.raw["model_selection"]["candidates"]
-                ),
+                "recipe": raw["recipe"],
+                "mode": raw["interaction"]["mode"],
+                "candidate_count": len(raw["model_selection"]["candidates"]),
             },
         )
 
+        _check_cancel(state, cancel_check)
         state.transition("training")
-        training = digit_classification.train(contract.raw)
+        training = plugin.train(raw)
         state.event(
-            "model_selected",
+            "training.model_selected",
             {
                 "selected_model": training.selected_name,
-                "selection_metric": "validation_macro_f1",
+                "selection_metric": raw["model_selection"]["primary_metric"],
             },
         )
 
+        _check_cancel(state, cancel_check)
         state.transition("evaluating")
-        evaluation = digit_classification.evaluate(training, contract.raw)
+        evaluation = plugin.evaluate(training, raw)
         state.event(
-            "evaluation_completed",
+            "evaluation.completed",
             {
                 "clean_test_accuracy": evaluation.metrics["clean_test"]["accuracy"],
                 "stress_tests": list(evaluation.metrics["stress_tests"]),
             },
         )
 
+        _check_cancel(state, cancel_check)
+        state.transition("proposing")
+        strategies = plugin.propose_strategies(evaluation.metrics, raw)
+        state.event(
+            "optimization.strategies_proposed",
+            {
+                "strategy_count": len(strategies),
+                "actionable_count": sum(item.actionable for item in strategies),
+            },
+        )
+
+        _check_cancel(state, cancel_check)
         state.transition("packaging")
-        artifact_dir = run_dir / "artifacts"
-        metrics = digit_classification.package(
-            training, evaluation, contract.raw, artifact_dir
+        artifact_dir = resolved / "artifacts"
+        metrics = plugin.package(training, evaluation, raw, artifact_dir)
+        write_json(
+            artifact_dir / "optimization_strategies.json",
+            {
+                "schema_version": "0.2",
+                "run_id": state.data["run_id"],
+                "plugin_id": plugin.manifest.plugin_id,
+                "mode": raw.get("optimization", {}).get("mode", "recommend"),
+                "require_approval": raw.get("optimization", {}).get(
+                    "require_approval", True
+                ),
+                "strategies": [item.to_dict() for item in strategies],
+            },
         )
         (artifact_dir / "learning_report.md").write_text(
-            _learning_report(contract.raw, metrics),
+            plugin.learning_report(raw, metrics, strategies),
             encoding="utf-8",
         )
-        manifest = _write_manifest(run_dir, contract, artifact_dir)
+        manifest = _write_manifest(
+            resolved,
+            raw,
+            artifact_dir,
+            state,
+            plugin.manifest.version,
+        )
         state.event(
-            "artifacts_packaged",
+            "artifacts.packaged",
             {
                 "artifact_count": len(manifest["artifacts"]),
                 "offline_gates_passed": metrics["gate_checks"][
@@ -197,14 +227,37 @@ def run_task(
             offline_gates_passed=metrics["gate_checks"][
                 "all_offline_gates_passed"
             ],
+            artifact_count=len(manifest["artifacts"]),
         )
-        return run_dir
+        return resolved
+    except RunCancelled as exc:
+        state.cancel(str(exc))
+        return resolved
     except Exception as exc:
         state.fail(f"{type(exc).__name__}: {exc}")
         raise
 
 
-def verify_run(run_dir: str | Path, deep: bool = False) -> dict[str, Any]:
+def run_task(
+    contract_path: str | Path,
+    runs_dir: str | Path = "runs",
+    run_id: str | None = None,
+    registry: PluginRegistry | None = None,
+) -> Path:
+    run_dir = prepare_run(
+        contract_path,
+        runs_dir=runs_dir,
+        run_id=run_id,
+        registry=registry,
+    )
+    return execute_run(run_dir, registry=registry)
+
+
+def verify_run(
+    run_dir: str | Path,
+    deep: bool = False,
+    registry: PluginRegistry | None = None,
+) -> dict[str, Any]:
     resolved = Path(run_dir).expanduser().resolve()
     manifest = read_json(resolved / "run_manifest.json")
     state = read_json(resolved / "run_state.json")
@@ -231,14 +284,11 @@ def verify_run(run_dir: str | Path, deep: bool = False) -> dict[str, Any]:
 
     deep_verified = False
     if deep and not errors:
-        # The hash checks above must pass before loading this pickle-based artifact.
-        model = joblib.load(artifact_dir / "model.joblib")
-        reference = np.load(artifact_dir / "test_reference.npz")
-        actual = model.predict(reference["X"])
-        if not np.array_equal(actual, reference["predictions"]):
-            errors.append("persisted model predictions do not match reference")
-        else:
-            deep_verified = True
+        selected_registry = registry or default_registry()
+        plugin = selected_registry.get_recipe(str(manifest["recipe"]))
+        plugin_errors = plugin.deep_verify(artifact_dir)
+        errors.extend(plugin_errors)
+        deep_verified = not plugin_errors
 
     return {
         "run_dir": str(resolved),
@@ -249,7 +299,12 @@ def verify_run(run_dir: str | Path, deep: bool = False) -> dict[str, Any]:
     }
 
 
-def initialize_workspace(recipe: str, output: str | Path, force: bool = False) -> Path:
+def initialize_workspace(
+    recipe: str,
+    output: str | Path,
+    force: bool = False,
+    registry: PluginRegistry | None = None,
+) -> Path:
     from .templates import get_template
 
     output_dir = Path(output).expanduser().resolve()
@@ -257,5 +312,5 @@ def initialize_workspace(recipe: str, output: str | Path, force: bool = False) -
     if contract_path.exists() and not force:
         raise FileExistsError(f"contract already exists: {contract_path}")
     output_dir.mkdir(parents=True, exist_ok=True)
-    write_json(contract_path, get_template(recipe))
+    write_json(contract_path, get_template(recipe, registry=registry))
     return contract_path

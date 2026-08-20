@@ -12,6 +12,7 @@ Read this reference when creating, reviewing or changing a training task contrac
 | Selection metric | Decides which candidate wins before the test set opens | The Agent can overfit the final answer |
 | Release gates | Makes failure reportable without redefining success | A failed run can silently lower its own bar |
 | Compute budget | Bounds iterations, parallel jobs and devices | Autonomous tuning can create uncontrolled cost |
+| Optimization policy | Bounds iteration count and records approval rules | Suggestions can become an unreviewed autonomous loop |
 | Human gates | Names decisions that need accountable approval | Agent output is mistaken for production authorization |
 
 ## Minimum user questions
@@ -33,5 +34,7 @@ Do not ask users without modeling expertise to choose an architecture, optimizer
 - primary model-selection metric;
 - data authorization boundary;
 - maximum compute budget without additional approval.
+
+An optimization iteration is always a new child run. Record the parent run, approved strategy and resulting contract. Do not mutate the parent contract, model, metrics, events or manifest.
 
 If one must change, close the run, record the reason, create a new contract version and start a new run.

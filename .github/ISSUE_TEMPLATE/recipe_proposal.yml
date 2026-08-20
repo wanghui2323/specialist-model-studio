@@ -1,0 +1,30 @@
+name: Recipe proposal
+description: Propose a bounded specialist-model training Recipe.
+title: "[Recipe]: "
+labels: [recipe]
+body:
+  - type: textarea
+    id: task
+    attributes:
+      label: Fixed input, output and user decision
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: Test data and license
+      description: Identify public or generated test data without uploading private samples.
+    validations:
+      required: true
+  - type: textarea
+    id: gates
+    attributes:
+      label: Metrics, failure slices and release gates
+    validations:
+      required: true
+  - type: textarea
+    id: compute
+    attributes:
+      label: Expected hardware and compute budget
+    validations:
+      required: true

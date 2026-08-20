@@ -25,14 +25,14 @@ Freeze release gates before model selection. Never weaken them merely because a 
 
 Prefer a registered, deterministic Recipe. Check the framework, code, model-weight and dataset licenses separately. Keep downloaded datasets, weights, private data and credentials outside the public repository.
 
-For the implemented v0.1 reference lab, run:
+For the implemented v0.2 alpha reference lab, run:
 
 ```bash
 python -m model_harness.cli init --recipe digit-classification --output workspaces/my-first-model
 python -m model_harness.cli run workspaces/my-first-model/task_contract.json
 ```
 
-The v0.1 implementation supports only `digit-classification`. Do not imply that OCR, audio, industrial detection or arbitrary model discovery is already implemented. When adding another Recipe, read [references/recipe-authoring.md](references/recipe-authoring.md).
+The built-in implementation supports only `digit-classification`. Do not imply that OCR, audio, industrial detection or arbitrary model discovery is already implemented. External Recipes can be registered through the plugin protocol. When adding one, read [references/recipe-authoring.md](references/recipe-authoring.md).
 
 Run external or Agent-generated training code in an isolated workspace with a declared compute budget. Stop for approval before expanding cost, accessing sensitive data, loading an untrusted pickle-based model, or publishing externally.
 
@@ -47,6 +47,31 @@ python -m model_harness.cli verify runs/<run-id> --deep
 ```
 
 Report the exact gate reached: local experiment, independent test passed, real-data shadow test, production release, public repository or published article are separate states.
+
+## Guide an optimization run
+
+After a completed run, inspect the persisted proposals:
+
+```bash
+python -m model_harness.cli strategies runs/<run-id>
+```
+
+Explain each proposal's evidence, expected effect, cost, risk and real-world limitation. A recommendation is not an approval. Never apply a strategy marked `actionable: false`, and never apply an actionable strategy without the user's explicit approval.
+
+After approval, create a child run rather than editing or overwriting the parent:
+
+```bash
+python -m model_harness.cli apply-strategy \
+  runs/<run-id> <strategy-id>
+```
+
+Compare parent and child metrics, including clean-set regressions and stress-test changes. Do not describe a synthetic stress-test gain as production validation.
+
+## Work with long-running tasks
+
+Use `events` to report progress from the versioned event stream. A cancellation request is honored at a safe stage boundary, so distinguish “cancel requested” from “cancelled.” After a process restart, active work becomes `interrupted`; `resume` creates an auditable child run from the frozen contract instead of silently continuing the old run.
+
+The optional HTTP/SSE service is an adapter boundary for chat frontends. Bind it to `127.0.0.1` unless authentication and network controls have been added. Do not claim the DeepSeek Harness frontend adapter exists until its package and interaction tests are present.
 
 ## Human-owned decisions
 

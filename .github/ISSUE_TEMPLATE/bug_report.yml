@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a reproducible Harness defect.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include the command, expected result and actual result.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Reproduction evidence
+      description: Share sanitized state, event or error text. Never attach private data or credentials.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Harness version
+      placeholder: 0.2.0a1
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Python and operating system
+    validations:
+      required: true
