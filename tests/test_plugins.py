@@ -9,8 +9,11 @@ from model_harness.plugins import PluginRegistry
 class PluginRegistryTests(unittest.TestCase):
     def test_builtin_recipe_is_discoverable(self) -> None:
         registry = PluginRegistry()
-        self.assertEqual(registry.recipe_ids(), ["digit-classification"])
-        manifest = registry.recipe_manifests()[0]
+        self.assertEqual(
+            registry.recipe_ids(),
+            ["digit-classification", "image-folder-classification"],
+        )
+        manifest = registry.get_recipe("digit-classification").manifest.to_dict()
         self.assertEqual(manifest["version"], "0.2.0")
         self.assertEqual(manifest["contract_schema_version"], "0.2")
         self.assertEqual(manifest["device"], "cpu")

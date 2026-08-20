@@ -19,7 +19,11 @@ def main() -> int:
         "THIRD_PARTY.md",
         "pyproject.toml",
         "docs/v0.3-conversation-console.md",
+        "docs/v0.4-real-training-loop.md",
         "model_harness/chat.py",
+        "model_harness/workspace.py",
+        "model_harness/recipes/image_folder_classification.py",
+        "model_harness/recipes/image_folder_plugin.py",
         "model_harness/web/index.html",
         "model_harness/web/styles.css",
         "model_harness/web/app.js",
@@ -28,6 +32,7 @@ def main() -> int:
         "integrations/deepseek-harness/cordis.patch.yml",
         "skills/train-small-model/SKILL.md",
         "examples/digit-classification/task_contract.json",
+        "tests/test_workspace_loop.py",
     ]
     missing = [name for name in required if not (ROOT / name).is_file()]
     json.loads(

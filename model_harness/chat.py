@@ -47,7 +47,7 @@ class ChatController:
             recipes = self.service.registry.recipe_manifests()
             names = "、".join(item["plugin_id"] for item in recipes)
             return self._reply(
-                f"当前可运行的Recipe：{names}。现在只有数字分类教学Recipe，不能把它当作真实OCR能力。",
+                f"当前可运行的Recipe：{names}。数字分类是教学Recipe；用户图片分类需要先在任务工作台上传数据并确认合同。它们都不等于真实OCR能力。",
                 "recipes",
                 run_id,
                 data={"recipes": recipes},

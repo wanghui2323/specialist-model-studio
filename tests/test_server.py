@@ -37,7 +37,7 @@ class ServerTests(unittest.TestCase):
 
                 console = client.get("/app")
                 self.assertEqual(console.status_code, 200)
-                self.assertIn("Model Harness Console", console.text)
+                self.assertIn("Model Harness · 真实训练工作台", console.text)
 
                 chat = client.post("/chat", json={"message": "有哪些能力"})
                 self.assertEqual(chat.status_code, 200)

@@ -5,18 +5,26 @@ import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
+
+try:  # optional server dependency
+    from starlette.requests import Request
+except ImportError:  # pragma: no cover
+    Request = Any  # type: ignore[misc,assignment]
 
 from .chat import ChatController
 from .service import RunService
 from .state import TERMINAL_STATUSES
+from .workspace import TrainingWorkspace
 
 
 def create_app(
     runs_dir: str | Path = "runs",
     max_workers: int = 1,
+    workspace_dir: str | Path | None = None,
 ) -> Any:
     try:
-        from fastapi import Body, FastAPI, HTTPException, Query
+        from fastapi import Body, FastAPI, Header, HTTPException, Query
         from fastapi.responses import (
             FileResponse,
             JSONResponse,
@@ -29,7 +37,12 @@ def create_app(
             "HTTP server dependencies are missing; install ai-pm-model-harness[server]"
         ) from exc
 
-    service = RunService(runs_dir=runs_dir, max_workers=max_workers)
+    resolved_runs_dir = Path(runs_dir).expanduser().resolve()
+    service = RunService(runs_dir=resolved_runs_dir, max_workers=max_workers)
+    workspace = TrainingWorkspace(
+        workspace_dir or (resolved_runs_dir / "_workspace"),
+        service,
+    )
     chat = ChatController(service)
     web_dir = Path(__file__).parent / "web"
 
@@ -42,19 +55,20 @@ def create_app(
 
     app = FastAPI(
         title="AI PM Model Harness",
-        version="0.3.0-alpha.1",
+        version="0.4.0-alpha.1",
         description="Local-first job API for auditable specialist-model training.",
         lifespan=lifespan,
     )
     app.state.run_service = service
     app.state.chat_controller = chat
+    app.state.training_workspace = workspace
     app.mount("/app/static", StaticFiles(directory=web_dir), name="app-static")
 
     @app.get("/health")
     def health() -> dict[str, Any]:
         return {
             "ok": True,
-            "version": "0.3.0-alpha.1",
+            "version": "0.4.0-alpha.1",
             "recovered_runs": service.recovered_runs,
         }
 
@@ -75,6 +89,101 @@ def create_app(
         try:
             return {"contract": service.registry.get_recipe(recipe_id).template()}
         except Exception as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/tasks")
+    def list_tasks() -> dict[str, Any]:
+        return {"tasks": workspace.list_tasks()}
+
+    @app.post("/tasks")
+    async def create_task(body: dict[str, Any] = Body(...)) -> JSONResponse:
+        try:
+            task = workspace.create_task(
+                str(body.get("name", "")),
+                str(body.get("business_goal", "")),
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return JSONResponse(status_code=201, content={"task": task})
+
+    @app.get("/tasks/{task_id}")
+    def get_task(task_id: str) -> dict[str, Any]:
+        try:
+            return {"task": workspace.get_task(task_id)}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/dataset")
+    async def upload_task_dataset(
+        task_id: str,
+        request: Request,
+        x_filename: str | None = Header(default=None),
+    ) -> JSONResponse:
+        filename = unquote(x_filename or "dataset.zip")
+        try:
+            task = workspace.attach_dataset(task_id, await request.body(), filename)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return JSONResponse(status_code=201, content={"task": task})
+
+    @app.patch("/tasks/{task_id}/contract")
+    async def update_task_contract(
+        task_id: str,
+        body: dict[str, Any] = Body(...),
+    ) -> dict[str, Any]:
+        try:
+            return {"task": workspace.update_contract(task_id, body)}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/confirm")
+    async def confirm_task_contract(
+        task_id: str,
+        body: dict[str, Any] = Body(...),
+    ) -> dict[str, Any]:
+        try:
+            return {"task": workspace.confirm_contract(task_id, body)}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/runs")
+    async def start_task_run(task_id: str) -> JSONResponse:
+        try:
+            task = workspace.start_run(task_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse(status_code=202, content={"task": task})
+
+    @app.post("/tasks/{task_id}/runs/{run_id}/strategies/{strategy_id}/apply")
+    async def apply_task_strategy(
+        task_id: str,
+        run_id: str,
+        strategy_id: str,
+        body: dict[str, Any] | None = Body(default=None),
+    ) -> JSONResponse:
+        if (body or {}).get("approval_confirmed") is not True:
+            raise HTTPException(status_code=409, detail="strategy application requires approval_confirmed=true")
+        try:
+            task = workspace.apply_strategy(task_id, run_id, strategy_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse(status_code=202, content={"task": task})
+
+    @app.get("/tasks/{task_id}/datasets/{dataset_id}/{relative_path:path}")
+    def task_dataset_file(task_id: str, dataset_id: str, relative_path: str) -> FileResponse:
+        try:
+            return FileResponse(workspace.dataset_file(task_id, dataset_id, relative_path))
+        except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/chat")
@@ -125,6 +234,16 @@ def create_app(
     def run_result(run_id: str) -> dict[str, Any]:
         try:
             return service.result(run_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/runs/{run_id}/artifacts/{artifact_name}")
+    def run_artifact(run_id: str, artifact_name: str) -> FileResponse:
+        try:
+            return FileResponse(
+                service.artifact_path(run_id, artifact_name),
+                filename=artifact_name,
+            )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

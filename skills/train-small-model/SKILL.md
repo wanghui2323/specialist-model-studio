@@ -25,14 +25,14 @@ Freeze release gates before model selection. Never weaken them merely because a 
 
 Prefer a registered, deterministic Recipe. Check the framework, code, model-weight and dataset licenses separately. Keep downloaded datasets, weights, private data and credentials outside the public repository.
 
-For the implemented v0.3 alpha reference lab, run:
+For the deterministic teaching lab, run:
 
 ```bash
 python -m model_harness.cli init --recipe digit-classification --output workspaces/my-first-model
 python -m model_harness.cli run workspaces/my-first-model/task_contract.json
 ```
 
-The built-in implementation supports only `digit-classification`. Do not imply that OCR, audio, industrial detection or arbitrary model discovery is already implemented. External Recipes can be registered through the plugin protocol. When adding one, read [references/recipe-authoring.md](references/recipe-authoring.md).
+The v0.4 local Console also implements `image-folder-classification`: create a training task, upload a ZIP organized as `class/image.jpg`, inspect the persisted data report, confirm authorization/labels/gates, then start a run. Every class needs at least five valid images. This is a real user-data feasibility loop, but it is not OCR detection/recognition, object detection, audio training, arbitrary model discovery or production release. External Recipes can be registered through the plugin protocol. When adding one, read [references/recipe-authoring.md](references/recipe-authoring.md).
 
 Run external or Agent-generated training code in an isolated workspace with a declared compute budget. Stop for approval before expanding cost, accessing sensitive data, loading an untrusted pickle-based model, or publishing externally.
 
@@ -73,7 +73,7 @@ Use `events` to report progress from the versioned event stream. A cancellation 
 
 The optional HTTP/SSE service is the adapter boundary for chat frontends. Bind it to `127.0.0.1` unless authentication and network controls have been added.
 
-For a learning-first interactive run, start the local service and use `/app`. Its current chat layer is deterministic command routing, not general model reasoning. Treat persisted run state and events as canonical; ordinary chat text is not a durable record.
+For a learning-first interactive run, start the local service and use `/app`. The primary v0.4 surface is a task workbench rather than a chat transcript: task, dataset report, contract confirmation, run, events, failures, artifacts and parent-child optimization are persisted backend objects. The legacy deterministic chat endpoint remains available for adapters but is not the source of task truth.
 
 DeepSeek Harness can optionally load the bundle in `integrations/deepseek-harness`. Use its tools to list Recipes, start runs, read status/events/strategies, request cancellation and apply an explicitly approved strategy. Keep DSH as a thin orchestration host: do not move task state or approval truth into the model conversation, and do not require DSH for CLI or standalone Console users.
 

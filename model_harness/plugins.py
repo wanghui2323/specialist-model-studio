@@ -16,8 +16,10 @@ class PluginRegistry:
         self._recipes: dict[str, RecipePlugin] = {}
         if include_builtins:
             from .recipes.digit_plugin import PLUGIN
+            from .recipes.image_folder_plugin import PLUGIN as IMAGE_FOLDER_PLUGIN
 
             self.register_recipe(PLUGIN)
+            self.register_recipe(IMAGE_FOLDER_PLUGIN)
 
     def register_recipe(self, plugin: RecipePlugin) -> None:
         if not isinstance(plugin, RecipePlugin):

@@ -5,6 +5,7 @@
 | 组件 | 用途 | 当前项目约束 |
 | --- | --- | --- |
 | scikit-learn | 参考Recipe中的数据集、模型、切分与指标 | BSD-3-Clause；作为安装依赖，不复制其源码 |
+| Pillow | 用户图片解码、EXIF方向处理与缩放 | HPND；作为安装依赖，不复制其源码 |
 | NumPy | 数组计算，由scikit-learn依赖引入 | 作为安装依赖 |
 | SciPy | 科学计算，由scikit-learn依赖引入 | 作为安装依赖 |
 | Joblib | 保存参考模型，由scikit-learn依赖引入 | 只加载可信且哈希匹配的本地产物 |
@@ -14,6 +15,7 @@
 核对来源：
 
 - scikit-learn许可证：https://github.com/scikit-learn/scikit-learn/blob/main/COPYING
+- Pillow许可证：https://github.com/python-pillow/Pillow/blob/main/LICENSE
 - `load_digits`数据说明：https://scikit-learn.org/stable/modules/generated/sklearn.datasets.load_digits.html
 - DeepSeek Harness源码与许可证：https://github.com/deepseek-ai/deepseek-harness
 

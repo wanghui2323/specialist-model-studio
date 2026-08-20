@@ -3,6 +3,7 @@ from __future__ import annotations
 import platform
 import re
 import sys
+import time
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -140,53 +141,85 @@ def execute_run(
     raw = read_json(resolved / "task_contract.json")
     validate_contract(raw, registry=selected_registry)
     plugin = selected_registry.get_recipe(str(raw["recipe"]))
+    run_started = time.perf_counter()
+    timings_ms: dict[str, float] = {}
     try:
         _check_cancel(state, cancel_check)
+        stage_started = time.perf_counter()
         state.transition("preflight")
+        timings_ms["preflight"] = (time.perf_counter() - stage_started) * 1000
         state.event(
             "preflight.completed",
             {
                 "recipe": raw["recipe"],
                 "mode": raw["interaction"]["mode"],
                 "candidate_count": len(raw["model_selection"]["candidates"]),
+                "duration_ms": timings_ms["preflight"],
             },
         )
 
         _check_cancel(state, cancel_check)
         state.transition("training")
+        stage_started = time.perf_counter()
         training = plugin.train(raw)
+        timings_ms["training"] = (time.perf_counter() - stage_started) * 1000
+        candidate_results = getattr(training, "validation_results", {})
+        state.event(
+            "training.candidates_completed",
+            {
+                "duration_ms": timings_ms["training"],
+                "candidates": [
+                    {
+                        "name": name,
+                        "macro_f1": values.get("macro_f1"),
+                        "accuracy": values.get("accuracy"),
+                        "fit_seconds": values.get("fit_seconds"),
+                    }
+                    for name, values in candidate_results.items()
+                ],
+            },
+        )
         state.event(
             "training.model_selected",
             {
                 "selected_model": training.selected_name,
                 "selection_metric": raw["model_selection"]["primary_metric"],
+                "duration_ms": timings_ms["training"],
             },
         )
 
         _check_cancel(state, cancel_check)
         state.transition("evaluating")
+        stage_started = time.perf_counter()
         evaluation = plugin.evaluate(training, raw)
+        timings_ms["evaluating"] = (time.perf_counter() - stage_started) * 1000
         state.event(
             "evaluation.completed",
             {
                 "clean_test_accuracy": evaluation.metrics["clean_test"]["accuracy"],
-                "stress_tests": list(evaluation.metrics["stress_tests"]),
+                "stress_tests": list(evaluation.metrics.get("stress_tests", {})),
+                "failure_count": evaluation.metrics.get("failure_count"),
+                "duration_ms": timings_ms["evaluating"],
             },
         )
 
         _check_cancel(state, cancel_check)
         state.transition("proposing")
+        stage_started = time.perf_counter()
         strategies = plugin.propose_strategies(evaluation.metrics, raw)
+        timings_ms["proposing"] = (time.perf_counter() - stage_started) * 1000
         state.event(
             "optimization.strategies_proposed",
             {
                 "strategy_count": len(strategies),
                 "actionable_count": sum(item.actionable for item in strategies),
+                "duration_ms": timings_ms["proposing"],
             },
         )
 
         _check_cancel(state, cancel_check)
         state.transition("packaging")
+        stage_started = time.perf_counter()
         artifact_dir = resolved / "artifacts"
         metrics = plugin.package(training, evaluation, raw, artifact_dir)
         write_json(
@@ -213,6 +246,7 @@ def execute_run(
             state,
             plugin.manifest.version,
         )
+        timings_ms["packaging"] = (time.perf_counter() - stage_started) * 1000
         state.event(
             "artifacts.packaged",
             {
@@ -220,14 +254,18 @@ def execute_run(
                 "offline_gates_passed": metrics["gate_checks"][
                     "all_offline_gates_passed"
                 ],
+                "duration_ms": timings_ms["packaging"],
             },
         )
+        total_duration_ms = (time.perf_counter() - run_started) * 1000
         state.transition(
             "completed",
             offline_gates_passed=metrics["gate_checks"][
                 "all_offline_gates_passed"
             ],
             artifact_count=len(manifest["artifacts"]),
+            timings_ms=timings_ms,
+            total_duration_ms=total_duration_ms,
         )
         return resolved
     except RunCancelled as exc:

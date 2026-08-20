@@ -144,6 +144,10 @@ class RunService:
         artifact_dir = run_dir / "artifacts"
         metrics_path = artifact_dir / "metrics.json"
         strategies_path = artifact_dir / "optimization_strategies.json"
+        failures_path = artifact_dir / "failure_samples.json"
+        manifest_path = run_dir / "run_manifest.json"
+        metrics = read_json(metrics_path) if metrics_path.is_file() else None
+        manifest = read_json(manifest_path) if manifest_path.is_file() else None
         child_run_ids = [
             item["run_id"]
             for item in self.list_runs()
@@ -158,15 +162,40 @@ class RunService:
             "parent_run_id": state.get("parent_run_id"),
             "child_run_ids": child_run_ids,
             "offline_gates_passed": state.get("offline_gates_passed"),
-            "metrics": read_json(metrics_path) if metrics_path.is_file() else None,
+            "metrics": metrics,
             "strategies": (
                 read_json(strategies_path)["strategies"]
                 if strategies_path.is_file()
                 else []
             ),
             "optimization_history": contract.get("optimization_history", []),
+            "dataset": contract.get("dataset"),
+            "failure_samples": (
+                read_json(failures_path).get("samples", [])
+                if failures_path.is_file()
+                else []
+            ),
+            "artifacts": (
+                [
+                    {"name": name, **details}
+                    for name, details in manifest.get("artifacts", {}).items()
+                ]
+                if manifest
+                else []
+            ),
+            "timings_ms": state.get("timings_ms", {}),
+            "total_duration_ms": state.get("total_duration_ms"),
             "error": state.get("error"),
         }
+
+    def artifact_path(self, run_id: str, artifact_name: str) -> Path:
+        if not artifact_name or Path(artifact_name).name != artifact_name:
+            raise HarnessError("invalid artifact name")
+        artifact_dir = (self._run_dir(run_id) / "artifacts").resolve()
+        target = (artifact_dir / artifact_name).resolve()
+        if target.parent != artifact_dir or not target.is_file():
+            raise FileNotFoundError(f"artifact not found: {artifact_name}")
+        return target
 
     def apply_strategy(
         self,
