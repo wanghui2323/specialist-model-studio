@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any
+
+
+DIGIT_CLASSIFICATION_TEMPLATE: dict[str, Any] = {
+    "schema_version": "0.1",
+    "task_id": "my-first-digit-model",
+    "business_goal": "识别8×8灰度手写数字0—9，学习一条可审计的小模型训练闭环",
+    "recipe": "digit-classification",
+    "interaction": {
+        "mode": "delegate",
+        "learning_report": True,
+        "pause_when": [
+            "missing_required_data",
+            "data_authorization_unclear",
+            "release_gate_change_requested",
+            "untrusted_code_or_model_execution",
+            "production_release_requested",
+        ],
+    },
+    "dataset": {
+        "kind": "sklearn_builtin_digits",
+        "source": "sklearn.datasets.load_digits",
+        "random_seed": 42,
+        "split": {"train": 0.60, "validation": 0.20, "test": 0.20},
+        "boundary": "公开教学数据不代表真实票据、相机、字体、扫描设备或工业现场分布",
+    },
+    "model_selection": {
+        "primary_metric": "validation_macro_f1",
+        "candidates": [
+            "most_frequent_baseline",
+            "logistic_regression",
+            "rbf_svm",
+            "random_forest",
+        ],
+        "test_set_policy": "测试集不得用于模型选择或调参，只在候选模型确定并重训后评估",
+    },
+    "release_gates": {
+        "clean_test_accuracy_min": 0.96,
+        "clean_test_macro_f1_min": 0.96,
+        "clean_test_worst_class_recall_min": 0.90,
+        "model_size_mb_max": 5.0,
+        "single_sample_p95_latency_ms_max": 5.0,
+    },
+    "diagnostics": {
+        "stress_tests": ["gaussian_noise_sigma_4", "shift_right_one_pixel"],
+        "policy": "压力测试用于暴露分布偏移风险，不由Agent自动改写放行门槛",
+    },
+    "compute_budget": {
+        "max_candidate_models": 4,
+        "max_parallel_jobs": 1,
+        "device": "cpu",
+    },
+    "human_gates": [
+        "确认标签定义与错误代价",
+        "确认私有数据已授权且必要时脱敏",
+        "审查失败切片和压力测试",
+        "批准真实数据影子测试",
+        "批准生产发布",
+    ],
+}
+
+
+def get_template(recipe: str) -> dict[str, Any]:
+    if recipe != "digit-classification":
+        raise KeyError(recipe)
+    return deepcopy(DIGIT_CLASSIFICATION_TEMPLATE)

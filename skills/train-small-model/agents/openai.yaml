@@ -1,0 +1,4 @@
+interface:
+  display_name: "Train Small Model"
+  short_description: "Guide and run auditable specialist-model training"
+  default_prompt: "Help me turn a concrete task and dataset into a reproducible small-model training run."
