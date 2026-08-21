@@ -1,0 +1,205 @@
+{
+  "schema_version": "0.2",
+  "iteration": "v0.7 local-usable-beta",
+  "captured_at": "2026-08-21",
+  "state": "accepted",
+  "accepted_at": "2026-08-22",
+  "accepted_by": "user",
+  "acceptance_scope": "L0 truth baseline and capability boundary; L1 authorized",
+  "git": {
+    "branch": "codex/v0.7-real-training-beta",
+    "head": "0a4429d",
+    "origin_feature_head": "0a4429d",
+    "origin_main_head": "e342211",
+    "initial_worktree_clean": true,
+    "upstream": null,
+    "push_state": "not-pushed",
+    "release_state": "local development branch only; not pushed, merged, tagged or released"
+  },
+  "service": {
+    "status": "live-with-blockers",
+    "observed_at": "2026-08-21T15:47:11+08:00",
+    "base_url": "http://127.0.0.1:8765",
+    "pid": 8547,
+    "version": "0.6.0-alpha.1",
+    "health_ok": true,
+    "app_http_status": 200,
+    "openapi_http_status": 500,
+    "agent_runtime_available": false,
+    "agent_engine": "DeepSeek Harness",
+    "agent_runtime_effect": "free conversation, Agent Loop, tools and native approvals are unavailable",
+    "version_mismatch": {
+      "pyproject": "0.6.0a1",
+      "server": "0.6.0-alpha.1",
+      "package": "0.4.0a1"
+    }
+  },
+  "capabilities": {
+    "registered_recipes": 3,
+    "registered_data_adapters": 2,
+    "ready_user_data_families": [
+      "image-folder-classification",
+      "tabular-regression"
+    ],
+    "teaching_only": [
+      "digit-classification"
+    ],
+    "build_request_only": [
+      "audio-keyword-classification",
+      "ocr",
+      "object-detection",
+      "time-series",
+      "arbitrary-hugging-face-fine-tuning"
+    ],
+    "live_tasks": {
+      "count": 4,
+      "states": {
+        "completed": 1,
+        "awaiting_data": 1,
+        "needs_recipe": 1,
+        "draft": 1
+      }
+    },
+    "live_runs": {
+      "count": 6,
+      "completed": 6,
+      "digit_classification": 3,
+      "image_folder_classification": 3,
+      "tabular_regression": 0
+    },
+    "route_inventory": {
+      "intended_api_routes": 36,
+      "source_decorators": 38,
+      "authority_warning": "task-bound routes coexist with generic /runs and legacy /chat routes"
+    },
+    "missing_v0_7_objects": [
+      "persistent RecipeBuildJob",
+      "isolated build/test environment record",
+      "ModelAsset with source, revision, license and compatibility",
+      "Hugging Face connector/cache record",
+      "InferenceCheck",
+      "separate evidence-strength or acceptance record"
+    ]
+  },
+  "verification": {
+    "project_tests": {
+      "status": "passed",
+      "command": ".venv/bin/python scripts/verify_project.py",
+      "exit_code": 0,
+      "duration_seconds": 4.92,
+      "python": "22/22 passed in 3.645s",
+      "node": "6/6 passed in 48.668ms",
+      "syntax": "index.js and client.js passed",
+      "failures": 0,
+      "skips": 0,
+      "warnings": "8 non-blocking sklearn/joblib NumPy 2.5 DeprecationWarnings"
+    },
+    "real_scenarios": {
+      "status": "passed",
+      "command": ".venv/bin/python scripts/run_real_scenarios.py",
+      "exit_code": 0,
+      "duration_seconds": 6.63,
+      "report": "../../runs/real-validation/real_scenarios_report.json",
+      "image_classification": {
+        "samples": 1797,
+        "split": "1079/359/359",
+        "accuracy": 0.9832869,
+        "macro_f1": 0.9832518,
+        "deep_verification": "passed",
+        "artifact_count": 10
+      },
+      "tabular_regression": {
+        "rows": 1359,
+        "split": "815/272/272",
+        "mae": 0.4682639,
+        "rmse": 0.5990373,
+        "r2": 0.3970558,
+        "deep_verification": "passed",
+        "artifact_count": 10
+      },
+      "negative_paths": [
+        "contract confirmation is required before run creation and returns HTTP 409",
+        "unmatched audio classification becomes needs_recipe and creates no fake Run"
+      ]
+    },
+    "desktop_browser": {
+      "status": "passed",
+      "viewport": "1440x900",
+      "summary": "no horizontal overflow, clipped content, undersized visible controls, console warnings or errors; Loop tab switching passed",
+      "scroll_width": 1440,
+      "console_warnings_or_errors": 0
+    },
+    "mobile_browser": {
+      "status": "passed",
+      "viewport": "390x844",
+      "summary": "no horizontal overflow or clipped content; all interactive targets are at least 44px; Loop tab switching passed; console clean",
+      "scroll_width": 390,
+      "minimum_interactive_target": 44,
+      "console_warnings_or_errors": 0
+    }
+  },
+  "baseline_closure": [
+    {
+      "flow": "create-and-reenter-training-task",
+      "prior_score": 6,
+      "current_score": 6,
+      "out_of": 6,
+      "state": "verified-current",
+      "evidence": "fresh project suite and workspace lifecycle tests"
+    },
+    {
+      "flow": "image-folder-training",
+      "prior_score": 6,
+      "current_score": 6,
+      "out_of": 6,
+      "state": "verified-current",
+      "evidence": "fresh real scenario, deep verification and 10 artifacts"
+    },
+    {
+      "flow": "tabular-regression-training",
+      "prior_score": 6,
+      "current_score": 6,
+      "out_of": 6,
+      "state": "verified-current",
+      "evidence": "fresh real scenario, deep verification and 10 artifacts"
+    },
+    {
+      "flow": "missing-recipe-build-register-resume",
+      "prior_score": 3,
+      "current_score": 3,
+      "out_of": 6,
+      "state": "p0-open-current",
+      "evidence": "fresh unmatched audio task creates needs_recipe only; scaffold is not executable"
+    },
+    {
+      "flow": "connected-agent-conversation",
+      "prior_score": 2,
+      "current_score": 2,
+      "out_of": 6,
+      "state": "p0-open-current",
+      "evidence": "live /agent/runtime reports available=false and port 3080 is unavailable"
+    },
+    {
+      "flow": "trustworthy-evaluation-and-inference",
+      "prior_score": 3,
+      "current_score": 3,
+      "out_of": 6,
+      "state": "p0-open-current",
+      "evidence": "fresh scenarios prove offline metrics and artifacts; user inference and evidence sufficiency remain incomplete"
+    }
+  ],
+  "open_p0": [
+    "capability decision can be misleading and cannot be corrected",
+    "agent runtime is unavailable on the default conversational path",
+    "missing Recipe cannot complete Build-Test-Register-Resume",
+    "sample data cannot be staged before Recipe availability",
+    "run completion is presented too close to evaluation acceptance",
+    "training cancellation is not exposed separately from agent cancellation"
+  ],
+  "open_p1": [
+    "/openapi.json returns HTTP 500 while /app and /health return 200",
+    "version sources disagree across pyproject, server and package",
+    "generic /runs and legacy /chat coexist with TrainingTask-owned routes",
+    "Hugging Face exists in roadmap documentation only"
+  ]
+}

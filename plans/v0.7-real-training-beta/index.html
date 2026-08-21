@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Model Harness v0.7 本地可用 Beta 事实基线与迭代 Loop 工作台" />
+    <title>Model Harness · v0.7 真实可用性工作台</title>
+    <link rel="icon" href="./model-harness-mark.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到主要内容</a>
+    <header class="topbar">
+      <a class="brand" href="#top"><img src="./model-harness-mark.svg" alt="" /><span><b>Model Harness</b><small>v0.7 · Local Usable Beta</small></span></a>
+      <nav aria-label="工作台导航"><a href="#baseline">事实基线</a><a href="#contract">产品合同</a><a href="#loops">迭代 Loop</a><a href="#gates">验收门槛</a></nav>
+      <span class="status-pill" id="headerStatus" data-status="implementing"><i></i><span>L0 进行中</span></span>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top">
+        <div class="hero-copy">
+          <span class="eyebrow">V0.7 · TRUTH BEFORE SCALE</span>
+          <h1>先让每一次“完成”<br />都能被真实证据证明。</h1>
+          <p>v0.7 已获批准启动。当前只执行 L0「事实重置」：重新核对代码、服务、测试、能力边界与浏览器体验。基线未被用户验收前，不进入功能开发。</p>
+          <div class="hero-actions"><a class="primary" href="#loops">查看 L0 任务</a><a class="secondary" href="./requirements.md">阅读完整需求合同</a></div>
+          <div class="hero-meta"><span><i></i>独立开发分支</span><span><i></i>不沿用旧 done</span><span><i></i>每轮验收后才推送</span></div>
+        </div>
+        <aside class="active-loop-card">
+          <div class="loop-kicker"><span>L0</span><em>当前 Loop</em></div>
+          <h2>事实重置</h2>
+          <p>让代码、任务账本、运行服务和用户看到的能力回到同一事实源。</p>
+          <div class="progress-track"><i id="l0Progress"></i></div>
+          <div class="progress-copy"><span id="l0ProgressText">正在读取任务账本…</span><strong id="l0ProgressValue">—</strong></div>
+          <small>退出条件：自动检查、真实场景、服务能力和双视口证据齐全。</small>
+        </aside>
+      </section>
+
+      <section class="baseline section" id="baseline">
+        <header class="section-heading"><div><span>01 · CURRENT EVIDENCE</span><h2>当前事实，不是历史印象</h2></div><p>所有数字从当前分支、当前服务或本轮验证重新读取。读取失败也作为事实展示，不回填旧结果。</p></header>
+        <div class="metric-grid">
+          <article><span>代码基线</span><b id="gitHead">—</b><small id="gitBranch">读取中</small></article>
+          <article><span>真实用户数据家族</span><b id="readyFamilyCount">—</b><small>图片分类 · 表格回归</small></article>
+          <article><span>注册 Recipe / Adapter</span><b id="registryCount">—</b><small>当前运行注册表</small></article>
+          <article><span>智能协作服务</span><b id="agentState">—</b><small id="serviceVersion">当前运行状态</small></article>
+        </div>
+        <div class="evidence-grid" id="evidenceGrid" aria-live="polite"></div>
+      </section>
+
+      <section class="truth-section section">
+        <header class="section-heading"><div><span>02 · STATUS CONTRACT</span><h2>完成状态重新定义</h2></div><p>旧工作台把“代码已写”和“用户可以使用”混为 done。v0.7 必须跨过五个独立状态。</p></header>
+        <div class="status-ladder">
+          <article><i>1</i><span><b>Planned</b><small>进入范围，尚未编码</small></span></article>
+          <article><i>2</i><span><b>Implementing</b><small>正在实现或生成产物</small></span></article>
+          <article><i>3</i><span><b>Implemented</b><small>代码完成，证据未齐</small></span></article>
+          <article><i>4</i><span><b>Verified</b><small>自动检查与真实运行通过</small></span></article>
+          <article class="accepted"><i>5</i><span><b>Accepted</b><small>用户确认，才算完成</small></span></article>
+        </div>
+      </section>
+
+      <section class="contract-section section" id="contract">
+        <header class="section-heading"><div><span>03 · PRODUCT CONTRACT</span><h2>通用，不等于假装全都支持</h2></div><p>每个训练需求都进入一个诚实、可恢复的处理路径；只有通过验证的能力才允许创建真实 Run。</p></header>
+        <div class="capability-tier-grid">
+          <article data-tier="ready"><span><i></i>READY</span><h3>已验证</h3><p>当前可以直接导入正式数据、冻结合同并运行训练。</p><ul><li>图片文件夹分类</li><li>CSV 数值回归</li></ul></article>
+          <article data-tier="buildable"><span><i></i>BUILDABLE</span><h3>可扩展</h3><p>允许先上传隔离样例，在产品内完成构建、测试、注册和恢复。</p><ul><li>v0.7 首证：语音关键词</li><li>不得要求用户处理代码 ZIP</li></ul></article>
+          <article data-tier="unsupported"><span><i></i>UNSUPPORTED</span><h3>尚未支持</h3><p>超出本机、安全或版本范围时，明确说明阻断，不展示训练进度。</p><ul><li>目标检测、分割、时序仍未验证</li><li>生产云发布不在 v0.7</li></ul></article>
+        </div>
+        <div class="target-flow" aria-label="目标训练任务流程">
+          <div><span>01</span><b>确认任务理解</b><small>稳定 task_id · 可纠错规格</small></div><i>→</i>
+          <div><span>02</span><b>准备数据或样例</b><small>正式 Dataset / 隔离 Asset</small></div><i>→</i>
+          <div><span>03</span><b>匹配或构建能力</b><small>Build · Test · Register · Resume</small></div><i>→</i>
+          <div><span>04</span><b>冻结并真实训练</b><small>模型、门槛、资源、Run</small></div><i>→</i>
+          <div><span>05</span><b>评测、试跑与交付</b><small>证据充分性 · 新样本 · 哈希</small></div>
+        </div>
+      </section>
+
+      <section class="loops-section section" id="loops">
+        <header class="section-heading"><div><span>04 · ITERATION LEDGER</span><h2>六个有退出门槛的 Loop</h2></div><p>每轮只实现一个用户结果；失败就留在当前 Loop，不通过改文案、降低门槛或补成功动画跨轮。</p></header>
+        <div class="loop-tabs" id="loopTabs" role="tablist" aria-label="v0.7 迭代 Loop"></div>
+        <div class="loop-summary" id="loopSummary"></div>
+        <div class="task-table" id="taskTable"></div>
+      </section>
+
+      <section class="closure-section section" id="gates">
+        <header class="section-heading"><div><span>05 · CLOSURE GATES</span><h2>当前还差哪些真实闭环</h2></div><p>任何一个 P0 不到 6/6，都不能用总体平均分掩盖。</p></header>
+        <div class="closure-layout">
+          <div class="closure-table" id="closureTable"></div>
+          <aside class="review-card">
+            <span>L0 REVIEW GATE</span><h3 id="reviewTitle">正在收集基线证据</h3><p id="reviewDescription">完成所有 L0 验证后，工作台会生成验收摘要；用户确认后才进入 L1。</p>
+            <button id="copyReview" type="button" disabled>复制 L0 验收摘要</button><small id="copyFeedback">目前不会启动下一轮。</small>
+          </aside>
+        </div>
+      </section>
+    </main>
+
+    <footer><span>Model Harness v0.7 · Local Usable Beta</span><span id="footerState">L0 事实重置进行中 · 2026-08-21</span></footer>
+    <script src="./workbench.js" defer></script>
+  </body>
+</html>
