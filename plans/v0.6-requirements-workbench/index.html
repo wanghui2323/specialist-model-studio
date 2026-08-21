@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Model Harness v0.6 需求确认与迭代 Loop 工作台" />
+    <title>Model Harness · v0.6 需求确认工作台</title>
+    <link rel="icon" href="./model-harness-mark.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="page-header">
+      <a class="brand" href="#top"><img src="./model-harness-mark.svg" alt="" /><span><b>Model Harness</b><small>Specialist Model Studio</small></span></a>
+      <nav aria-label="工作台导航"><a href="#contract">需求合同</a><a href="#decisions">待确认决策</a><a href="#loops">迭代 Loop</a></nav>
+      <span class="gate-pill" id="headerGate" data-state="waiting"><i></i><span>等待确认</span></span>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <span class="eyebrow">V0.6 · REQUIREMENTS GATE</span>
+          <h1>先把需求说清楚，<br />再启动下一轮迭代。</h1>
+          <p>这不是开发中的任务看板，而是启动前的需求合同。我们先确认产品边界、第一条真实用户旅程和验收证据，再让任务进入进行中。</p>
+          <div class="hero-actions"><a class="primary-link" href="#blueprint">查看产品原型 <span>↓</span></a><a class="secondary-link" href="./requirements.md">完整需求合同</a></div>
+          <div class="hero-proof"><span><i></i>真实运行证据</span><span><i></i>人工批准门禁</span><span><i></i>可恢复任务状态</span></div>
+        </div>
+        <aside class="baseline-card">
+          <span class="card-kicker">当前实现基线</span>
+          <h2>工作草稿已冻结</h2>
+          <dl>
+            <div><dt>自动测试</dt><dd class="positive">19 项通过</dd></div>
+            <div><dt>Agent 桥接</dt><dd class="positive">已连通一次</dd></div>
+            <div><dt>浏览器闭环</dt><dd class="waiting">尚未验证</dd></div>
+            <div><dt>GitHub</dt><dd class="waiting">尚未提交</dd></div>
+          </dl>
+          <p>当前代码保留为未提交草稿。工作台确认不会自动修改或发布产品。</p>
+        </aside>
+      </section>
+
+      <section class="contract-section" id="contract">
+        <div class="section-heading"><div><span>01 · PRODUCT CONTRACT</span><h2>这一轮到底要做成什么</h2></div><p>主对象是 Training Task；对话负责推进任务，DSH 只在底层提供会话、Agent Loop、工具和审批。</p></div>
+        <div class="contract-grid">
+          <article><span class="contract-index">A</span><h3>通用 Agent 工作台</h3><p>模型训练是第一套领域插件，规划、工具、批准和 Context 框架可以复用。</p></article>
+          <article><span class="contract-index">B</span><h3>过程与结果同屏</h3><p>中央展示计划和工具过程，右侧展示当前模型、数据、训练或评测结果。</p></article>
+          <article><span class="contract-index">C</span><h3>所有进度可证明</h3><p>工具卡、run_id、指标和制品全部来自后端或 DSH 事件，不用动画模拟。</p></article>
+          <article><span class="contract-index">D</span><h3>Hugging Face 资产链路</h3><p>从模型卡与兼容性检查进入批准下载、构建、调优、评测和血缘。</p></article>
+        </div>
+      </section>
+
+      <section class="blueprint-section" id="blueprint">
+        <div class="section-heading blueprint-heading"><div><span>02 · FRONTEND BLUEPRINT</span><h2>像 Agent 产品，而不是训练表单</h2></div><p>任务、Agent 执行过程与训练结果共享同一个事实对象。下方是可点击的交互原型，不代表后台已经实现。</p></div>
+        <div class="prototype-stage">
+          <div class="prototype-toolbar"><div><img src="./model-harness-mark.svg" alt="" /><span><b>Model Harness</b><small>Agent Workbench</small></span></div><p>交互原型 · 数据仅用于界面验证</p><em><i></i>待接真实运行时</em></div>
+          <div class="product-frame" aria-label="Model Harness Agent Workbench 交互原型">
+          <aside class="frame-projects">
+            <a href="#blueprint" class="frame-brand"><img src="./model-harness-mark.svg" alt="" /><span><b>Model Harness</b><small>Agent workspace</small></span></a>
+            <button class="new-task-button" type="button"><svg><use href="./model-harness-icons.svg#plus"></use></svg>新训练任务</button>
+            <div class="project-label"><span>训练任务</span><button type="button" aria-label="筛选训练任务"><svg><use href="./model-harness-icons.svg#chevron-down"></use></svg></button></div>
+            <button class="mock-task active" type="button" data-task="零件颜色分类" data-status="训练中 · 62%"><span class="task-thumb blue">零</span><span><strong>零件颜色分类</strong><small><i></i>训练中 · 62%</small></span><svg><use href="./model-harness-icons.svg#more"></use></svg></button>
+            <button class="mock-task" type="button" data-task="合同印章检测" data-status="等待数据"><span class="task-thumb coral">印</span><span><strong>合同印章检测</strong><small><i></i>等待数据</small></span><svg><use href="./model-harness-icons.svg#more"></use></svg></button>
+            <button class="mock-task" type="button" data-task="关键词识别" data-status="草稿"><span class="task-thumb violet">声</span><span><strong>关键词识别</strong><small><i></i>草稿</small></span><svg><use href="./model-harness-icons.svg#more"></use></svg></button>
+            <div class="sidebar-foot"><button type="button"><svg><use href="./model-harness-icons.svg#help"></use></svg>帮助与文档</button><button type="button"><span>WH</span><b>汪辉</b><svg><use href="./model-harness-icons.svg#chevron-down"></use></svg></button></div>
+          </aside>
+          <section class="frame-agent">
+            <header><div><small>TRAINING TASK · MH-042</small><b id="prototypeTaskTitle">零件颜色分类</b></div><div class="agent-header-actions"><button type="button" aria-label="分享任务"><svg><use href="./model-harness-icons.svg#share"></use></svg></button><button type="button" aria-label="更多选项"><svg><use href="./model-harness-icons.svg#more"></use></svg></button><span><i></i>Agent 执行中</span></div></header>
+            <div class="plan-overview"><div><span>当前计划</span><b>用用户数据比较候选模型，并在关键动作前请求批准</b></div><strong>3 / 5</strong></div>
+            <div class="plan-strip"><span class="done"><i>✓</i>数据体检</span><span class="done"><i>✓</i>合同确认</span><span class="active"><i>3</i>训练候选模型</span><span><i>4</i>独立评测</span><span><i>5</i>优化建议</span></div>
+            <div class="run-facts"><span><i></i>事件流在线</span><span>RUN · MH-RUN-018</span><span>环境 · Local CPU</span><button type="button">查看运行日志</button></div>
+            <div class="mock-chat">
+              <div class="time-divider"><span>今天 10:42</span></div>
+              <article class="agent-message"><img src="./model-harness-mark.svg" alt="" /><div><b>Model Harness</b><p>数据和验收门槛已经确认。我会比较 4 个候选模型，随后用独立测试集评测，并保留完整运行证据。</p></div></article>
+              <article class="mock-tool done"><span class="tool-icon">✓</span><span><b>读取训练运行</b><small>Run MH-RUN-018 · 3/4 候选已完成</small></span><em>刚刚</em></article>
+              <article class="mock-tool running"><span class="tool-icon">↻</span><span><b>训练候选模型</b><small>正在执行 · linear_svc · event 42 / 67</small><span class="tool-progress"><i></i></span></span><em>12.8s</em></article>
+              <article class="approval-card"><span class="approval-icon">!</span><div><small>需要你的批准 · 训练任务已暂停</small><b>下载并微调 ViT 候选模型？</b><p>将从 Hugging Face 下载固定 revision，预计占用 346 MB；批准前不会产生新的 run。</p><dl><div><dt>模型</dt><dd>google/vit-base-patch16-224</dd></div><div><dt>预计耗时</dt><dd>8–14 分钟</dd></div></dl><div class="approval-actions"><button type="button">暂不执行</button><button type="button">批准并继续</button></div></div></article>
+            </div>
+            <div class="mock-composer"><div contenteditable="false">继续询问，或告诉 Agent 下一步怎么做…</div><div><button type="button" aria-label="添加附件"><svg><use href="./model-harness-icons.svg#paperclip"></use></svg></button><span>模型训练助手</span><button class="send-button" type="button" aria-label="发送消息"><svg><use href="./model-harness-icons.svg#send"></use></svg></button></div></div>
+          </section>
+          <aside class="frame-context">
+            <header><div><b>任务上下文</b><span>事实、结果与产物跟随当前任务更新</span></div><button type="button" aria-label="收起上下文"><svg><use href="./model-harness-icons.svg#chevron-right"></use></svg></button></header>
+            <nav aria-label="原型上下文切换"><button type="button" data-context="data">数据</button><button type="button" data-context="model">模型</button><button type="button" class="active" data-context="training">运行</button><button type="button" data-context="evaluation">评测</button><button type="button" data-context="artifacts">产物</button></nav>
+            <div class="context-panel" id="prototypeContextPanel">
+              <div class="context-status"><span><i></i>当前阶段</span><b>训练候选模型</b><div><i style="width:62%"></i></div><small><strong>3 / 4</strong> candidates · 预计还需 18 秒</small></div>
+              <div class="context-chart"><header><span>Validation Macro-F1</span><b>0.921</b></header><div class="chart-grid"><span></span><span></span><span></span><i style="height:42%"><em>LR</em></i><i class="best" style="height:86%"><em>SVC</em></i><i style="height:71%"><em>RF</em></i><i class="pending" style="height:22%"><em>ViT</em></i></div><small>数据来自 MH-RUN-018 的事件流</small></div>
+              <div class="context-model"><span>HUGGING FACE MODEL</span><div><i>HF</i><span><b>google/vit-base-patch16-224</b><small>Image classification · 86.6M</small></span></div><dl><div><dt>Revision</dt><dd>3f1b…c92</dd></div><div><dt>License</dt><dd>Apache-2.0</dd></div></dl><button type="button">查看 Model Card <span>↗</span></button></div>
+            </div>
+          </aside>
+          </div>
+        </div>
+        <div class="capability-row">
+          <article><b>Plan</b><span>目标、当前步骤、下一步与阻断</span></article>
+          <article><b>Tools</b><span>输入摘要、真实状态、耗时与结果</span></article>
+          <article><b>Context</b><span>模型、数据、训练、评测与制品</span></article>
+          <article><b>HF Hub</b><span>搜索、兼容性、批准下载与 revision</span></article>
+        </div>
+      </section>
+
+      <section class="decision-section" id="decisions">
+        <div class="section-heading"><div><span>03 · DECISION GATE</span><h2>需要共同确认的 8 个决策</h2></div><p>选择只保存在当前浏览器，用于形成讨论摘要；不会启动开发。</p></div>
+        <div class="decision-layout">
+          <div class="decision-list" id="decisionList"></div>
+          <aside class="confirmation-panel">
+            <span class="card-kicker">启动门禁</span>
+            <div class="progress-ring" id="progressRing"><strong id="confirmedCount">0/8</strong><span>已同意</span></div>
+            <h3 id="gateTitle">仍在等待产品确认</h3>
+            <p id="gateDescription">8 个决策全部明确后，才能生成迭代启动摘要。</p>
+            <button id="summaryButton" type="button" disabled>生成确认摘要</button>
+            <small id="copyState">该按钮只生成摘要，不会执行任务。</small>
+          </aside>
+        </div>
+      </section>
+
+      <section class="loops-section" id="loops">
+        <div class="section-heading"><div><span>04 · ITERATION LOOPS</span><h2>从需求到发布的 7 个闭环</h2></div><p>每轮只追求一个可验证的用户结果。没有证据，任务不能进入完成态。</p></div>
+        <div class="loop-tabs" id="loopTabs" role="tablist" aria-label="迭代 Loop"></div>
+        <div class="loop-summary" id="loopSummary"></div>
+        <div class="task-table" id="taskTable"></div>
+      </section>
+
+      <section class="acceptance-section">
+        <div><span class="eyebrow">THE PROOF</span><h2>我们如何证明它不是“假的前端”</h2></div>
+        <ol>
+          <li><b>真实对象</b><span>第一次消息后，后端能查到新的 task_id。</span></li>
+          <li><b>真实工具</b><span>DSH 历史里存在 get_task 的 call/result 和 event seq。</span></li>
+          <li><b>真实拒绝</b><span>拒绝关键操作后，run_ids 前后不变。</span></li>
+          <li><b>真实恢复</b><span>刷新与重启后回到同一 task 和 session。</span></li>
+          <li><b>真实结果</b><span>指标、失败样本和制品都能回溯到 run_id。</span></li>
+          <li><b>真实模型资产</b><span>HF repository、revision、License、下载决定和本地缓存都有血缘。</span></li>
+        </ol>
+      </section>
+    </main>
+
+    <footer><span>Model Harness v0.6 Requirements Workbench</span><span>状态：待用户确认 · 2026-08-21</span></footer>
+    <script src="./workbench.js" defer></script>
+  </body>
+</html>

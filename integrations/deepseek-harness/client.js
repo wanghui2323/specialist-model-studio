@@ -42,15 +42,27 @@ export class ModelHarnessClient {
     return this.request("/recipes", { signal });
   }
 
+  dataAdapters(signal) {
+    return this.request("/data-adapters", { signal });
+  }
+
+  matchCapabilities(capabilityRequest, signal) {
+    return this.request("/capabilities/match", {
+      method: "POST",
+      signal,
+      body: { capability_request: capabilityRequest },
+    });
+  }
+
   listTasks(signal) {
     return this.request("/tasks", { signal });
   }
 
-  createTask(name, businessGoal, signal) {
+  createTask(name, businessGoal, capabilityRequest, signal) {
     return this.request("/tasks", {
       method: "POST",
       signal,
-      body: { name, business_goal: businessGoal },
+      body: { name, business_goal: businessGoal, capability_request: capabilityRequest },
     });
   }
 
@@ -58,15 +70,23 @@ export class ModelHarnessClient {
     return this.request(`/tasks/${encodeURIComponent(taskId)}`, { signal });
   }
 
-  async importDataset(taskId, datasetZipPath, signal) {
-    const resolved = resolve(datasetZipPath);
-    if (extname(resolved).toLowerCase() !== ".zip") {
-      throw new Error("Dataset path must point to a ZIP file");
+  scaffoldRecipe(taskId, signal) {
+    return this.request(`/tasks/${encodeURIComponent(taskId)}/recipe/scaffold`, {
+      method: "POST",
+      signal,
+    });
+  }
+
+  async importDataset(taskId, datasetPath, options = {}, signal) {
+    const resolved = resolve(datasetPath);
+    const extension = extname(resolved).toLowerCase();
+    if (![".zip", ".csv"].includes(extension)) {
+      throw new Error("Built-in Data Adapters accept .zip or .csv; register an adapter for other formats");
     }
     const details = await stat(resolved);
     if (!details.isFile()) throw new Error("Dataset path is not a file");
     if (details.size > MAX_DATASET_BYTES) {
-      throw new Error("Dataset ZIP exceeds the 200MB local import limit");
+      throw new Error("Dataset exceeds the 200MB local import limit");
     }
     const payload = await readFile(resolved);
     return this.request(`/tasks/${encodeURIComponent(taskId)}/dataset`, {
@@ -74,19 +94,26 @@ export class ModelHarnessClient {
       signal,
       rawBody: payload,
       headers: {
-        "Content-Type": "application/zip",
+        "Content-Type": extension === ".csv" ? "text/csv" : "application/zip",
         "X-Filename": encodeURIComponent(basename(resolved)),
+        ...(options.targetColumn ? { "X-Target-Column": encodeURIComponent(options.targetColumn) } : {}),
+        ...(options.ignoredColumns?.length ? { "X-Ignored-Columns": options.ignoredColumns.map(encodeURIComponent).join(",") } : {}),
+        ...(options.delimiter ? { "X-Delimiter": encodeURIComponent(options.delimiter) } : {}),
+        ...(options.dataAdapter ? { "X-Data-Adapter": encodeURIComponent(options.dataAdapter) } : {}),
       },
     });
   }
 
-  configureContract(taskId, { accuracyMin, macroF1Min, worstClassRecallMin, imageSize }, signal) {
+  configureContract(taskId, { accuracyMin, macroF1Min, worstClassRecallMin, maeMax, rmseMax, r2Min, imageSize }, signal) {
     const releaseGates = {};
     if (accuracyMin !== undefined) releaseGates.clean_test_accuracy_min = accuracyMin;
     if (macroF1Min !== undefined) releaseGates.clean_test_macro_f1_min = macroF1Min;
     if (worstClassRecallMin !== undefined) {
       releaseGates.clean_test_worst_class_recall_min = worstClassRecallMin;
     }
+    if (maeMax !== undefined) releaseGates.clean_test_mae_max = maeMax;
+    if (rmseMax !== undefined) releaseGates.clean_test_rmse_max = rmseMax;
+    if (r2Min !== undefined) releaseGates.clean_test_r2_min = r2Min;
     const recipeOptions = {};
     if (imageSize !== undefined) recipeOptions.image_size = imageSize;
     return this.request(`/tasks/${encodeURIComponent(taskId)}/contract`, {

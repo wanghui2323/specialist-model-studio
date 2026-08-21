@@ -16,9 +16,17 @@ class RecipeManifest:
     output_description: str
     device: str
     purpose: str
+    modalities: tuple[str, ...] = ()
+    objectives: tuple[str, ...] = ()
+    data_adapter: str | None = None
+    target_kinds: tuple[str, ...] = ()
+    capability_tags: tuple[str, ...] = ()
 
-    def to_dict(self) -> dict[str, str]:
-        return asdict(self)
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        for key in ("modalities", "objectives", "target_kinds", "capability_tags"):
+            value[key] = list(value[key])
+        return value
 
 
 @dataclass(frozen=True)

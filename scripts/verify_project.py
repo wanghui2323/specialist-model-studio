@@ -21,10 +21,16 @@ def main() -> int:
         "docs/v0.3-conversation-console.md",
         "docs/v0.4-real-training-loop.md",
         "docs/v0.5-conversational-harness.md",
+        "docs/v0.6-generic-training-harness.md",
         "model_harness/chat.py",
+        "model_harness/agent_bridge.py",
         "model_harness/workspace.py",
+        "model_harness/data_adapters.py",
+        "model_harness/recipe_builder.py",
         "model_harness/recipes/image_folder_classification.py",
         "model_harness/recipes/image_folder_plugin.py",
+        "model_harness/recipes/tabular_regression.py",
+        "model_harness/recipes/tabular_regression_plugin.py",
         "model_harness/web/index.html",
         "model_harness/web/styles.css",
         "model_harness/web/app.js",
@@ -38,6 +44,8 @@ def main() -> int:
         "skills/train-small-model/SKILL.md",
         "examples/digit-classification/task_contract.json",
         "tests/test_workspace_loop.py",
+        "tests/test_tabular_loop.py",
+        "scripts/run_real_scenarios.py",
     ]
     missing = [name for name in required if not (ROOT / name).is_file()]
     json.loads(

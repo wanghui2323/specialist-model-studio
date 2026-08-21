@@ -22,12 +22,15 @@ test("plugin registers the complete task-first conversational toolchain", () => 
   const mounted = mountPlugin();
   assert.deepEqual(inject, ["tools", "systemPrompt"]);
   const names = new Set(mounted.tools.map((tool) => tool.name));
-  assert.equal(names.size, 15);
+  assert.equal(names.size, 18);
   for (const required of [
     "model_harness_list_tasks",
+    "model_harness_list_data_adapters",
+    "model_harness_match_capability",
     "model_harness_create_task",
     "model_harness_get_task",
     "model_harness_import_dataset",
+    "model_harness_scaffold_recipe",
     "model_harness_configure_contract",
     "model_harness_confirm_contract",
     "model_harness_start_task_run",

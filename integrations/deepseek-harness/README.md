@@ -1,6 +1,6 @@
 # DeepSeek Harness Adapter
 
-This package registers 15 model-facing tools that call a local AI PM Model Harness server. It was authored against the `dsh` `0.1.0-rc.6` CLI and `@deepseek-ai/dsh-tools` `0.1.0-rc.8`, while keeping the Python training runtime independent from DeepSeek Harness.
+This package registers 18 model-facing tools that call a local AI PM Model Harness server. It was authored against the `dsh` `0.1.0-rc.6` CLI and `@deepseek-ai/dsh-tools` `0.1.0-rc.8`, while keeping the Python training runtime independent from DeepSeek Harness.
 
 ## Install into the Web profile
 
@@ -32,7 +32,7 @@ MODEL_HARNESS_URL=http://127.0.0.1:8765 \
   dsh web --host 127.0.0.1 --port 3080
 ```
 
-Ask the configured agent to create or inspect a training task. It can then import a user-approved local ZIP, configure and confirm the contract, start a real task run, read results and apply an approved optimization strategy. The model receives canonical JSON values, not text-parsed IDs.
+Ask the configured agent to normalize and match a training capability, then create or inspect a persistent task. It can import a user-approved image ZIP or regression CSV, configure and confirm the contract, start a real task run, read results and apply an approved optimization strategy. An unmatched capability produces a Recipe Build Request and a reviewable scaffold packet instead of a fake run. The model receives canonical JSON values, not text-parsed IDs.
 
 Mutating training tools pass through DeepSeek Harness native approval. The Python backend independently enforces dataset, confirmation, state and lineage requirements; approval in the conversation host does not replace those checks.
 
@@ -47,7 +47,7 @@ Open `http://127.0.0.1:3080` for the primary conversation. Tool results return a
 ## Boundaries
 
 - Installing this plugin and seeing it enabled proves runtime registration; a provider-backed model call is a separate verification layer.
-- The user-data Recipe currently performs multiclass image classification; it is not real OCR, object detection, speech training or a production vision platform.
+- Installed user-data Recipes currently perform multiclass image classification and tabular regression. Other capabilities enter the Recipe build path; generated scaffolds are not executed automatically.
 - The Python server has no authentication and must remain on a trusted local interface.
 - DeepSeek Harness is a developer preview; re-test the adapter after upgrading it.
 

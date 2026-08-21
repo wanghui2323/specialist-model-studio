@@ -12,11 +12,10 @@ import numpy as np
 from PIL import Image, ImageOps
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, recall_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.svm import LinearSVC
 
 from ..io_utils import read_json, write_json
 from ..plugin_api import StrategyProposal
@@ -140,12 +139,19 @@ def _build_candidates(seed: int, balanced: bool) -> dict[str, Any]:
                 ),
             ]
         ),
-        "linear_svc": Pipeline(
+        "linear_hinge_sgd": Pipeline(
             [
                 ("scale", StandardScaler()),
                 (
                     "model",
-                    LinearSVC(C=1.0, class_weight=class_weight, random_state=seed),
+                    SGDClassifier(
+                        loss="hinge",
+                        alpha=0.0001,
+                        class_weight=class_weight,
+                        random_state=seed,
+                        tol=1e-3,
+                        max_iter=2_000,
+                    ),
                 ),
             ]
         ),

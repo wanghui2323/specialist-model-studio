@@ -45,7 +45,7 @@ IMAGE_FOLDER_TEMPLATE: dict[str, Any] = {
         "candidates": [
             "most_frequent_baseline",
             "logistic_regression",
-            "linear_svc",
+            "linear_hinge_sgd",
             "random_forest",
         ],
         "test_set_policy": "测试集不得用于模型选择或调参，只在候选模型确定并重训后评估",
@@ -75,7 +75,7 @@ IMAGE_FOLDER_TEMPLATE: dict[str, Any] = {
 SUPPORTED_CANDIDATES = {
     "most_frequent_baseline",
     "logistic_regression",
-    "linear_svc",
+    "linear_hinge_sgd",
     "random_forest",
 }
 
@@ -91,6 +91,11 @@ class ImageFolderClassificationPlugin:
         output_description="A trusted local Joblib model bundle, metrics, failures, reports and optimization proposals.",
         device="cpu",
         purpose="real user-data feasibility loop",
+        modalities=("image",),
+        objectives=("classification",),
+        data_adapter="image-folder-zip",
+        target_kinds=("multiclass", "binary"),
+        capability_tags=("cv", "image-folder", "user-data", "lightweight"),
     )
 
     def template(self) -> dict[str, Any]:

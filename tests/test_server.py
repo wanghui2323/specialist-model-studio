@@ -21,7 +21,7 @@ class ServerTests(unittest.TestCase):
                 self.assertEqual(health.status_code, 200)
                 self.assertTrue(health.json()["ok"])
                 self.assertEqual(health.json()["primary_experience"], "conversation")
-                self.assertEqual(health.json()["conversation_url"], "http://127.0.0.1:3999")
+                self.assertEqual(health.json()["conversation_url"], "/app")
 
                 runtime = client.get("/runtime")
                 self.assertEqual(runtime.status_code, 200)
@@ -29,7 +29,7 @@ class ServerTests(unittest.TestCase):
 
                 root = client.get("/", follow_redirects=False)
                 self.assertEqual(root.status_code, 307)
-                self.assertEqual(root.headers["location"], "http://127.0.0.1:3999")
+                self.assertEqual(root.headers["location"], "/app")
 
                 recipes = client.get("/recipes")
                 self.assertEqual(recipes.status_code, 200)
@@ -47,8 +47,9 @@ class ServerTests(unittest.TestCase):
 
                 console = client.get("/app")
                 self.assertEqual(console.status_code, 200)
-                self.assertIn("Model Harness · 训练证据工作台", console.text)
-                self.assertIn("开始和训练 Agent 对话", console.text)
+                self.assertIn("Model Harness · 对话式模型训练", console.text)
+                self.assertIn("你希望模型", console.text)
+                self.assertNotIn("Workspace Write", console.text)
 
                 chat = client.post("/chat", json={"message": "有哪些能力"})
                 self.assertEqual(chat.status_code, 200)

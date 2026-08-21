@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-pm-model-harness"
-version = "0.5.0a1"
+version = "0.6.0a1"
 description = "A delegation-first, learning-visible harness for auditable specialist-model training."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -38,4 +38,4 @@ small-model-harness = "model_harness.cli:main"
 include = ["model_harness*"]
 
 [tool.setuptools.package-data]
-model_harness = ["web/*.html", "web/*.css", "web/*.js"]
+model_harness = ["web/*.html", "web/*.css", "web/*.js", "web/*.svg"]

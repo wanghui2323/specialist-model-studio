@@ -7,6 +7,7 @@ export const inject = ["tools", "systemPrompt"];
 
 const APPROVAL_REQUIRED_TOOLS = new Set([
   "model_harness_import_dataset",
+  "model_harness_scaffold_recipe",
   "model_harness_configure_contract",
   "model_harness_confirm_contract",
   "model_harness_start_task_run",
@@ -31,7 +32,7 @@ export function apply(ctx) {
     order: 118,
     text: `You are the Model Training Agent: a conversation-first operator for people who do not train models professionally. Turn a concrete business goal into an auditable specialist-model training task while keeping the user in control of data authorization, label meaning, acceptance gates, compute, and optimization.
 For specialist-model training requests, use the model_harness_* tools as the only source of task, dataset, run, metric, artifact, lineage, and approval facts. Do not use shell commands or generic coding tools to bypass the domain lifecycle.
-The user-data workflow is: list or create a persistent task; ask for a local ZIP path organized as class/image; import and explain the inspection report; ask the user to review labels and acceptance gates; configure only requested changes; obtain explicit data_authorized, labels_reviewed, and gates_reviewed confirmations; start the task run; poll canonical events/results; explain failures and strategies; apply an actionable strategy only after explicit approval.
+The user-data workflow is: normalize the modality, objective, target kind, data format and constraints; match an installed Recipe and Data Adapter; create one persistent task. For matched capabilities, import and explain the inspection report, review labels or target fields and acceptance gates, collect the three explicit confirmations, start the task run, poll canonical events/results, and explain failures or strategies. For unmatched capabilities, keep the task in needs_recipe, generate a reviewable Recipe Build Packet when approved, and never claim training has started until a tested plugin is installed and selected.
 Work like an execution agent, not a form wizard: ask only for information that the tools cannot discover, say what is happening before a meaningful tool call, and after each phase summarize the evidence, the unresolved decision, and the next action. When a tool returns workbench_url, include it as the evidence view for that same task_id.
 Never use the teaching digit run as a substitute for a user's OCR, speech, forecasting, or industrial vision task. Never invent progress, metrics, approvals, files, or completed work. Never describe a queued or running job as completed. A returned workbench_url is an evidence view for the same task_id, not a separate source of truth.`,
   });
@@ -52,16 +53,67 @@ Never use the teaching digit run as a substitute for a user's OCR, speech, forec
 
   ctx.tools.register(
     defineTool({
+      name: "model_harness_list_data_adapters",
+      description: "List installed Data Adapters and their supported modalities and file extensions.",
+      parameters: {},
+      output: jsonOutput,
+      isConcurrencySafe: () => true,
+      async execute(_args, exec) {
+        return client.dataAdapters(exec.signal);
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_match_capability",
+      description: "Explainably match a normalized capability request to installed Recipes before creating a task.",
+      parameters: {
+        modality: { type: "string", required: true },
+        objective: { type: "string", required: true },
+        target_kind: { type: "string", required: true },
+        data_adapter: { type: "string" },
+        tags: { type: "array", items: { type: "string" } },
+      },
+      output: jsonOutput,
+      isConcurrencySafe: () => true,
+      async execute(args, exec) {
+        return client.matchCapabilities({
+          modality: args.modality,
+          objective: args.objective,
+          target_kind: args.target_kind,
+          ...(args.data_adapter ? { data_adapter: args.data_adapter } : {}),
+          ...(args.tags ? { tags: args.tags } : {}),
+        }, exec.signal);
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
       name: "model_harness_create_task",
       description: "Create one persistent user-data model-training task after the user has described a concrete business goal. This creates a draft only; it does not train a model.",
       parameters: {
         name: { type: "string", required: true, description: "Short user-facing task name." },
         business_goal: { type: "string", required: true, description: "Concrete outcome and prediction target in the user's words." },
+        modality: { type: "string", required: true, description: "Input modality such as image, audio, tabular, text, time-series, or custom." },
+        objective: { type: "string", required: true, description: "Task objective such as classification, regression, detection, transcription, or forecasting." },
+        target_kind: { type: "string", required: true, description: "Output shape such as multiclass, numeric, bounding-box, or sequence." },
+        target_column: { type: "string", description: "Target column for tabular tasks when known." },
+        data_adapter: { type: "string", description: "Requested Data Adapter id when known." },
+        tags: { type: "array", items: { type: "string" }, description: "Capability and constraint tags." },
       },
       output: jsonOutput,
       presentCall: (args) => ({ card: "generic", title: `Create training task: ${args.name}`, rawInput: args.business_goal }),
       async execute(args, exec) {
-        const result = await client.createTask(args.name, args.business_goal, exec.signal);
+        const result = await client.createTask(args.name, args.business_goal, {
+          modality: args.modality,
+          objective: args.objective,
+          target_kind: args.target_kind,
+          ...(args.target_column ? { target_column: args.target_column } : {}),
+          ...(args.data_adapter ? { data_adapter: args.data_adapter } : {}),
+          ...(args.tags ? { tags: args.tags } : {}),
+        }, exec.signal);
         return { ...result, workbench_url: client.workbenchUrl(result.task.task_id) };
       },
     }),
@@ -87,15 +139,38 @@ Never use the teaching digit run as a substitute for a user's OCR, speech, forec
   ctx.tools.register(
     defineTool({
       name: "model_harness_import_dataset",
-      description: "Import and inspect a user-authorized local image dataset ZIP into an existing task. The ZIP must use class/image files. Ask before calling and never guess a path.",
+      description: "Import and inspect a user-authorized local dataset through an installed Data Adapter. Built-ins accept class-folder image ZIP and CSV regression data. Ask before calling and never guess a path.",
       parameters: {
         task_id: { type: "string", required: true },
-        dataset_zip_path: { type: "string", required: true, description: "Absolute path or session-workspace-relative path to the ZIP explicitly provided by the user." },
+        dataset_path: { type: "string", required: true, description: "Absolute path or session-workspace-relative path explicitly provided by the user." },
+        target_column: { type: "string", description: "Required for the built-in CSV regression adapter." },
+        ignored_columns: { type: "array", items: { type: "string" }, description: "Optional CSV columns excluded from training." },
+        delimiter: { type: "string", description: "Optional one-character CSV delimiter." },
+        data_adapter: { type: "string", description: "Explicit adapter id when more than one can read the file." },
       },
       output: jsonOutput,
-      presentCall: (args) => ({ card: "generic", title: `Inspect dataset for ${args.task_id}`, rawInput: args.dataset_zip_path }),
+      presentCall: (args) => ({ card: "generic", title: `Inspect dataset for ${args.task_id}`, rawInput: args.dataset_path }),
       async execute(args, exec) {
-        const result = await client.importDataset(args.task_id, args.dataset_zip_path, exec.signal);
+        const result = await client.importDataset(args.task_id, args.dataset_path, {
+          targetColumn: args.target_column,
+          ignoredColumns: args.ignored_columns,
+          delimiter: args.delimiter,
+          dataAdapter: args.data_adapter,
+        }, exec.signal);
+        return { ...result, workbench_url: client.workbenchUrl(args.task_id) };
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_scaffold_recipe",
+      description: "Generate a reviewable Code Agent build packet for a task in needs_recipe. This does not execute or register generated code.",
+      parameters: { task_id: { type: "string", required: true } },
+      output: jsonOutput,
+      presentCall: (args) => ({ card: "generic", title: `Generate Recipe build packet for ${args.task_id}` }),
+      async execute(args, exec) {
+        const result = await client.scaffoldRecipe(args.task_id, exec.signal);
         return { ...result, workbench_url: client.workbenchUrl(args.task_id) };
       },
     }),
@@ -110,18 +185,24 @@ Never use the teaching digit run as a substitute for a user's OCR, speech, forec
         accuracy_min: { type: "number", description: "Required clean-test Accuracy from 0 to 1." },
         macro_f1_min: { type: "number", description: "Required clean-test Macro-F1 from 0 to 1." },
         worst_class_recall_min: { type: "number", description: "Required worst-class Recall from 0 to 1." },
+        mae_max: { type: "number", description: "Maximum independent-test MAE for regression." },
+        rmse_max: { type: "number", description: "Maximum independent-test RMSE for regression." },
+        r2_min: { type: "number", description: "Minimum independent-test R-squared for regression." },
         image_size: { type: "integer", enum: [16, 24, 32, 48, 64], description: "Square feature-extraction image size." },
       },
       output: jsonOutput,
       presentCall: (args) => ({ card: "generic", title: `Configure training contract ${args.task_id}`, rawInput: JSON.stringify(args) }),
       async execute(args, exec) {
-        if ([args.accuracy_min, args.macro_f1_min, args.worst_class_recall_min, args.image_size].every((value) => value === undefined)) {
+        if ([args.accuracy_min, args.macro_f1_min, args.worst_class_recall_min, args.mae_max, args.rmse_max, args.r2_min, args.image_size].every((value) => value === undefined)) {
           throw new Error("At least one contract field must be provided");
         }
         const result = await client.configureContract(args.task_id, {
           accuracyMin: args.accuracy_min,
           macroF1Min: args.macro_f1_min,
           worstClassRecallMin: args.worst_class_recall_min,
+          maeMax: args.mae_max,
+          rmseMax: args.rmse_max,
+          r2Min: args.r2_min,
           imageSize: args.image_size,
         }, exec.signal);
         return { ...result, workbench_url: client.workbenchUrl(args.task_id) };

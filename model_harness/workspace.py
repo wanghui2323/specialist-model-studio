@@ -17,8 +17,10 @@ from uuid import uuid4
 from PIL import Image, UnidentifiedImageError
 
 from .contracts import validate_contract
+from .data_adapters import DataAdapterRegistry, default_data_adapter_registry
 from .errors import ContractError, HarnessError
 from .io_utils import read_json, write_json
+from .recipe_builder import RecipeScaffoldBuilder
 from .service import RunService
 
 
@@ -243,14 +245,27 @@ def import_image_archive(
 class TrainingWorkspace:
     """Persistent task, dataset, contract and run ownership for the local Harness."""
 
-    def __init__(self, root: str | Path, runs: RunService) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        runs: RunService,
+        data_adapters: DataAdapterRegistry | None = None,
+    ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.tasks_dir = self.root / "tasks"
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
         self.runs = runs
+        self.data_adapters = data_adapters or default_data_adapter_registry()
+        self.recipe_builder = RecipeScaffoldBuilder()
         self._lock = RLock()
 
-    def create_task(self, name: str, business_goal: str) -> dict[str, Any]:
+    def create_task(
+        self,
+        name: str,
+        business_goal: str,
+        capability_request: dict[str, Any] | None = None,
+        recipe_id: str | None = None,
+    ) -> dict[str, Any]:
         selected_name = name.strip()
         selected_goal = business_goal.strip()
         if not selected_name:
@@ -259,12 +274,33 @@ class TrainingWorkspace:
             raise ContractError("业务目标不能为空")
         task_id = f"{_safe_slug(selected_name, 'training-task')}-{uuid4().hex[:8]}"
         now = _utc_now()
+        capability = self._normalize_capability(capability_request or {})
+        selected_recipe = None
+        recipe_source = None
+        capability_status = "unresolved"
+        if recipe_id:
+            selected_recipe = self.runs.registry.get_recipe(recipe_id).manifest.plugin_id
+            recipe_source = "explicit"
+            capability_status = "matched"
+        elif capability:
+            matches = self.runs.registry.match_recipes(capability)
+            if matches and (len(matches) == 1 or matches[0]["score"] > matches[1]["score"]):
+                selected_recipe = str(matches[0]["plugin_id"])
+                recipe_source = "matched"
+                capability_status = "matched"
+            else:
+                capability_status = "needs_recipe"
         task = {
             "schema_version": TASK_SCHEMA_VERSION,
             "task_id": task_id,
             "name": selected_name,
             "business_goal": selected_goal,
-            "status": "draft",
+            "status": "awaiting_data" if selected_recipe else "needs_recipe" if capability_status == "needs_recipe" else "draft",
+            "capability_request": capability,
+            "capability_status": capability_status,
+            "recipe_id": selected_recipe,
+            "recipe_source": recipe_source,
+            "data_adapter_id": None,
             "dataset_id": None,
             "dataset_history": [],
             "contract_confirmed": False,
@@ -277,6 +313,11 @@ class TrainingWorkspace:
         }
         with self._lock:
             write_json(self._task_path(task_id), task)
+            if capability_status == "needs_recipe":
+                write_json(
+                    self._recipe_request_path(task_id),
+                    self._new_recipe_request(task_id, capability),
+                )
         return self.get_task(task_id)
 
     def list_tasks(self) -> list[dict[str, Any]]:
@@ -286,27 +327,99 @@ class TrainingWorkspace:
     def get_task(self, task_id: str) -> dict[str, Any]:
         return self._view(read_json(self._task_path(task_id)))
 
-    def attach_dataset(self, task_id: str, payload: bytes, filename: str) -> dict[str, Any]:
+    def select_recipe(self, task_id: str, recipe_id: str) -> dict[str, Any]:
+        with self._lock:
+            task = read_json(self._task_path(task_id))
+            if task["status"] == "running":
+                raise HarnessError("运行中不能更换Recipe")
+            plugin = self.runs.registry.get_recipe(recipe_id)
+            if task.get("data_adapter_id") and plugin.manifest.data_adapter != task["data_adapter_id"]:
+                raise ContractError("所选Recipe与当前数据适配器不兼容")
+            task["recipe_id"] = recipe_id
+            task["recipe_source"] = "explicit"
+            task["capability_status"] = "matched"
+            task["status"] = "data_ready" if task.get("dataset_id") else "awaiting_data"
+            task["updated_at_utc"] = _utc_now()
+            request_path = self._recipe_request_path(task_id)
+            if request_path.is_file():
+                request = read_json(request_path)
+                request["status"] = "resolved"
+                request["resolved_recipe_id"] = recipe_id
+                request["resolved_at_utc"] = _utc_now()
+                write_json(request_path, request)
+            write_json(self._task_path(task_id), task)
+        return self.get_task(task_id)
+
+    def attach_dataset(
+        self,
+        task_id: str,
+        payload: bytes,
+        filename: str,
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         with self._lock:
             task = read_json(self._task_path(task_id))
             if task["status"] == "running":
                 raise HarnessError("运行中不能替换数据集")
+            selected_options = dict(options or {})
+            adapter_id = str(selected_options.get("data_adapter", "")).strip()
+            if adapter_id:
+                adapter = self.data_adapters.get(adapter_id)
+                if not adapter.supports(filename):
+                    raise ContractError(f"数据文件与适配器{adapter_id}不兼容")
+            else:
+                adapters = self.data_adapters.infer(filename)
+                if not adapters:
+                    raise ContractError(
+                        "没有匹配的数据适配器；请先创建并验证Data Adapter插件"
+                    )
+                if len(adapters) > 1:
+                    raise ContractError("多个数据适配器可以读取该文件，请明确指定data_adapter")
+                adapter = adapters[0]
+
+            recipe_id = task.get("recipe_id")
+            if recipe_id:
+                plugin = self.runs.registry.get_recipe(str(recipe_id))
+                if plugin.manifest.data_adapter != adapter.manifest.adapter_id:
+                    raise ContractError("当前Recipe与上传文件的数据适配器不兼容")
+            else:
+                capability = {
+                    **task.get("capability_request", {}),
+                    "data_adapter": adapter.manifest.adapter_id,
+                }
+                matches = self.runs.registry.match_recipes(capability)
+                if not matches:
+                    request = self._new_recipe_request(task_id, capability)
+                    write_json(self._recipe_request_path(task_id), request)
+                    task["capability_status"] = "needs_recipe"
+                    task["status"] = "needs_recipe"
+                    task["updated_at_utc"] = _utc_now()
+                    write_json(self._task_path(task_id), task)
+                    raise HarnessError("没有匹配Recipe，已生成Recipe Build Request")
+                plugin = self.runs.registry.get_recipe(str(matches[0]["plugin_id"]))
+                recipe_id = plugin.manifest.plugin_id
+
             task_dir = self._task_dir(task_id)
-            report, dataset_dir = import_image_archive(task_dir / "datasets", payload, filename)
-            template = deepcopy(self.runs.registry.get_recipe("image-folder-classification").template())
+            imported = adapter.import_data(
+                task_dir / "datasets",
+                payload,
+                filename,
+                {
+                    **selected_options,
+                    "objective": task.get("capability_request", {}).get("objective", ""),
+                },
+            )
+            report = imported.report
+            template = deepcopy(plugin.template())
             template["task_id"] = task_id
             template["business_goal"] = task["business_goal"]
-            template["dataset"].update(
-                {
-                    "dataset_id": report["dataset_id"],
-                    "root": str(dataset_dir),
-                    "manifest_path": str(dataset_dir / "dataset_manifest.json"),
-                    "report_path": str(dataset_dir / "dataset_report.json"),
-                    "fingerprint_sha256": report["fingerprint_sha256"],
-                }
-            )
+            template["dataset"].update(imported.contract_dataset)
             task["dataset_id"] = report["dataset_id"]
             task["dataset_history"] = [*task.get("dataset_history", []), report["dataset_id"]]
+            task["recipe_id"] = recipe_id
+            task["recipe_source"] = task.get("recipe_source") or "matched-from-data"
+            task["capability_status"] = "matched"
+            task["data_adapter_id"] = adapter.manifest.adapter_id
             task["contract_confirmed"] = False
             task["confirmations"] = {}
             if task.get("current_run_id"):
@@ -406,6 +519,31 @@ class TrainingWorkspace:
             raise FileNotFoundError("dataset file not found")
         return target
 
+    def scaffold_recipe(self, task_id: str) -> dict[str, Any]:
+        with self._lock:
+            task = read_json(self._task_path(task_id))
+            request_path = self._recipe_request_path(task_id)
+            if not request_path.is_file():
+                raise HarnessError("当前任务没有Recipe Build Request")
+            request = read_json(request_path)
+            result = self.recipe_builder.create(self._task_dir(task_id), request)
+            request["status"] = "scaffold_ready"
+            request["scaffold"] = result
+            request["updated_at_utc"] = _utc_now()
+            task["updated_at_utc"] = request["updated_at_utc"]
+            write_json(request_path, request)
+            write_json(self._task_path(task_id), task)
+        return {**result, "task_id": task_id}
+
+    def recipe_scaffold_file(self, task_id: str, archive_name: str) -> Path:
+        if Path(archive_name).name != archive_name or not archive_name.endswith(".zip"):
+            raise HarnessError("invalid scaffold archive name")
+        target = (self._task_dir(task_id) / "recipe_builds" / archive_name).resolve()
+        build_root = (self._task_dir(task_id) / "recipe_builds").resolve()
+        if target.parent != build_root or not target.is_file():
+            raise FileNotFoundError("recipe scaffold not found")
+        return target
+
     def _view(self, task: dict[str, Any]) -> dict[str, Any]:
         task = deepcopy(task)
         current_run_id = task.get("current_run_id")
@@ -427,10 +565,75 @@ class TrainingWorkspace:
             if report_path.is_file():
                 dataset_report = read_json(report_path)
         contract = read_json(self._contract_path(task["task_id"])) if self._contract_path(task["task_id"]).is_file() else None
+        if contract and not task.get("recipe_id"):
+            task["recipe_id"] = contract.get("recipe")
+            if task["recipe_id"]:
+                task["capability_status"] = "matched"
+        if contract and not task.get("data_adapter_id"):
+            dataset_kind = contract.get("dataset", {}).get("kind")
+            task["data_adapter_id"] = {
+                "image_folder": "image-folder-zip",
+                "tabular_csv": "tabular-csv",
+            }.get(dataset_kind)
         task["dataset_report"] = dataset_report
         task["contract"] = contract
         task["current_result"] = current_result
+        recipe_request_path = self._recipe_request_path(task["task_id"])
+        task["recipe_request"] = read_json(recipe_request_path) if recipe_request_path.is_file() else None
         return task
+
+    def _normalize_capability(self, value: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise ContractError("capability_request必须是对象")
+        result: dict[str, Any] = {}
+        for key in (
+            "modality",
+            "objective",
+            "target_kind",
+            "target_column",
+            "primary_metric",
+            "data_adapter",
+        ):
+            selected = str(value.get(key, "")).strip().lower()
+            if selected:
+                result[key] = selected
+        tags = sorted(
+            {
+                str(tag).strip().lower()
+                for tag in value.get("tags", [])
+                if str(tag).strip()
+            }
+        )
+        if tags:
+            result["tags"] = tags
+        constraints = value.get("constraints")
+        if constraints is not None:
+            if not isinstance(constraints, dict):
+                raise ContractError("capability_request.constraints必须是对象")
+            result["constraints"] = deepcopy(constraints)
+        return result
+
+    def _new_recipe_request(self, task_id: str, capability: dict[str, Any]) -> dict[str, Any]:
+        now = _utc_now()
+        modality = str(capability.get("modality", "specialist"))
+        objective = str(capability.get("objective", "training"))
+        return {
+            "schema_version": "0.1",
+            "recipe_request_id": f"recipe-request-{uuid4().hex[:10]}",
+            "task_id": task_id,
+            "status": "needs_implementation",
+            "suggested_plugin_id": _safe_slug(f"{modality}-{objective}", "custom-recipe"),
+            "capability_request": deepcopy(capability),
+            "required_outputs": [
+                "RecipeManifest与合同模板",
+                "数据适配器或已验证的现有Adapter绑定",
+                "合同校验、训练、独立评测和制品打包",
+                "至少一个成功测试、一个无效数据测试和一次深度制品验证",
+                "资源、许可、隐私和生产边界说明",
+            ],
+            "created_at_utc": now,
+            "updated_at_utc": now,
+        }
 
     def _task_dir(self, task_id: str) -> Path:
         if not task_id or Path(task_id).name != task_id:
@@ -450,3 +653,6 @@ class TrainingWorkspace:
 
     def _contract_path(self, task_id: str) -> Path:
         return self._task_dir(task_id) / "task_contract.json"
+
+    def _recipe_request_path(self, task_id: str) -> Path:
+        return self._task_dir(task_id) / "recipe_request.json"

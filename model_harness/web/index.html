@@ -3,115 +3,136 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="AI PM Model Harness 本地训练任务证据工作台" />
-    <title>Model Harness · 训练证据工作台</title>
-    <link rel="icon" href="data:," />
+    <meta name="description" content="Model Harness：用对话把业务数据变成可验收的小模型" />
+    <title>Model Harness · 对话式模型训练</title>
+    <link rel="icon" href="/app/static/model-harness-mark.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/app/static/styles.css" />
   </head>
   <body>
-    <a class="skip-link" href="#workspace">跳到训练工作台</a>
+    <a class="skip-link" href="#conversationMain">跳到对话区</a>
     <div class="app-shell">
-      <aside class="sidebar" aria-label="训练任务">
-        <div class="brand-row">
-          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-          <div><strong>Model Harness</strong><span>训练证据工作台 · v0.5 Alpha</span></div>
+      <aside class="sidebar" id="sidebar" aria-label="训练任务">
+        <div class="brand">
+          <img class="brand-mark" src="/app/static/model-harness-mark.svg" alt="" />
+          <div><strong>Model Harness</strong><span>Specialist Model Studio</span></div>
         </div>
-        <button class="button button-primary new-task-button" id="newTaskButton" type="button"><span aria-hidden="true">＋</span>新建训练任务</button>
-        <div class="sidebar-heading"><span>训练任务</span><button class="icon-button" id="refreshTasksButton" type="button" aria-label="刷新训练任务">↻</button></div>
-        <nav class="task-list" id="taskList" aria-label="任务列表"><div class="sidebar-empty">还没有训练任务</div></nav>
-        <div class="privacy-note"><span class="privacy-dot" aria-hidden="true"></span><div><b>Local-first</b><small>数据保存在本机 runs/_workspace</small></div></div>
+        <button class="primary-button new-task-button" id="newTaskButton" type="button"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#plus"></use></svg>新建训练任务</button>
+        <div class="sidebar-title"><span>训练任务</span><button class="icon-button" id="refreshButton" type="button" aria-label="刷新任务"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#refresh"></use></svg></button></div>
+        <nav class="task-list" id="taskList" aria-label="任务列表"></nav>
+        <div class="local-note"><span class="local-dot" aria-hidden="true"></span><div><b>本地工作区</b><small>数据、模型和运行证据留在本机</small></div></div>
       </aside>
 
-      <main class="workspace" id="workspace">
+      <main class="conversation-main" id="conversationMain">
         <header class="topbar">
-          <div><span class="eyebrow">对话驱动 · 证据可追溯</span><h1 id="pageTitle">训练证据工作台</h1></div>
-          <div class="topbar-actions">
-            <a class="button button-agent" id="conversationLink" href="http://127.0.0.1:3080">回到训练 Agent <span aria-hidden="true">→</span></a>
-            <div class="service-state" id="serviceState"><span></span><b>本地服务已连接</b></div>
+          <div class="topbar-title">
+            <button class="menu-button" id="menuButton" type="button" aria-label="打开任务列表"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#menu"></use></svg></button>
+            <div><span id="taskEyebrow">MODEL TRAINING HARNESS</span><h1 id="taskTitle">开始一个训练任务</h1></div>
           </div>
+          <div class="runtime-pill" id="runtimePill" data-state="checking"><i></i><span>正在检查 Agent Runtime</span></div>
         </header>
 
-        <section class="welcome-panel" id="welcomePanel">
-          <div class="welcome-copy">
-            <span class="mode-tag">这里是证据视图，不是聊天入口</span>
-            <h2>先告诉训练 Agent 你想解决什么问题</h2>
-            <p>它会通过对话创建任务、向你索取数据、解释体检结果并请求关键批准。这里负责展示同一个任务的合同、运行事件、指标、失败样本和制品。</p>
-            <div class="welcome-actions">
-              <a class="button button-primary" id="welcomeConversationLink" href="http://127.0.0.1:3080">开始和训练 Agent 对话</a>
-              <button class="button button-secondary" id="welcomeCreateButton" type="button">手动创建任务</button>
-            </div>
-          </div>
-          <ol class="loop-overview" aria-label="训练闭环">
-            <li><b>1</b><span><strong>定义任务</strong><small>名称与业务目标</small></span></li>
-            <li><b>2</b><span><strong>导入数据</strong><small>ZIP体检与标签统计</small></span></li>
-            <li><b>3</b><span><strong>确认合同</strong><small>授权、门槛和测试边界</small></span></li>
-            <li><b>4</b><span><strong>训练评测</strong><small>真实候选比较与失败样本</small></span></li>
-            <li><b>5</b><span><strong>批准优化</strong><small>创建可追溯的下一轮</small></span></li>
-          </ol>
+        <section class="task-plan" id="taskPlan" hidden>
+          <div class="task-plan-heading"><span>当前计划</span><b id="taskPlanTitle">识别能力并准备数据合同</b><strong id="taskPlanProgress">1 / 5</strong></div>
+          <ol id="taskPlanSteps"></ol>
         </section>
 
-        <section class="task-workspace" id="taskWorkspace" hidden>
-          <div class="task-hero">
-            <div><div class="hero-meta"><span id="taskIdLabel"></span><span class="status-badge" id="taskStatus">草稿</span></div><h2 id="taskName">训练任务</h2><p id="taskGoal"></p></div>
-            <button class="button button-secondary" id="reloadTaskButton" type="button">刷新状态</button>
+        <section class="empty-state" id="emptyState">
+          <div class="empty-orbit" aria-hidden="true"><span></span><i></i><i></i><i></i></div>
+          <span class="empty-kicker">从业务目标开始，不从训练代码开始</span>
+          <h2>告诉我，你希望模型<br />学会什么能力？</h2>
+          <p>我会先匹配已有 Recipe；没有匹配能力时会创建 Recipe 构建请求，再复用同一套数据、训练、评测和产物闭环。</p>
+          <div class="starter-grid" aria-label="示例训练任务">
+            <button type="button" data-prompt="我想用自己的图片训练一个手写数字分类模型。">图片分类<span>已验证 · ZIP 类别目录</span></button>
+            <button type="button" data-prompt="我想用CSV表格训练一个质量评分预测模型。">数值预测<span>已验证 · CSV 表格回归</span></button>
+            <button type="button" data-prompt="我想用自己的录音训练一个关键词识别模型，用在本地设备上。">其他训练场景<span>自动生成 Recipe 构建请求</span></button>
           </div>
-          <div class="notice" id="notice" hidden role="status"></div>
-
-          <section class="workflow-section" id="dataSection">
-            <div class="section-index">01</div>
-            <div class="section-body">
-              <div class="section-title-row"><div><h3>导入并体检数据</h3><p>ZIP 内按 <code>类别/图片.jpg</code> 组织；不会上传到外部服务。</p></div><span class="step-state" id="dataStepState">待导入</span></div>
-              <div class="upload-row">
-                <label class="file-picker" for="datasetFile"><input id="datasetFile" type="file" accept=".zip,application/zip" /><span aria-hidden="true">ZIP</span><div><b id="filePickerTitle">选择图片数据集</b><small id="filePickerHint">最大 200MB；每类至少 5 张有效图片</small></div></label>
-                <button class="button button-primary" id="uploadDatasetButton" type="button" disabled>上传并体检</button>
-              </div>
-              <div class="dataset-report" id="datasetReport" hidden><div class="report-summary" id="reportSummary"></div><div class="class-bars" id="classBars"></div><div class="risk-list" id="riskList"></div><div class="preview-grid" id="previewGrid"></div></div>
-            </div>
-          </section>
-
-          <section class="workflow-section" id="contractSection">
-            <div class="section-index">02</div>
-            <div class="section-body">
-              <div class="section-title-row"><div><h3>冻结训练合同</h3><p>这些门槛决定本轮是否通过，Harness 不会为了高分自动降低。</p></div><span class="step-state" id="contractStepState">等待数据</span></div>
-              <form class="contract-form" id="contractForm">
-                <label><span>Accuracy 最低</span><input id="accuracyGate" type="number" min="0" max="1" step="0.01" value="0.75" disabled /></label>
-                <label><span>Macro-F1 最低</span><input id="macroF1Gate" type="number" min="0" max="1" step="0.01" value="0.75" disabled /></label>
-                <label><span>最差类别 Recall</span><input id="recallGate" type="number" min="0" max="1" step="0.01" value="0.50" disabled /></label>
-                <label><span>训练图片尺寸</span><select id="imageSize" disabled><option value="16">16×16</option><option value="24" selected>24×24</option><option value="32">32×32</option><option value="48">48×48</option></select></label>
-                <button class="button button-secondary" id="saveContractButton" type="submit" disabled>保存门槛</button>
-              </form>
-              <div class="confirmation-box">
-                <label><input id="confirmAuthorization" type="checkbox" disabled /> 我确认这些图片有权用于本地训练</label>
-                <label><input id="confirmLabels" type="checkbox" disabled /> 我检查过文件夹名称就是模型要预测的标签</label>
-                <label><input id="confirmGates" type="checkbox" disabled /> 我确认以上离线门槛和随机测试划分</label>
-                <button class="button button-primary" id="confirmContractButton" type="button" disabled>确认并冻结合同</button>
-              </div>
-            </div>
-          </section>
-
-          <section class="workflow-section run-section" id="runSection">
-            <div class="section-index">03</div>
-            <div class="section-body">
-              <div class="section-title-row"><div><h3>训练、评测与优化</h3><p>事件区展示后端真实时间戳和耗时，不用动画拉长训练。</p></div><span class="step-state" id="runStepState">等待合同</span></div>
-              <div class="run-toolbar"><button class="button button-primary" id="startRunButton" type="button" disabled>开始真实训练</button><button class="button button-danger" id="cancelRunButton" type="button" disabled>取消运行</button><span id="runDuration">尚未运行</span></div>
-              <div class="run-grid">
-                <section class="evidence-panel"><div class="panel-heading"><h4>真实执行记录</h4><span id="runIdLabel">—</span></div><ol class="event-log" id="eventLog"><li class="empty-row">确认合同后才能启动训练</li></ol></section>
-                <section class="evidence-panel"><div class="panel-heading"><h4>离线验收结果</h4><span id="gateSummary">等待评测</span></div><div class="metric-grid" id="metricGrid"><div><b>—</b><span>Accuracy</span></div><div><b>—</b><span>Macro-F1</span></div><div><b>—</b><span>最差类 Recall</span></div><div><b>—</b><span>端到端 p95</span></div></div><div class="candidate-table" id="candidateTable"></div></section>
-              </div>
-              <section class="result-block" id="failureBlock" hidden><div class="panel-heading"><h4>失败样本</h4><span>测试集真实误判</span></div><div class="failure-grid" id="failureGrid"></div></section>
-              <section class="result-block" id="strategyBlock" hidden><div class="panel-heading"><h4>下一轮优化</h4><span>批准后创建子运行，不覆盖当前模型</span></div><div class="strategy-list" id="strategyList"></div></section>
-              <section class="result-block" id="artifactBlock" hidden><div class="panel-heading"><h4>可下载制品</h4><span>文件哈希已写入 manifest</span></div><div class="artifact-list" id="artifactList"></div></section>
-            </div>
-          </section>
         </section>
+
+        <section class="conversation" id="conversation" hidden aria-live="polite">
+          <div class="conversation-intro" id="conversationIntro"><span class="agent-avatar">MH</span><div><b>这是一个真实训练任务</b><p>我会先读取任务状态，再决定需要你补充什么。工具调用、等待批准和训练结果都会显示在这里。</p></div></div>
+          <div class="message-list" id="messageList"></div>
+          <div class="run-event-list" id="runEventList"></div>
+          <div class="pending-zone" id="pendingZone"></div>
+          <div class="agent-working" id="agentWorking" hidden><span></span><span></span><span></span><b>训练 Agent 正在处理</b><button id="cancelAgentButton" type="button">停止</button></div>
+        </section>
+
+        <footer class="composer-wrap">
+          <div class="composer-notice" id="composerNotice" hidden></div>
+          <form class="composer" id="composerForm">
+            <textarea id="messageInput" rows="1" maxlength="2000" placeholder="描述你想训练的模型，或告诉我下一步怎么做…" aria-label="发消息给训练 Agent"></textarea>
+            <div class="composer-actions">
+              <div><button class="attachment-button" id="datasetButton" type="button" title="导入图片 ZIP 或 CSV"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#paperclip"></use></svg><span class="attachment-label">导入数据</span></button><input id="datasetInput" type="file" accept=".zip,.csv,application/zip,text/csv" hidden /></div>
+              <span class="composer-hint" id="composerHint">Enter 发送 · Shift + Enter 换行</span>
+              <button class="send-button" id="sendButton" type="submit" aria-label="发送消息"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#send"></use></svg></button>
+            </div>
+          </form>
+          <p class="product-boundary">Model Harness 负责训练任务与证据；DeepSeek Harness 仅提供底层 Agent Loop、工具和审批运行时。</p>
+        </footer>
       </main>
+
+      <aside class="inspector" id="inspector" aria-label="训练任务状态">
+        <div class="inspector-empty" id="inspectorEmpty"><span>训练进度会出现在这里</span><p>创建任务后，你可以随时看到数据、合同、运行和验收状态。</p></div>
+        <div id="inspectorContent" hidden>
+          <div class="inspector-header"><span>任务上下文</span><b class="task-status" id="taskStatus">草稿</b></div>
+          <nav class="context-tabs" id="contextTabs" aria-label="任务上下文">
+            <button type="button" data-context="capability" class="active">能力</button>
+            <button type="button" data-context="data">数据</button>
+            <button type="button" data-context="run">运行</button>
+            <button type="button" data-context="evaluation">评测</button>
+            <button type="button" data-context="artifacts">产物</button>
+          </nav>
+          <section class="context-panel active" data-context-panel="capability">
+            <section class="inspector-card" id="capabilityCard">
+              <div class="card-heading"><span>能力匹配</span><b id="capabilityState">待识别</b></div>
+              <p id="capabilitySummary">创建任务后，系统会匹配 Recipe 或生成构建请求。</p>
+              <div class="capability-facts" id="capabilityFacts"></div>
+              <button class="secondary-button full-button" id="scaffoldRecipeButton" type="button" hidden>生成 Code Agent 构建包</button>
+            </section>
+            <ol class="stage-list" id="stageList"></ol>
+          </section>
+          <section class="context-panel" data-context-panel="data">
+          <section class="inspector-card" id="datasetCard">
+            <div class="card-heading"><span>数据</span><b id="datasetCount">未导入</b></div>
+            <p id="datasetSummary">导入图片 ZIP 或 CSV 后显示真实体检结果。</p>
+            <button class="text-button" id="inspectorDatasetButton" type="button">导入数据集</button>
+          </section>
+          <section class="inspector-card" id="contractCard" hidden>
+            <div class="card-heading"><span>训练合同</span><b id="contractState">待确认</b></div>
+            <div class="gate-grid" id="gateGrid"></div>
+            <div class="confirmations" id="confirmations">
+              <label><input type="checkbox" data-confirm="data_authorized" /> 数据可用于本地训练</label>
+              <label><input type="checkbox" data-confirm="labels_reviewed" /> 标签或目标字段已经检查</label>
+              <label><input type="checkbox" data-confirm="gates_reviewed" /> 验收门槛已经确认</label>
+              <button class="secondary-button" id="confirmContractButton" type="button">确认并冻结合同</button>
+            </div>
+            <button class="secondary-button full-button" id="startThroughAgentButton" type="button" hidden>让 Agent 启动真实训练</button>
+          </section>
+          </section>
+          <section class="context-panel" data-context-panel="run">
+            <section class="inspector-card" id="runCard"><div class="card-heading"><span>运行事件</span><b id="runEventCount">0</b></div><div class="inspector-events" id="inspectorEvents"><p>启动后显示后端事件序列。</p></div></section>
+          </section>
+          <section class="context-panel" data-context-panel="evaluation">
+          <section class="inspector-card" id="resultCard" hidden>
+            <div class="card-heading"><span>本轮结果</span><b id="gateResult">运行中</b></div>
+            <div class="metric-grid" id="metricGrid"></div>
+            <div class="run-meta"><span>Run ID</span><code id="runId">—</code></div>
+          </section>
+          </section>
+          <section class="context-panel" data-context-panel="artifacts">
+            <section class="inspector-card"><div class="card-heading"><span>可追溯产物</span><b id="artifactCount">0</b></div><div class="artifact-list" id="artifactList"></div></section>
+          </section>
+        </div>
+      </aside>
     </div>
 
-    <dialog class="modal" id="createTaskDialog">
-      <form method="dialog" id="createTaskForm"><span class="dialog-kicker">新训练任务</span><h2>先定义模型要解决的问题</h2><label><span>任务名称</span><input id="newTaskName" maxlength="80" placeholder="例如：零件正反面分类" required /></label><label><span>业务目标</span><textarea id="newTaskGoal" rows="3" maxlength="300" placeholder="例如：在质检工位自动区分零件正面和反面" required></textarea></label><p class="form-error" id="createTaskError" hidden></p><div class="dialog-actions"><button class="button button-secondary" value="cancel" type="button" id="cancelCreateButton">取消</button><button class="button button-primary" type="submit">创建草稿</button></div></form>
-    </dialog>
-    <dialog class="modal" id="approvalDialog">
-      <form method="dialog"><span class="dialog-kicker">人工批准</span><h2 id="approvalTitle">应用优化策略</h2><p id="approvalDescription"></p><div class="approval-warning"><b>会创建一个新的子运行</b><span>当前运行、合同、模型和证据不会被覆盖。</span></div><div class="dialog-actions"><button class="button button-secondary" value="cancel">暂不执行</button><button class="button button-primary" value="confirm">批准并运行下一轮</button></div></form>
+    <div class="sidebar-scrim" id="sidebarScrim" hidden></div>
+    <dialog class="decision-dialog" id="decisionDialog">
+      <form method="dialog">
+        <span class="dialog-kicker" id="dialogKicker">需要你的决定</span>
+        <h2 id="dialogTitle">确认操作</h2>
+        <div id="dialogBody"></div>
+        <div class="dialog-actions" id="dialogActions"></div>
+      </form>
     </dialog>
     <script src="/app/static/app.js" defer></script>
   </body>

@@ -71,9 +71,24 @@ if ! curl --fail --silent --max-time 2 "${BACKEND_URL}/health" >/dev/null 2>&1; 
   exit 1
 fi
 
-echo "Training Agent: ${AGENT_URL}"
-echo "Evidence workbench: ${BACKEND_URL}/app"
+echo "Model Harness product: ${BACKEND_URL}/app"
+echo "DSH runtime (internal/debug): ${AGENT_URL}"
 echo "Press Ctrl-C to stop services started by this command."
+
+cd "${HARNESS_ROOT}"
+if curl --fail --silent --max-time 2 "${AGENT_URL}/api/session.list" \
+  -H "content-type: application/json" \
+  --data '{"type":"client-request","rpcId":"model-harness-startup-probe","method":"session.list","payload":{}}' >/dev/null 2>&1; then
+  echo "Reusing the existing DSH runtime."
+  if [[ "${STARTED_BACKEND}" == "1" ]]; then
+    wait "${BACKEND_PID}"
+  else
+    while curl --fail --silent --max-time 2 "${BACKEND_URL}/health" >/dev/null 2>&1; do
+      sleep 5
+    done
+  fi
+  exit 0
+fi
 
 MODEL_HARNESS_URL="${BACKEND_URL}" \
   dsh web --host "${AGENT_HOST}" --port "${AGENT_PORT}"

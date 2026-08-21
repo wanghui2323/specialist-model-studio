@@ -70,12 +70,21 @@ test("applyStrategy requires and forwards explicit approval", async () => {
 
 test("task lifecycle methods preserve canonical task routes and confirmations", async () => {
   const client = new ModelHarnessClient(baseUrl);
-  const created = await client.createTask("parts", "classify parts", undefined);
+  const created = await client.createTask("parts", "classify parts", {
+    modality: "image",
+    objective: "classification",
+    target_kind: "multiclass",
+  });
   assert.equal(created.task.task_id, "real-task-123");
   assert.equal(requests.at(-1).url, "/tasks");
   assert.deepEqual(JSON.parse(requests.at(-1).body), {
     name: "parts",
     business_goal: "classify parts",
+    capability_request: {
+      modality: "image",
+      objective: "classification",
+      target_kind: "multiclass",
+    },
   });
 
   await client.configureContract("real-task-123", {

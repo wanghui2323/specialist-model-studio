@@ -173,6 +173,9 @@ def execute_run(
                         "name": name,
                         "macro_f1": values.get("macro_f1"),
                         "accuracy": values.get("accuracy"),
+                        "mae": values.get("mae"),
+                        "rmse": values.get("rmse"),
+                        "r2": values.get("r2"),
                         "fit_seconds": values.get("fit_seconds"),
                     }
                     for name, values in candidate_results.items()
@@ -196,7 +199,8 @@ def execute_run(
         state.event(
             "evaluation.completed",
             {
-                "clean_test_accuracy": evaluation.metrics["clean_test"]["accuracy"],
+                "clean_test": evaluation.metrics["clean_test"],
+                "clean_test_accuracy": evaluation.metrics["clean_test"].get("accuracy"),
                 "stress_tests": list(evaluation.metrics.get("stress_tests", {})),
                 "failure_count": evaluation.metrics.get("failure_count"),
                 "duration_ms": timings_ms["evaluating"],
