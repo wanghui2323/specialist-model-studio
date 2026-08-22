@@ -457,15 +457,17 @@ def _cold_environment(
 ) -> dict[str, str]:
     environment = _controlled_environment(root / "controlled-environment", tools)
     cache = root / "cache"
+    package_cache_root = Path.home().resolve()
     environment.update(
         {
             "XDG_CACHE_HOME": str(cache / "xdg"),
             "HF_HOME": str(cache / "hf-home"),
             "HF_HUB_CACHE": str(cache / "hf-hub"),
-            "UV_CACHE_DIR": str(cache / "uv"),
+            "UV_CACHE_DIR": str(package_cache_root / ".cache" / "uv"),
             "UV_HTTP_TIMEOUT": "300",
+            "UV_LINK_MODE": "copy",
             "UV_PROJECT_ENVIRONMENT": str(clone / ".venv"),
-            "npm_config_cache": str(cache / "npm"),
+            "npm_config_cache": str(package_cache_root / ".npm"),
             "PYTHONUNBUFFERED": "1",
         }
     )

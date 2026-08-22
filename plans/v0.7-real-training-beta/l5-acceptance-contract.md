@@ -52,6 +52,8 @@ commit  = a6a0b39ca1f5b0a247eb0a2e83f06cd95fc03674
 5. 用 `git clone --no-local --no-hardlinks` 创建冷克隆，按锁文件安装 Python、DSH 和浏览器证据依赖，再跑全量测试与离线三家族最小闭环；
 6. 由聚合器独立执行严格 JSON Schema、producer 源文件哈希、制品路径/大小/SHA-256、PNG 尺寸、原始日志、实时 HTTP 对象所有权、Bundle 下载哈希和 PID 存活复核。
 
+冷克隆必须使用全新的源码目录、`.venv`、运行对象和 Hugging Face 模型缓存。允许复用 `uv` / `npm` 的内容寻址包缓存以避免把公网下载速度误作产品门禁；安装仍由锁文件与包完整性哈希约束，并以 copy 模式生成新的虚拟环境。
+
 默认受控制品写入本轮验收报告目录下的 `controlled-external-evidence/`。如需指定位置，只能提供一个尚不存在的新目录：
 
 ```bash

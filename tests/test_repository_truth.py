@@ -83,6 +83,12 @@ class RepositoryTruthTests(unittest.TestCase):
         self.assertIn("最终用户验收仍待确认", requirements)
         self.assertIn("未创建 GitHub Tag / Release", requirements)
 
+        l5_contract = (
+            ROOT / "plans" / "v0.7-real-training-beta" / "l5-acceptance-contract.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("内容寻址包缓存", l5_contract)
+        self.assertIn("全新的源码目录、`.venv`、运行对象", l5_contract)
+
 
 if __name__ == "__main__":
     unittest.main()
