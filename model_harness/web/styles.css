@@ -175,6 +175,11 @@
 .artifact-bundle-meta{grid-column:1/-1;display:flex!important;flex-wrap:wrap;gap:4px!important}
 .artifact-bundle-meta i{padding:3px 5px;border-radius:999px;color:var(--muted);background:var(--surface-muted);font-size:6px;font-style:normal}
 
+/* Primary desktop actions keep a full 44px pointer and keyboard target. */
+.new-task-button{min-height:44px}
+.composer textarea{min-height:44px}
+.send-button{width:44px;height:44px}
+
 @media(max-width:720px){
   .asset-discovery>summary,.asset-search-form input,.sample-json-field textarea{min-height:44px}
   .hf-search-result{min-height:48px}

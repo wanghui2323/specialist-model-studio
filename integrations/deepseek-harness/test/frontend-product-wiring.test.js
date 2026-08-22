@@ -63,6 +63,13 @@ test("mobile inspector remains a full-screen sheet with 44px action targets", as
   assert.match(css, /\.sample-trial-actions button[^}]*min-height:44px/);
 });
 
+test("desktop primary training actions expose 44px interaction targets", async () => {
+  const { css } = await sources();
+  assert.match(css, /\.new-task-button\{min-height:44px\}/);
+  assert.match(css, /\.composer textarea\{min-height:44px\}/);
+  assert.match(css, /\.send-button\{width:44px;height:44px\}/);
+});
+
 test("terminal runs expose an Agent-independent task-owned retry path", async () => {
   const { html, app } = await sources();
   assert.match(html, /id="retryRunButton"[^>]*hidden/);
