@@ -8,7 +8,9 @@ import joblib
 import numpy as np
 
 from ..errors import ContractError
-from ..io_utils import read_json
+from ..io_utils import read_json, sha256_file
+from ..model_assets import ModelAssetError
+from ..onnx_image_features import OnnxImageFeatureExtractor
 from ..plugin_api import RecipeManifest, StrategyProposal
 from . import image_folder_classification
 
@@ -45,7 +47,7 @@ IMAGE_FOLDER_TEMPLATE: dict[str, Any] = {
         "candidates": [
             "most_frequent_baseline",
             "logistic_regression",
-            "linear_svc",
+            "linear_hinge_sgd",
             "random_forest",
         ],
         "test_set_policy": "测试集不得用于模型选择或调参，只在候选模型确定并重训后评估",
@@ -75,7 +77,7 @@ IMAGE_FOLDER_TEMPLATE: dict[str, Any] = {
 SUPPORTED_CANDIDATES = {
     "most_frequent_baseline",
     "logistic_regression",
-    "linear_svc",
+    "linear_hinge_sgd",
     "random_forest",
 }
 
@@ -91,6 +93,11 @@ class ImageFolderClassificationPlugin:
         output_description="A trusted local Joblib model bundle, metrics, failures, reports and optimization proposals.",
         device="cpu",
         purpose="real user-data feasibility loop",
+        modalities=("image",),
+        objectives=("classification",),
+        data_adapter="image-folder-zip",
+        target_kinds=("multiclass", "binary"),
+        capability_tags=("cv", "image-folder", "user-data", "lightweight"),
     )
 
     def template(self) -> dict[str, Any]:
@@ -167,6 +174,21 @@ class ImageFolderClassificationPlugin:
             raise ContractError("candidate count exceeds compute budget")
         if int(report["total_images"]) > int(budget.get("max_images", 0)):
             raise ContractError("dataset image count exceeds compute budget")
+
+        model_asset = contract.get("model_asset")
+        if model_asset is not None:
+            if not isinstance(model_asset, dict):
+                raise ContractError("model_asset must be an object")
+            if model_asset.get("binding") != "image_classification_onnx_feature_v1":
+                raise ContractError("unsupported model_asset binding")
+            try:
+                OnnxImageFeatureExtractor(
+                    image_folder_classification.training_model_asset_from_binding(
+                        model_asset
+                    )
+                )
+            except (ValueError, ModelAssetError) as exc:
+                raise ContractError(f"model_asset verification failed: {exc}") from exc
 
     def train(self, contract: dict[str, Any]) -> Any:
         return image_folder_classification.train(contract)
@@ -250,6 +272,23 @@ class ImageFolderClassificationPlugin:
         actual = bundle["estimator"].predict(reference["X"])
         if not np.array_equal(actual, reference["predictions"]):
             errors.append("persisted model predictions do not match reference")
+        if bundle.get("feature_version") == "hf-onnx-plus-rgb-gradient-v1":
+            try:
+                descriptor = read_json(artifact_dir / "model_asset_provenance.json")
+                provenance = descriptor["provenance"]
+                for filename, field in (
+                    ("model.onnx", "model_sha256"),
+                    ("config.json", "config_sha256"),
+                ):
+                    path = artifact_dir / "base_model" / filename
+                    if (
+                        path.is_symlink()
+                        or not path.is_file()
+                        or sha256_file(path) != provenance[field]
+                    ):
+                        errors.append(f"packaged base model hash mismatch: {filename}")
+            except (FileNotFoundError, KeyError, TypeError, ValueError):
+                errors.append("packaged base model provenance is missing or invalid")
         return errors
 
 

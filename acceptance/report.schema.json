@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wanghui2323/ai-pm-model-harness/acceptance/report.schema.json",
+  "title": "Model Harness v0.7 Acceptance Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "acceptance_id",
+    "iteration",
+    "started_at_utc",
+    "finished_at_utc",
+    "source",
+    "isolation",
+    "external_evidence",
+    "commands",
+    "levels",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {"const": "0.1"},
+    "acceptance_id": {"type": "string", "pattern": "^acceptance-[0-9TZ-]+-[0-9a-f]{8}$"},
+    "iteration": {"const": "v0.7-local-usable-beta"},
+    "started_at_utc": {"type": "string", "format": "date-time"},
+    "finished_at_utc": {"type": "string", "format": "date-time"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["git_commit", "git_branch", "worktree_clean", "versions"],
+      "properties": {
+        "git_commit": {"type": ["string", "null"]},
+        "git_branch": {"type": ["string", "null"]},
+        "worktree_clean": {"type": "boolean"},
+        "versions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pyproject", "server", "python_package", "node_adapter", "normalized"],
+          "properties": {
+            "pyproject": {"type": ["string", "null"]},
+            "server": {"type": ["string", "null"]},
+            "python_package": {"type": ["string", "null"]},
+            "node_adapter": {"type": ["string", "null"]},
+            "normalized": {
+              "type": "object",
+              "additionalProperties": {"type": ["string", "null"]}
+            }
+          }
+        }
+      }
+    },
+    "isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["temporary_runtime_created", "project_runs_reused", "runtime_path_persisted"],
+      "properties": {
+        "temporary_runtime_created": {"type": "boolean"},
+        "project_runs_reused": {"const": false},
+        "runtime_path_persisted": {"const": false}
+      }
+    },
+    "external_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "path", "sha256", "producer_id", "producer_version", "producer_run_id", "source_commit", "command_id", "blockers"],
+      "properties": {
+        "status": {"enum": ["verified", "invalid", "not_collected"]},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "producer_id": {"type": ["string", "null"]},
+        "producer_version": {"type": ["string", "null"]},
+        "producer_run_id": {"type": ["string", "null"]},
+        "source_commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+        "command_id": {"const": "controlled_external_evidence"},
+        "blockers": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      }
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/commandEvidence"}
+    },
+    "levels": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {"$ref": "#/$defs/levelResult"}
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "local_beta_verified",
+        "github_released",
+        "required_gate_counts",
+        "blocking_gate_ids",
+        "failed_gate_ids",
+        "release_state"
+      ],
+      "properties": {
+        "local_beta_verified": {"type": "boolean"},
+        "github_released": {"type": "boolean"},
+        "required_gate_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["total", "passed", "failed", "blocked"],
+          "properties": {
+            "total": {"type": "integer", "minimum": 1},
+            "passed": {"type": "integer", "minimum": 0},
+            "failed": {"type": "integer", "minimum": 0},
+            "blocked": {"type": "integer", "minimum": 0}
+          }
+        },
+        "blocking_gate_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "failed_gate_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "release_state": {"enum": ["local_beta_verified", "blocked_local_beta", "github_released"]}
+      }
+    }
+  },
+  "$defs": {
+    "status": {"enum": ["passed", "failed", "blocked"]},
+    "commandEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "status", "exit_code", "duration_seconds", "log_path"],
+      "properties": {
+        "command": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "cwd": {"type": "string"},
+        "status": {"$ref": "#/$defs/status"},
+        "exit_code": {"type": ["integer", "null"]},
+        "duration_seconds": {"type": "number", "minimum": 0},
+        "log_path": {"type": "string"},
+        "output_tail": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "gateResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gate_id", "required", "required_for_github_release", "status", "summary", "evidence", "blockers"],
+      "properties": {
+        "gate_id": {"type": "string", "pattern": "^L[0-5]-[a-z0-9-]+$"},
+        "required": {"type": "boolean"},
+        "required_for_github_release": {"type": "boolean"},
+        "status": {"$ref": "#/$defs/status"},
+        "summary": {"type": "string", "minLength": 1},
+        "evidence": {"type": "object", "additionalProperties": true},
+        "blockers": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "levelResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level_id", "name", "status", "gates"],
+      "properties": {
+        "level_id": {"enum": ["L0", "L1", "L2", "L3", "L4", "L5"]},
+        "name": {"type": "string", "minLength": 1},
+        "status": {"$ref": "#/$defs/status"},
+        "gates": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/gateResult"}}
+      }
+    }
+  }
+}

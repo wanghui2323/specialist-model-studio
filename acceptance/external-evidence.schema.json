@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wanghui2323/ai-pm-model-harness/acceptance/external-evidence.schema.json",
+  "title": "Model Harness v0.7 Controlled External Evidence Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_commit", "generated_at_utc", "producer", "runtime", "browser", "process_restart", "cold_clone"],
+  "properties": {
+    "schema_version": {"const": "0.3"},
+    "source_commit": {"$ref": "#/$defs/commit"},
+    "generated_at_utc": {"type": "string", "format": "date-time"},
+    "producer": {"$ref": "#/$defs/producer"},
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "base_url", "after_pid", "journeys", "hf_report"],
+      "properties": {
+        "mode": {"const": "official_hf_fixed_commit"},
+        "base_url": {"type": "string", "pattern": "^http://127\\.0\\.0\\.1:[0-9]{2,5}$"},
+        "after_pid": {"type": "integer", "minimum": 1},
+        "journeys": {"$ref": "#/$defs/artifact"},
+        "hf_report": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "browser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["report", "desktop", "mobile"],
+      "properties": {
+        "report": {"$ref": "#/$defs/artifact"},
+        "desktop": {"$ref": "#/$defs/browserArtifacts"},
+        "mobile": {"$ref": "#/$defs/browserArtifacts"}
+      }
+    },
+    "process_restart": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["report", "before_log", "after_log"],
+      "properties": {
+        "report": {"$ref": "#/$defs/artifact"},
+        "before_log": {"$ref": "#/$defs/artifact"},
+        "after_log": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "cold_clone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["report", "command_log", "minimal_journeys"],
+      "properties": {
+        "report": {"$ref": "#/$defs/artifact"},
+        "command_log": {"$ref": "#/$defs/artifact"},
+        "minimal_journeys": {"$ref": "#/$defs/artifact"}
+      }
+    }
+  },
+  "$defs": {
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "artifactPath": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$"},
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size_bytes"],
+      "properties": {
+        "path": {"$ref": "#/$defs/artifactPath"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "size_bytes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "sourceFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"$ref": "#/$defs/artifactPath"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "resolved_path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^/", "minLength": 2},
+        "resolved_path": {"type": "string", "pattern": "^/", "minLength": 2},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "status", "run_id", "verifier_challenge", "python_version", "node_version", "playwright_core_version", "command", "source_files", "tools"],
+      "properties": {
+        "id": {"const": "model-harness-v07-controlled-producer"},
+        "version": {"const": "0.3.0"},
+        "status": {"const": "completed"},
+        "run_id": {"type": "string", "pattern": "^evidence-[0-9TZ-]+-[0-9a-f]{8}$"},
+        "verifier_challenge": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "python_version": {"type": "string", "minLength": 1},
+        "node_version": {"type": "string", "pattern": "^v[0-9]+\\."},
+        "playwright_core_version": {"const": "1.62.1"},
+        "command": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "source_files": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["python_producer", "browser_producer", "browser_package", "browser_lock"],
+          "properties": {
+            "python_producer": {"$ref": "#/$defs/sourceFile"},
+            "browser_producer": {"$ref": "#/$defs/sourceFile"},
+            "browser_package": {"$ref": "#/$defs/sourceFile"},
+            "browser_lock": {"$ref": "#/$defs/sourceFile"}
+          }
+        },
+        "tools": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["python", "git", "node", "npm", "uv", "chrome"],
+          "properties": {
+            "python": {"$ref": "#/$defs/tool"},
+            "git": {"$ref": "#/$defs/tool"},
+            "node": {"$ref": "#/$defs/tool"},
+            "npm": {"$ref": "#/$defs/tool"},
+            "uv": {"$ref": "#/$defs/tool"},
+            "chrome": {"$ref": "#/$defs/tool"}
+          }
+        }
+      }
+    },
+    "browserArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["screenshot", "network_log", "console_log", "trace"],
+      "properties": {
+        "screenshot": {"$ref": "#/$defs/artifact"},
+        "network_log": {"$ref": "#/$defs/artifact"},
+        "console_log": {"$ref": "#/$defs/artifact"},
+        "trace": {"$ref": "#/$defs/artifact"}
+      }
+    }
+  }
+}

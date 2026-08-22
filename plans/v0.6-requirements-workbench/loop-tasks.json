@@ -1,0 +1,227 @@
+{
+  "schema_version": "0.2",
+  "project": "AI PM Model Harness",
+  "iteration": "v0.6 agent-workbench",
+  "gate": "confirmed-iteration-in-progress",
+  "updated_at": "2026-08-21",
+  "loops": [
+    {
+      "loop_id": "L0",
+      "name": "需求与基线",
+      "outcome": "确认通用 Agent Workbench、模型训练 Context 与 Hugging Face 的边界",
+      "status": "done",
+      "tasks": [
+        {
+          "id": "MH-060",
+          "title": "记录现有工作草稿与发布边界",
+          "status": "done",
+          "depends_on": [],
+          "evidence": "19 Python tests pass; JS syntax pass; working tree remains uncommitted"
+        },
+        {
+          "id": "MH-061",
+          "title": "确认 v0.6 需求合同与 8 个产品决策",
+          "status": "done",
+          "depends_on": ["MH-060"],
+          "acceptance": "用户确认两个场景是验收下限，产品边界为通用Recipe扩展路径",
+          "evidence": "requirements.md status=已确认并启动实施；architecture-baseline.md"
+        }
+      ]
+    },
+    {
+      "loop_id": "L1",
+      "name": "Agent 工作台骨架",
+      "outcome": "用户进入自己的 Model Harness，并看到真实计划、对话、工具与 Context，而不是 DSH 通用 Web",
+      "status": "partial",
+      "tasks": [
+        {
+          "id": "MH-110",
+          "title": "稳定启动产品后端与内部 DSH 运行时",
+          "status": "partial",
+          "depends_on": ["MH-061"],
+          "acceptance": "连续 3 次启动和停止无残留；health 与 agent/runtime 状态一致"
+        },
+        {
+          "id": "MH-111",
+          "title": "固化 Training Task 与 DSH Session 映射",
+          "status": "done",
+          "depends_on": ["MH-110"],
+          "acceptance": "刷新和重启后同一 task_id 恢复到同一 session_id"
+        },
+        {
+          "id": "MH-112",
+          "title": "构建桌面三栏与移动端重排框架",
+          "status": "done",
+          "depends_on": ["MH-111"],
+          "acceptance": "左任务、中 Agent Canvas、右 Context；移动端使用任务抽屉和 Context 面板"
+        },
+        {
+          "id": "MH-113",
+          "title": "投影计划、消息、工具状态和人工协作卡",
+          "status": "done",
+          "depends_on": ["MH-112"],
+          "acceptance": "每张卡可追溯到 DSH event seq 或 Model Harness object id"
+        }
+      ]
+    },
+    {
+      "loop_id": "L2",
+      "name": "训练领域 Context",
+      "outcome": "右侧区域能随当前对象切换模型、数据、训练、评测和制品视图",
+      "status": "partial",
+      "tasks": [
+        {
+          "id": "MH-210",
+          "title": "完成 Model Context 与模型兼容性卡片",
+          "status": "planned",
+          "depends_on": ["MH-113"],
+          "acceptance": "展示任务类型、参数、License、大小、revision、运行库与本机兼容性"
+        },
+        {
+          "id": "MH-211",
+          "title": "完成 Dataset Context 与版本化数据管理",
+          "status": "done",
+          "depends_on": ["MH-113"],
+          "acceptance": "上传、体检、标签分布、问题样本、授权和 fingerprint 来自同一 dataset version"
+        },
+        {
+          "id": "MH-212",
+          "title": "完成 Training Context 与真实运行阶段",
+          "status": "done",
+          "depends_on": ["MH-211"],
+          "acceptance": "运行阶段、日志摘要、耗时与 checkpoint 均来自真实 run events"
+        },
+        {
+          "id": "MH-213",
+          "title": "完成 Evaluation 与 Artifact Context",
+          "status": "done",
+          "depends_on": ["MH-212"],
+          "acceptance": "门槛、候选比较、失败样本、优化建议与制品均关联 run_id"
+        }
+      ]
+    },
+    {
+      "loop_id": "L3",
+      "name": "Hugging Face 资产链路",
+      "outcome": "用户可以安全选择、检查并批准下载一个与当前 Recipe 兼容的模型",
+      "status": "planned",
+      "tasks": [
+        {
+          "id": "MH-310",
+          "title": "连接 Hugging Face 搜索与 Model Card",
+          "status": "planned",
+          "depends_on": ["MH-210"],
+          "acceptance": "真实返回 repository、task、library、license、files、downloads 与 revision"
+        },
+        {
+          "id": "MH-311",
+          "title": "实现 Recipe 与本机资源兼容性检查",
+          "status": "planned",
+          "depends_on": ["MH-310"],
+          "acceptance": "不兼容模型不能进入一键构建，并明确显示原因和适配任务"
+        },
+        {
+          "id": "MH-312",
+          "title": "实现凭证、本地缓存与下载批准",
+          "status": "planned",
+          "depends_on": ["MH-311"],
+          "acceptance": "拒绝下载不产生缓存；允许后固定 revision 并记录大小、路径和哈希"
+        },
+        {
+          "id": "MH-313",
+          "title": "为已实现 Recipe 生成构建与调优配置",
+          "status": "planned",
+          "depends_on": ["MH-312", "MH-211"],
+          "acceptance": "只有兼容模型进入真实训练，训练合同记录模型来源和 revision"
+        }
+      ]
+    },
+    {
+      "loop_id": "L4",
+      "name": "真实训练闭环",
+      "outcome": "用户从一句目标走到可验收模型，所有状态都能用后端对象证明",
+      "status": "done",
+      "tasks": [
+        {
+          "id": "MH-410",
+          "title": "完成第一次消息创建任务与 Agent 读取",
+          "status": "done",
+          "depends_on": ["MH-113"],
+          "acceptance": "第一次消息产生 task_id；Agent 不重复创建；历史存在真实 get_task"
+        },
+        {
+          "id": "MH-411",
+          "title": "完成数据、合同、训练与评测纵向闭环",
+          "status": "done",
+          "depends_on": ["MH-213", "MH-410"],
+          "acceptance": "同一 task_id 拥有 dataset version、confirmed contract、run 和 artifacts"
+        },
+        {
+          "id": "MH-412",
+          "title": "完成问题、批准、拒绝与优化子运行",
+          "status": "done",
+          "depends_on": ["MH-411"],
+          "acceptance": "允许继续执行；拒绝不改变 run_ids；优化产生保留父运行的 child run"
+        }
+      ]
+    },
+    {
+      "loop_id": "L5",
+      "name": "2C 体验与恢复",
+      "outcome": "前端具有消费级视觉质量，并在断线、刷新、失败和移动端下保持可用",
+      "status": "partial",
+      "tasks": [
+        {
+          "id": "MH-510",
+          "title": "完成 1440×900 桌面体验审查",
+          "status": "done",
+          "depends_on": ["MH-412"],
+          "acceptance": "主任务、工具状态与 Context 层级清楚，无开发者控制台感"
+        },
+        {
+          "id": "MH-511",
+          "title": "完成 390×844 移动端重排与交互",
+          "status": "implemented-unverified",
+          "depends_on": ["MH-510"],
+          "acceptance": "关键控件可见可点，无横向溢出，Context 可随时打开和关闭"
+        },
+        {
+          "id": "MH-512",
+          "title": "验证断线、刷新、重启与失败恢复",
+          "status": "done",
+          "depends_on": ["MH-511"],
+          "acceptance": "四条路径均有前后对象快照、浏览器证据和无假进度证明"
+        }
+      ]
+    },
+    {
+      "loop_id": "L6",
+      "name": "文档与发布",
+      "outcome": "外部用户能理解架构、启动方式、HF 边界和真实支持范围",
+      "status": "in-progress",
+      "tasks": [
+        {
+          "id": "MH-610",
+          "title": "更新 README、架构图、HF 与本地演练说明",
+          "status": "done",
+          "depends_on": ["MH-512"],
+          "acceptance": "README 主入口为产品 /app；3080 仅内部调试；Recipe 支持范围无夸大"
+        },
+        {
+          "id": "MH-611",
+          "title": "运行全量测试、浏览器 QA 与隐私扫描",
+          "status": "done",
+          "depends_on": ["MH-610"],
+          "acceptance": "Python、Node、浏览器、HF Token 和敏感信息检查全部通过"
+        },
+        {
+          "id": "MH-612",
+          "title": "提交并推送 GitHub",
+          "status": "planned",
+          "depends_on": ["MH-611"],
+          "acceptance": "公开仓库可访问，提交哈希、分支、推送和发布状态分别记录"
+        }
+      ]
+    }
+  ]
+}

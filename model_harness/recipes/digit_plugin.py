@@ -97,6 +97,11 @@ class DigitClassificationPlugin:
         output_description="One integer class label from 0 through 9.",
         device="cpu",
         purpose="reference learning and harness validation",
+        modalities=("image", "tabular"),
+        objectives=("classification",),
+        data_adapter=None,
+        target_kinds=("multiclass",),
+        capability_tags=("ocr", "digits", "teaching", "builtin-data"),
     )
 
     def template(self) -> dict[str, Any]:

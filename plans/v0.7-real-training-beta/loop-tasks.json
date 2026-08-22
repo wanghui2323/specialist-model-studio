@@ -1,0 +1,292 @@
+{
+  "schema_version": "0.3",
+  "project": "AI PM Model Harness",
+  "iteration": "v0.7 local-usable-beta",
+  "gate": "macro-loop-local-beta-verified-release-chain-api-gated",
+  "updated_at": "2026-08-22",
+  "execution_mode": "continuous L0-L5 macro loop; each level must be verified before the next, final acceptance is unified",
+  "status_contract": {
+    "planned": "已进入范围，尚未编码",
+    "implementing": "正在编码或生成产物",
+    "implemented": "实现完成，尚未得到完整证据",
+    "verified": "自动检查和真实运行证据通过",
+    "accepted": "用户已确认本轮结果"
+  },
+  "blocking_contract": "blocked_by 是独立阻断字段，不覆盖任务生命周期状态",
+  "confirmed_decisions": [
+    "v0.7定位为本地可用Beta，不宣称万能或生产就绪",
+    "第一个动态扩展场景为本地语音关键词识别",
+    "DeepSeek Harness保持内部运行时适配器",
+    "生成Recipe必须在安全隔离环境中构建和验证",
+    "v0.7验证图片分类、表格回归和语音关键词三个训练家族",
+    "Hugging Face作为受控资产入口",
+    "L1到L5连续执行，不再等待逐层人工确认；最终统一验收",
+    "没有OCI沙箱时不执行Agent生成的任意Python，L2使用受约束RecipeSpec和可信后端引擎"
+  ],
+  "loops": [
+    {
+      "loop_id": "L0",
+      "name": "事实重置",
+      "outcome": "代码、看板、服务和用户可见能力使用同一套真实基线",
+      "status": "accepted",
+      "tasks": [
+        {
+          "id": "MH-700",
+          "title": "创建并冻结 v0.7 独立开发基线",
+          "status": "verified",
+          "depends_on": [],
+          "acceptance": "分支为 codex/v0.7-real-training-beta，HEAD与基线提交一致，工作树初始干净",
+          "evidence_refs": ["baseline-evidence.json#/git"],
+          "blocked_by": [],
+          "last_verified_at": "2026-08-21T15:35:00+08:00"
+        },
+        {
+          "id": "MH-701",
+          "title": "建立 v0.7 需求合同与状态语义",
+          "status": "verified",
+          "depends_on": ["MH-700"],
+          "acceptance": "需求合同明确能力分层、对象所有权、范围外和implemented/verified/accepted差异",
+          "evidence_refs": ["requirements.md", "baseline-evidence.json"],
+          "blocked_by": [],
+          "last_verified_at": "2026-08-21T15:45:00+08:00"
+        },
+        {
+          "id": "MH-702",
+          "title": "重跑代码与真实场景证据",
+          "status": "verified",
+          "depends_on": ["MH-700"],
+          "acceptance": "Python、Node、真实图片、真实表格和未匹配能力路径分别记录结果，不沿用旧数字",
+          "evidence_refs": ["baseline-evidence.json#/verification", "runs/real-validation/real_scenarios_report.json"],
+          "blocked_by": [],
+          "last_verified_at": "2026-08-21T15:45:27+08:00"
+        },
+        {
+          "id": "MH-703",
+          "title": "记录服务、Agent与能力注册表基线",
+          "status": "verified",
+          "depends_on": ["MH-700"],
+          "acceptance": "health、agent/runtime、Recipes、Adapters、路由和支持矩阵均来自当前运行或当前源码",
+          "evidence_refs": ["baseline-evidence.json#/service", "baseline-evidence.json#/capabilities"],
+          "blocked_by": [],
+          "last_verified_at": "2026-08-21T15:47:11+08:00"
+        },
+        {
+          "id": "MH-704",
+          "title": "完成工作台桌面与移动端验证",
+          "status": "verified",
+          "depends_on": ["MH-701", "MH-702", "MH-703"],
+          "acceptance": "1440×900与390×844无横向溢出、遮挡和不可达主操作，Console无错误",
+          "evidence_refs": ["baseline-evidence.json#/verification/desktop_browser", "baseline-evidence.json#/verification/mobile_browser"],
+          "blocked_by": [],
+          "last_verified_at": "2026-08-21T16:02:00+08:00"
+        },
+        {
+          "id": "MH-705",
+          "title": "提交 L0 用户验收",
+          "status": "accepted",
+          "depends_on": ["MH-704"],
+          "acceptance": "用户确认基线与L1范围后，L0才进入accepted并允许开始L1",
+          "evidence_refs": ["user-confirmation:2026-08-22"],
+          "blocked_by": [],
+          "last_verified_at": "2026-08-22T00:00:00+08:00"
+        }
+      ]
+    },
+    {
+      "loop_id": "L1",
+      "name": "任务理解与可信控制面",
+      "outcome": "用户知道系统理解了什么、可以纠错，并始终看到唯一下一步",
+      "status": "verified",
+      "tasks": [
+        {
+          "id": "MH-710",
+          "title": "实现后端 TaskSpecRevision 与能力确认卡",
+          "status": "verified",
+          "depends_on": ["MH-705"],
+          "acceptance": "OCR、分类和检测歧义必须澄清；用户修改后产生新规格版本",
+          "evidence_refs": ["l1-evidence.json#/browser_objects", "tests/test_task_specs.py"],
+          "blocked_by": [],
+          "last_verified_at": "2026-08-22T01:02:27+08:00"
+        },
+        {
+          "id": "MH-711",
+          "title": "统一当前阶段、阻断和唯一下一步",
+          "status": "verified",
+          "depends_on": ["MH-710"],
+          "acceptance": "顶部、任务列表与Context使用同一后端投影，不出现本地训练可用等矛盾状态",
+          "evidence_refs": ["l1-evidence.json#/closure/2", "model_harness/workspace.py"],
+          "blocked_by": [],
+          "last_verified_at": "2026-08-22T01:02:27+08:00"
+        },
+        {
+          "id": "MH-712",
+          "title": "修复任务级草稿、Agent恢复与双取消语义",
+          "status": "verified",
+          "depends_on": ["MH-711"],
+          "acceptance": "切换任务不串输入；停止Agent与取消Run是两个可验证动作；刷新保持同一task_id",
+          "evidence_refs": ["l1-evidence.json#/closure/3", "l1-evidence.json#/closure/4", "tests/test_agent_bridge.py"],
+          "blocked_by": [],
+          "last_verified_at": "2026-08-22T01:02:27+08:00"
+        }
+      ]
+    },
+    {
+      "loop_id": "L2",
+      "name": "Recipe Factory",
+      "outcome": "缺失训练能力可以在产品内安全构建、验证、注册并回到原任务",
+      "status": "verified",
+      "tasks": [
+        {
+          "id": "MH-720",
+          "title": "支持无Recipe的隔离样例暂存",
+          "status": "verified",
+          "depends_on": ["MH-712"],
+          "acceptance": "语音任务可先上传WAV样例；样例只通过通用安全检查，不触发Run",
+          "evidence_refs": ["tests/test_staged_assets.py", "tests/test_staged_asset_api.py"],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-721",
+          "title": "实现持久 BuildAttempt 与安全隔离执行",
+          "status": "verified",
+          "depends_on": ["MH-720"],
+          "acceptance": "声明式RecipeSpec、未知字段、任意Python/Shell/URL/依赖/路径与资源均有失败关闭证据",
+          "evidence_refs": ["tests/test_recipe_factory.py", "plans/v0.7-real-training-beta/l2-contract.md"],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-722",
+          "title": "实现测试、原子注册和自动Resume",
+          "status": "verified",
+          "depends_on": ["MH-721"],
+          "acceptance": "成功后原task_id绑定精确Recipe版本；失败、拒绝和中断不新增Recipe或Run",
+          "evidence_refs": ["tests/test_recipe_factory.py", "tests/test_recipe_factory_workspace.py"],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-723",
+          "title": "用语音关键词任务证明动态扩展闭环",
+          "status": "verified",
+          "depends_on": ["MH-722"],
+          "acceptance": "从needs_recipe到可训练、评测和试跑，全程不下载手工代码包、不新建任务",
+          "evidence_refs": ["tests/test_recipe_factory_workspace.py"],
+          "blocked_by": []
+        }
+      ]
+    },
+    {
+      "loop_id": "L3",
+      "name": "模型资产与可信训练",
+      "outcome": "用户知道模型来自哪里、是否兼容，并能证明训练真实发生",
+      "status": "verified",
+      "tasks": [
+        {
+          "id": "MH-730",
+          "title": "实现Hugging Face搜索、Model Card与兼容性",
+          "status": "verified",
+          "depends_on": ["MH-723"],
+          "acceptance": "展示repository、revision、license、files、size、library和本机兼容性",
+          "evidence_refs": ["tests/test_huggingface_catalog.py", "tests/test_hf_workspace.py"],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-731",
+          "title": "实现批准下载、固定revision与验证缓存",
+          "status": "verified",
+          "depends_on": ["MH-730"],
+          "acceptance": "拒绝下载零缓存零血缘；允许后逐文件哈希且Token不进入任务、日志或Git",
+          "evidence_refs": ["tests/test_huggingface_assets.py", "tests/test_model_assets.py"],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-732",
+          "title": "暴露真实训练日志、耗时、资源和候选证据",
+          "status": "verified",
+          "depends_on": ["MH-731"],
+          "acceptance": "快速运行显示毫秒级真实耗时；所有事件关联run_id，不用动画模拟",
+          "evidence_refs": ["tests/test_workspace_loop.py", "tests/test_tabular_loop.py", "tests/test_recipe_factory_workspace.py"],
+          "blocked_by": []
+        }
+      ]
+    },
+    {
+      "loop_id": "L4",
+      "name": "评测、试跑与交付",
+      "outcome": "用户能判断模型是否可用、亲自试跑并获得可解释交付包",
+      "status": "verified",
+      "tasks": [
+        {
+          "id": "MH-740",
+          "title": "分离Run完成、评测结论和证据充分性",
+          "status": "verified",
+          "depends_on": ["MH-732"],
+          "acceptance": "只有3个测试样本时必须显示insufficient_evidence，不能显示正式验收通过",
+          "evidence_refs": ["tests/test_evidence.py", "tests/test_run_evidence_lifecycle.py"],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-741",
+          "title": "实现候选对比、失败样本和运行历史",
+          "status": "verified",
+          "depends_on": ["MH-740"],
+          "acceptance": "指标、切片、错误样本、门槛和父子Run均关联同一运行血缘",
+          "evidence_refs": ["tests/test_optimization_provenance.py", "tests/test_run_evidence_lifecycle.py"],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-742",
+          "title": "实现新样本推理与模型交付包",
+          "status": "verified",
+          "depends_on": ["MH-741"],
+          "acceptance": "推理记录关联run/model hash并可刷新恢复；交付包包含模型卡、示例和环境清单",
+          "evidence_refs": ["tests/test_sample_inference.py", "tests/test_evidence.py"],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-743",
+          "title": "收敛桌面三栏与移动底部上下文",
+          "status": "verified",
+          "depends_on": ["MH-742"],
+          "acceptance": "移动端无需越过完整对话即可打开Context和结果；主要点击区域至少44×44px",
+          "evidence_refs": ["integrations/deepseek-harness/test/frontend-product-wiring.test.js", "model_harness/web/styles.css"],
+          "blocked_by": []
+        }
+      ]
+    },
+    {
+      "loop_id": "L5",
+      "name": "Beta验收与发布",
+      "outcome": "公开用户可以在全新环境复现三个真实训练家族",
+      "status": "verified",
+      "tasks": [
+        {
+          "id": "MH-750",
+          "title": "完成三场景与全量负向回归",
+          "status": "verified",
+          "depends_on": ["MH-743"],
+          "acceptance": "图片、表格、语音及拒绝、失败、取消、断线、恢复路径全部有对象和制品证据",
+          "evidence_refs": ["scripts/prepare_v07_acceptance_runtime.py", "tests/test_prepare_v07_acceptance_runtime.py", "scripts/verify_v07_beta.py"],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-751",
+          "title": "完成全产品浏览器闭环",
+          "status": "verified",
+          "depends_on": ["MH-750"],
+          "acceptance": "所有P0流程6/6；1440×900和390×844无Console错误、失败请求、遮挡和假进度",
+          "evidence_refs": ["integrations/deepseek-harness/test/frontend-product-wiring.test.js", "acceptance/external-evidence.schema.json"],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-752",
+          "title": "完成冷环境复现并分离GitHub发布链",
+          "status": "verified",
+          "depends_on": ["MH-751"],
+          "acceptance": "当前source commit可在无本地对象复用的冷克隆中复跑最小闭环；commit、push、PR、CI、merge、tag、release继续分别记录",
+          "evidence_refs": ["acceptance/v0.7-gates.json", "plans/v0.7-real-training-beta/l5-acceptance-contract.md"],
+          "blocked_by": []
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "schema_version": "0.2",
+  "loop": "L1",
+  "state": "verified",
+  "evidence_scope": "historical_l1_snapshot",
+  "current_acceptance_authority": "scripts/verify_v07_beta.py on the exact source commit",
+  "warning": "The counts, commit and GitHub authentication state below describe the earlier L1 checkpoint only and must not be used as current L0-L5 acceptance evidence.",
+  "started_at": "2026-08-22",
+  "verified_at": "2026-08-22T01:02:27+08:00",
+  "execution_authorization": "user-authorized continuous L0-L5 macro loop on 2026-08-22",
+  "scope": [
+    "TaskSpecRevision",
+    "TaskControlProjection",
+    "task-scoped composer drafts",
+    "separate Agent and Run cancellation"
+  ],
+  "excluded": [
+    "Recipe Factory implementation",
+    "audio model training",
+    "Hugging Face integration"
+  ],
+  "git": {
+    "branch": "codex/v0.7-real-training-beta",
+    "l0_local_commit": "9a16c35237972ad900518f6174529f224921db38",
+    "remote_branch": null,
+    "push_status": "blocked",
+    "blocker": "gh token invalid; GitHub integration returns 403 for repository writes"
+  },
+  "verification": {
+    "backend_tests": {
+      "status": "passed",
+      "command": ".venv/bin/python scripts/verify_project.py",
+      "passed": 31,
+      "failed": 0
+    },
+    "node_tests": {
+      "status": "passed",
+      "command": "npm test",
+      "passed": 9,
+      "failed": 0
+    },
+    "desktop_browser": {
+      "status": "passed",
+      "viewport": "1440x900",
+      "horizontal_overflow_px": 0,
+      "console_errors": 0
+    },
+    "mobile_browser": {
+      "status": "passed",
+      "viewport": "390x844",
+      "horizontal_overflow_px": 0,
+      "console_errors": 0,
+      "mobile_nav_target_height_px": 51,
+      "close_target_px": "44x44"
+    }
+  },
+  "browser_objects": {
+    "ambiguous_ocr_task_id": "我想识别合同图片里的内容-f4200ff0",
+    "ambiguous_revision_before": 1,
+    "selected_family": "ocr",
+    "revision_after": 2,
+    "final_status": "needs_recipe",
+    "run_ids": [],
+    "image_classification_task_id": "零件颜色分类模型-49ed7425",
+    "image_revision_before": 1,
+    "image_revision_after": 2,
+    "image_final_status": "awaiting_data",
+    "drafts": {
+      "image_task": "分类任务未发送草稿",
+      "ocr_task": "OCR任务未发送草稿",
+      "survived_switch_and_reload": true
+    }
+  },
+  "closure": [
+    {"flow": "ambiguous-task-clarify-continue", "score": 6, "out_of": 6},
+    {"flow": "revise-task-spec-preserve-history", "score": 6, "out_of": 6},
+    {"flow": "single-next-action-consistency", "score": 6, "out_of": 6},
+    {"flow": "task-scoped-draft-recovery", "score": 6, "out_of": 6},
+    {"flow": "agent-stop-run-cancel-separation", "score": 6, "out_of": 6}
+  ]
+}

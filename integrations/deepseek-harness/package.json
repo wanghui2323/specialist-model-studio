@@ -1,6 +1,6 @@
 {
   "name": "ai-pm-model-harness-dsh-plugin",
-  "version": "0.2.0",
+  "version": "0.7.0-beta.1",
   "description": "DeepSeek Harness tools for AI PM Model Harness",
   "type": "module",
   "main": "index.js",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import shutil
 import time
 from copy import deepcopy
 from dataclasses import dataclass
@@ -12,13 +13,15 @@ import numpy as np
 from PIL import Image, ImageOps
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, recall_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.svm import LinearSVC
 
 from ..io_utils import read_json, write_json
+from ..huggingface_assets import TrainingModelAsset
+from ..model_assets import ModelAsset, ModelAssetFile
+from ..onnx_image_features import OnnxImageFeatureExtractor
 from ..plugin_api import StrategyProposal
 
 
@@ -37,6 +40,9 @@ class TrainingContext:
     labels: list[str]
     image_size: int
     class_weight_balanced: bool
+    onnx_extractor: OnnxImageFeatureExtractor | None
+    onnx_timings_ms: list[float]
+    onnx_provenance: dict[str, Any] | None
 
 
 @dataclass
@@ -68,6 +74,97 @@ def extract_image_feature(path: str | Path, image_size: int) -> np.ndarray:
             color_stats,
         ]
     ).astype(np.float32)
+
+
+def training_model_asset_from_binding(binding: dict[str, Any]) -> TrainingModelAsset:
+    if not isinstance(binding, dict):
+        raise ValueError("model_asset must be an object")
+    root = Path(str(binding.get("root", ""))).expanduser().resolve()
+    raw_files = binding.get("files")
+    if not root.is_dir() or not isinstance(raw_files, list) or not raw_files:
+        raise ValueError("model_asset files are unavailable")
+    files = tuple(
+        ModelAssetFile(
+            relative_path=str(item["path"]),
+            size_bytes=int(item["size_bytes"]),
+            sha256=str(item["sha256"]),
+        )
+        for item in raw_files
+    )
+    asset = ModelAsset(
+        asset_id=str(binding.get("asset_id", "")),
+        provider=str(binding.get("provider", "")),
+        repo_id=str(binding.get("repository", "")),
+        requested_revision=str(binding.get("requested_revision", "")),
+        resolved_commit=str(binding.get("resolved_commit", "")),
+        license=str(binding.get("license", "unknown")),
+        security_status=str(binding.get("security_status", "")),
+        allow_patterns=tuple(item.relative_path for item in files),
+        files=files,
+        manifest_sha256=str(binding.get("manifest_sha256", "")),
+        status="active",
+        created_at=str(binding.get("created_at", "contract-bound")),
+    )
+    pairs = tuple((item.relative_path, root / item.relative_path) for item in files)
+    return TrainingModelAsset(asset=asset, root=root, files=pairs)
+
+
+def _features(
+    path: Path,
+    image_size: int,
+    extractor: OnnxImageFeatureExtractor | None,
+) -> tuple[np.ndarray, float | None, dict[str, Any] | None]:
+    handcrafted = extract_image_feature(path, image_size)
+    if extractor is None:
+        return handcrafted, None, None
+    result = extractor.extract(path)
+    return (
+        np.concatenate([result.features, handcrafted]).astype(np.float32),
+        result.inference_ms,
+        result.provenance.to_dict(),
+    )
+
+
+def extract_packaged_image_feature(
+    image_path: str | Path,
+    bundle_dir: str | Path,
+) -> np.ndarray:
+    """Reproduce the exact packaged feature path for a new image."""
+
+    root = Path(bundle_dir).expanduser().resolve()
+    bundle = joblib.load(root / "model.joblib")
+    image_size = int(bundle["image_size"])
+    if bundle.get("feature_version") != "hf-onnx-plus-rgb-gradient-v1":
+        return extract_image_feature(image_path, image_size)
+    descriptor = read_json(root / "model_asset_provenance.json")
+    provenance = descriptor["provenance"]
+    base_model = root / "base_model"
+    binding = {
+        "asset_id": provenance["model_asset_id"],
+        "provider": provenance["provider"],
+        "repository": provenance["repo_id"],
+        "requested_revision": provenance["requested_revision"],
+        "resolved_commit": provenance["resolved_commit"],
+        "license": "see model card",
+        "manifest_sha256": provenance["manifest_sha256"],
+        "security_status": "verified",
+        "root": str(base_model),
+        "files": [
+            {
+                "path": "model.onnx",
+                "size_bytes": (base_model / "model.onnx").stat().st_size,
+                "sha256": provenance["model_sha256"],
+            },
+            {
+                "path": "config.json",
+                "size_bytes": (base_model / "config.json").stat().st_size,
+                "sha256": provenance["config_sha256"],
+            },
+        ],
+    }
+    extractor = OnnxImageFeatureExtractor(training_model_asset_from_binding(binding))
+    feature, _, _ = _features(Path(image_path), image_size, extractor)
+    return feature
 
 
 def classification_metrics(
@@ -140,12 +237,19 @@ def _build_candidates(seed: int, balanced: bool) -> dict[str, Any]:
                 ),
             ]
         ),
-        "linear_svc": Pipeline(
+        "linear_hinge_sgd": Pipeline(
             [
                 ("scale", StandardScaler()),
                 (
                     "model",
-                    LinearSVC(C=1.0, class_weight=class_weight, random_state=seed),
+                    SGDClassifier(
+                        loss="hinge",
+                        alpha=0.0001,
+                        class_weight=class_weight,
+                        random_state=seed,
+                        tol=1e-3,
+                        max_iter=2_000,
+                    ),
                 ),
             ]
         ),
@@ -167,7 +271,23 @@ def train(contract: dict[str, Any]) -> TrainingContext:
     image_size = int(contract.get("recipe_options", {}).get("image_size", 24))
     absolute_paths = [root / item["relative_path"] for item in samples]
     relative_paths = [item["relative_path"] for item in samples]
-    X = np.vstack([extract_image_feature(path, image_size) for path in absolute_paths])
+    model_asset = contract.get("model_asset")
+    onnx_extractor = (
+        OnnxImageFeatureExtractor(training_model_asset_from_binding(model_asset))
+        if isinstance(model_asset, dict)
+        else None
+    )
+    feature_rows: list[np.ndarray] = []
+    onnx_timings_ms: list[float] = []
+    onnx_provenance: dict[str, Any] | None = None
+    for path in absolute_paths:
+        feature, inference_ms, provenance = _features(path, image_size, onnx_extractor)
+        feature_rows.append(feature)
+        if inference_ms is not None:
+            onnx_timings_ms.append(inference_ms)
+        if provenance is not None:
+            onnx_provenance = provenance
+    X = np.vstack(feature_rows)
     y = np.asarray([item["label"] for item in samples], dtype=str)
     labels = sorted({str(value) for value in y})
     seed = int(dataset["random_seed"])
@@ -214,6 +334,9 @@ def train(contract: dict[str, Any]) -> TrainingContext:
         labels=labels,
         image_size=image_size,
         class_weight_balanced=balanced,
+        onnx_extractor=onnx_extractor,
+        onnx_timings_ms=onnx_timings_ms,
+        onnx_provenance=onnx_provenance,
     )
 
 
@@ -222,7 +345,11 @@ def _latency(context: TrainingContext) -> dict[str, Any]:
     selected = context.test_idx[: min(100, len(context.test_idx))]
     for index in selected:
         started = time.perf_counter_ns()
-        feature = extract_image_feature(context.absolute_paths[int(index)], context.image_size)
+        feature, _, _ = _features(
+            context.absolute_paths[int(index)],
+            context.image_size,
+            context.onnx_extractor,
+        )
         context.final_model.predict(feature.reshape(1, -1))
         samples.append((time.perf_counter_ns() - started) / 1_000_000)
     return {
@@ -268,6 +395,24 @@ def evaluate(context: TrainingContext, contract: dict[str, Any]) -> EvaluationCo
             "image_size": context.image_size,
             "feature_count": int(context.X.shape[1]),
             "class_weight_balanced": context.class_weight_balanced,
+            "feature_source": (
+                "huggingface_onnx_plus_rgb_gradient_v1"
+                if context.onnx_extractor is not None
+                else "rgb_gradient_v1"
+            ),
+            "model_asset": context.onnx_provenance,
+            "onnx_runtime": (
+                {
+                    "provider": "CPUExecutionProvider",
+                    "init_ms": context.onnx_extractor.init_ms,
+                    "sample_count": len(context.onnx_timings_ms),
+                    "inference_total_ms": float(sum(context.onnx_timings_ms)),
+                    "inference_p50_ms": float(np.median(context.onnx_timings_ms)),
+                    "inference_p95_ms": float(np.percentile(context.onnx_timings_ms, 95)),
+                }
+                if context.onnx_extractor is not None and context.onnx_timings_ms
+                else None
+            ),
         },
         "dataset": {
             "dataset_id": report["dataset_id"],
@@ -311,6 +456,20 @@ def _write_model_card(path: Path, contract: dict[str, Any], metrics: dict[str, A
         f"- `{name}`: {'PASS' if passed else 'FAIL'}"
         for name, passed in metrics["gate_checks"].items()
     )
+    model_asset = contract.get("model_asset") if isinstance(contract.get("model_asset"), dict) else None
+    asset_lines = (
+        "\n".join(
+            [
+                f"- Base model repository: `{model_asset['repository']}`",
+                f"- Base model commit: `{model_asset['resolved_commit']}`",
+                f"- Base model license: `{model_asset['license']}`",
+                f"- Base model manifest: `{model_asset['manifest_sha256']}`",
+                "- Feature path: pinned ONNX inference on CPU plus local RGB-gradient features",
+            ]
+        )
+        if model_asset
+        else "- Feature path: local RGB-gradient features; no external base model"
+    )
     path.write_text(
         f"""# Model Card: {contract['task_id']}
 
@@ -332,6 +491,10 @@ This model was trained from the locally imported dataset `{metrics['dataset']['d
 - End-to-end local p95: {metrics['latency']['p95_ms']:.2f} ms
 - Model size: {metrics['model_size_mb']:.3f} MB
 
+## Model asset lineage
+
+{asset_lines}
+
 ## Offline gates
 
 {gate_lines}
@@ -339,7 +502,7 @@ This model was trained from the locally imported dataset `{metrics['dataset']['d
 ## Known limits
 
 - Random file-level splitting cannot prove generalization across people, devices, time periods or production sites.
-- The lightweight raw-pixel feature baseline is suitable for a first feasibility loop, not all CV problems.
+- This feasibility classifier and any optional task-specific ONNX feature source are not a universal CV solution.
 - Review the failure samples and a representative shadow-test set before production use.
 - Load Joblib artifacts only from trusted runs after hash verification.
 """,
@@ -360,13 +523,33 @@ def package(
             "estimator": context.final_model,
             "labels": context.labels,
             "image_size": context.image_size,
-            "feature_version": "rgb-gradient-v1",
+            "feature_version": (
+                "hf-onnx-plus-rgb-gradient-v1"
+                if context.onnx_extractor is not None
+                else "rgb-gradient-v1"
+            ),
+            "model_asset_provenance": context.onnx_provenance,
         },
         model_path,
         compress=3,
     )
     metrics = evaluation.metrics
-    metrics["model_size_mb"] = float(model_path.stat().st_size / (1024 * 1024))
+    delivery_bytes = model_path.stat().st_size
+    if context.onnx_extractor is not None:
+        base_model_dir = artifact_dir / "base_model"
+        base_model_dir.mkdir()
+        for source in (
+            context.onnx_extractor.model_path,
+            context.onnx_extractor.config_path,
+        ):
+            target = base_model_dir / source.name
+            shutil.copyfile(source, target)
+            delivery_bytes += target.stat().st_size
+        write_json(
+            artifact_dir / "model_asset_provenance.json",
+            context.onnx_extractor.describe(),
+        )
+    metrics["model_size_mb"] = float(delivery_bytes / (1024 * 1024))
     metrics["gate_checks"] = _gate_checks(metrics, contract["release_gates"])
     write_json(artifact_dir / "metrics.json", metrics)
     write_json(artifact_dir / "failure_samples.json", {"samples": evaluation.failure_samples})
@@ -388,7 +571,7 @@ def package(
     )
     _write_model_card(artifact_dir / "model_card.md", contract, metrics)
     (artifact_dir / "inference_example.py").write_text(
-        """from pathlib import Path\nimport joblib\nfrom model_harness.recipes.image_folder_classification import extract_image_feature\n\nbundle = joblib.load('model.joblib')  # load trusted, hash-verified artifacts only\nfeature = extract_image_feature(Path('example.jpg'), bundle['image_size'])\nprint(bundle['estimator'].predict(feature.reshape(1, -1))[0])\n""",
+        """from pathlib import Path\nimport joblib\nfrom model_harness.recipes.image_folder_classification import extract_packaged_image_feature\n\nroot = Path(__file__).resolve().parent\nbundle = joblib.load(root / 'model.joblib')  # load trusted, hash-verified artifacts only\nfeature = extract_packaged_image_feature(Path('example.jpg'), root)\nprint(bundle['estimator'].predict(feature.reshape(1, -1))[0])\n""",
         encoding="utf-8",
     )
     return metrics

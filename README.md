@@ -1,87 +1,97 @@
 # AI PM Model Harness
 
-一个面向AI产品经理和独立开发者的对话式小模型训练Harness：人描述目标、提供必要数据并保留关键决定权，训练Agent调用可审查的Recipe插件完成数据体检、训练、评测、优化和制品交付。
+一个面向 AI 产品经理和独立开发者的对话式专用小模型训练 Harness：用户描述目标、提供必要数据并保留关键决定权，Harness 用可审查的 Recipe 组织数据体检、训练、评测、优化和制品交付。
 
-> 当前状态：`v0.5.0-alpha.1` 本地Alpha版。DeepSeek Harness Web已成为推荐的对话入口，Model Harness后端保存训练领域事实，`/app`只展示同一任务的证据；仍不宣称生产就绪。
+> 当前代码版本是 `0.7.0b1`，对外记为 `v0.7.0-beta.1` 本地 Beta。`codex/v0.7-real-training-beta` 开发分支已推送到 GitHub；这仍不表示生产就绪、已合并 `main`、已打 Tag 或已创建 GitHub Release。
 
-GitHub：https://github.com/wanghui2323/ai-pm-model-harness
+项目远程地址是 <https://github.com/wanghui2323/ai-pm-model-harness>；开发分支可在 <https://github.com/wanghui2323/ai-pm-model-harness/tree/codex/v0.7-real-training-beta> 查看。GitHub Release 仍须以远程 Tag 与 Release 页面为准。
 
-## 这一版验证什么
+## 先说能做什么
 
-训练一个OCR、语音、CV或预测小模型，难点往往不只是调用某个训练框架，而是持续完成数据检查、模型选择、独立评测、失败诊断和下一轮优化。Harness把它们组织成一项可被Agent代办、又能被人审计的任务：
+v0.7 有两个内置的用户数据 Recipe、一个经声明式 Recipe Factory 动态注册的音频 Recipe，外加一个教学 Recipe：
 
-```text
-用户对话 → DeepSeek Harness Agent循环 → Model Harness工具
-                                           ↓
-                    任务 → 数据体检 → 冻结合同 → Recipe运行
-                                           ↓
-                    证据工作台 ← 事件、指标、制品、父子谱系
-                                           ↓
-                               人批准后创建优化子运行
-```
+| Recipe | 输入 | 真实输出 | 边界 |
+|---|---|---|---|
+| 图片分类 | `类别/图片` 目录 ZIP | 轻量多类分类器、独立评测与制品 | 不是 OCR、目标检测或分割 |
+| 表格回归 | 含数值目标列的 CSV | 回归 Pipeline、MAE/RMSE/R² 与制品 | 尚未内置表格分类、时序预测 |
+| 音频关键词分类（动态注册） | 按类别组织的 16 kHz 单声道 PCM WAV ZIP | 离线短音频分类器、说话人隔离评测与制品 | 默认注册表不含此能力；不是 ASR、TTS 或流式唤醒词引擎 |
+| Digits 教学 | scikit-learn 内置手写数字 | 完整教学训练闭环 | 不代表用户数据落地能力 |
 
-原始运行不会被优化覆盖。Harness只提出策略；可执行策略也必须获得批准，再创建带 `parent_run_id` 的子运行。
+对于 OCR、目标检测/分割、ASR、TTS、声纹、时序、表格分类、文本分类/NLP 和其他未内置能力，系统会显式进入能力缺口或 Recipe Build Request，不会生成伪训练进度。
 
-## v0.5 alpha已经支持
+**“用户可以提出任务”不等于“已支持任意模型训练”。** 只有已注册、已验证且与 TaskSpec/Data Adapter 匹配的 Recipe 才能创建真实 Run。
 
-- 通用Recipe插件协议、内置插件注册表和Python entry point发现；
-- 一个基于scikit-learn Digits数据的数字分类教学Recipe；
-- 一个真实用户数据纵向切片：上传 `类别/图片.jpg` 结构的ZIP，训练轻量多类别图片分类模型；
-- 持久化训练任务、数据集版本、数据体检报告、人工确认合同和运行谱系；
-- ZIP路径穿越、体积、图片数量、解码、类别数量、最小样本、重复泄漏和跨标签冲突检查；
-- 比较most-frequent baseline、logistic regression、linear SVC和random forest，使用验证集选择后再打开测试集；
-- 训练、验证、独立测试、压力测试和发布门槛检查；
-- 版本化、递增序号的NDJSON事件流；
-- 后台任务、取消边界、重启中断识别和可审计恢复；
-- 基于诊断结果的优化建议，以及批准后执行的父子运行；
-- 模型、指标、模型卡、混淆矩阵、测试参考、优化策略和学习报告；
-- 本地HTTP/SSE领域服务，为对话Agent提供任务、数据、合同、运行、事件和审批事实；
-- 一个响应式训练证据工作台，展示数据体检、冻结合同、真实事件耗时、失败样本、制品和优化谱系；
-- 一个DeepSeek Harness profile bundle，把完整用户数据训练闭环注册成15个模型工具；
-- DeepSeek Harness原生持久会话、模型工具调用卡片和变更前审批，对话刷新后仍可回看；
-- 对话入口与证据工作台使用同一 `task_id`，可从Agent打开证据，也可从工作台回到Agent；
-- 一条命令同时启动本地训练后端和对话宿主；
-- 一个供Code Agent调用的 `train-small-model` Skill。
-
-它仍未实现OCR检测/识别、目标检测、语音训练、预测模型、自动下载任意模型、云GPU调度或生产部署。图片分类Recipe验证的是“用户数据训练闭环”，不是完整工业视觉平台。
-
-## 用自己的图片跑一次真实闭环
-
-准备一个ZIP，每个类别一个目录，每类至少5张有效图片：
+## v0.7 的真实闭环
 
 ```text
-parts.zip
-├── good/
-│   ├── 001.jpg
-│   └── ...
-└── damaged/
-    ├── 001.jpg
-    └── ...
+原始目标
+  → 版本化 TaskSpec（唯一输出形式）
+  → Recipe / Data Adapter 匹配
+  → 数据体检与授权
+  → 冻结训练合同与验收门槛
+  → 真实 Run（状态、事件、指标、制品）
+  → EvaluationReport
+  → 用户的一条全新样本试跑
+  → 隐私过滤的 Artifact Bundle
 ```
 
-启动对话Harness后，在Agent中说清业务目标。它会依次：
+原始 Run 不会被优化覆盖。可执行策略仍需人工批准，并创建带 `parent_run_id` 的子 Run。如果优化决策读取了 `clean_test` 或其他测试证据，子 Run 会标记 `test_contaminated` / `insufficient_evidence`，不能成为 `release_ready`。
 
-1. 查找是否已有任务，没有才创建草稿；
-2. 向你索取本地ZIP路径并调用后端体检数据；
-3. 解释类别、坏图、重复和风险，与你确认验收门槛；
-4. 分别取得数据授权、标签含义和离线门槛三项确认；
-5. 在DSH原生审批通过后启动真实训练，并读取真实事件与结果；
-6. 给出证据工作台链接；批准某条优化后创建不覆盖父运行的下一轮。
+### 评测不再只有一个红绿灯
 
-完整边界见 [v0.4真实训练闭环](docs/v0.4-real-training-loop.md)。
+`EvaluationReport` 分开记录 `run_status`、`integrity_status`、`metric_gate_status`、`evidence_status`、`conclusion` 和 `release_ready`。因此“质量门槛失败”不会被写成“模型制品损坏”；完整但效果不足的模型仍会被保留供审查。
+
+### 新样本试跑与交付 Bundle
+
+已完成 Run 可以对一个显式提供的全新样本进行真实 `load + feature extraction + predict`：
+
+- 图片：单个 PNG/JPEG/WEBP/BMP；
+- 音频：单个 16 kHz 单声道 PCM WAV；
+- 表格：单行 JSON 或 CSV。
+
+试跑会验证 Run/contract/model 哈希，不会从训练集、验证集、测试集或 Run 内部文件偷拿样本。成功与阻断都会留下不含原始内容和绝对路径的可审计记录。
+
+Artifact Bundle 只从可交付白名单取文件，生成带 SHA-256/大小的 manifest，并明确排除原始数据、test references、内部状态和绝对路径。
+
+## Recipe Factory 的当前边界
+
+Recipe Factory 是可持久化的 Build → Validate → Approve → Register 链路，但 v0.7 只允许一种可执行构建：**可信、白名单化的声明式音频关键词 RecipeSpec**。
+
+- 样例 WAV ZIP 先只读暂存和体检，不创建 Run；
+- 候选声明和验证都有 digest，注册前需显式批准；
+- 注册后才会激活对应 Recipe/Data Adapter 版本；
+- 任何 Python/可执行生成代码构建都持久记录为 `blocked_environment`，不被执行，也不被偷偷注册。
+
+可下载的 Code Agent scaffold 是待实现契约，不是可运行 Recipe 的证明。
+
+## Hugging Face 集成的当前边界
+
+v0.7 已实现：
+
+- 通过官方 `huggingface_hub` 客户端搜索与读取模型卡；
+- 要求 40 位不可变 commit，拒绝 branch/tag 漂移；
+- 下载前需显式批准，只允许声明的小文件；
+- 保存 resolved commit、许可信息、文件清单和 SHA-256，重启后继续验证；
+- 在 CPU `onnxruntime` 上使用通过验证的 ONNX 作为**图片分类特征提取器**。
+
+它尚不是任意 Hugging Face 模型的通用微调器，也不会执行 remote code。当前 HF 资产只接到图片分类特征链路，没有接到音频、表格、OCR、检测或文本 Recipe。
 
 ## 快速开始
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install -e .
+.venv/bin/python -m pip install -e '.[server,test]'
+npm ci --prefix integrations/deepseek-harness
 
 .venv/bin/small-model-harness list-recipes
-.venv/bin/small-model-harness init --recipe digit-classification --output workspaces/my-first-model
-.venv/bin/small-model-harness run workspaces/my-first-model/task_contract.json
+.venv/bin/small-model-harness init \
+  --recipe digit-classification \
+  --output workspaces/my-first-model
+.venv/bin/small-model-harness run \
+  workspaces/my-first-model/task_contract.json
 ```
 
-运行结束后，终端会返回 `run_dir`：
+检查一个真实 Run：
 
 ```bash
 .venv/bin/small-model-harness status runs/<run-id>
@@ -91,84 +101,101 @@ python3 -m venv .venv
 .venv/bin/small-model-harness verify runs/<run-id> --deep
 ```
 
-确认某条建议后，用新运行验证它，不覆盖原运行：
+`--deep` 只应对哈希已匹配、由本地可信 Run 生成的 Joblib 模型使用。不要加载来源不明的 Pickle/Joblib。
+
+## 启动本地 Harness
 
 ```bash
-.venv/bin/small-model-harness apply-strategy \
-  runs/<run-id> add-shift-augmentation
-```
-
-`--deep` 只应对哈希已经匹配、由本地可信运行生成的Joblib模型使用。不要加载来源不明的Pickle/Joblib文件。
-
-## 启动对话式Harness
-
-安装本地后端、DSH插件并只监听本机：
-
-```bash
-.venv/bin/python -m pip install -e '.[server]'
 npm --prefix integrations/deepseek-harness install --ignore-scripts
 ./scripts/install_dsh_preset.sh
 dsh plugin --profile web add "$PWD/integrations/deepseek-harness"
 ./scripts/start_conversation_harness.sh
 ```
 
-打开 `http://127.0.0.1:3080`，在DeepSeek Harness中用自然语言委派训练。`http://127.0.0.1:8765/app` 是训练证据工作台，不是另一套聊天系统；刷新后会按URL中的 `task_id` 从后端持久化状态恢复。
+- Model Harness 任务工作台：<http://127.0.0.1:8765/app>
+- 本地 OpenAPI：<http://127.0.0.1:8765/docs>
+- 可选 DeepSeek Harness 对话宿主：<http://127.0.0.1:3080>
 
-如果只需要API或手动工作台，仍可单独运行 `.venv/bin/small-model-harness serve`。OpenAPI页面位于 `http://127.0.0.1:8765/docs`。当前服务没有多用户鉴权，不应直接暴露到公网。
+没有启动 DeepSeek Harness 时，任务、数据、合同、Run、评测、新样本试跑和 Bundle API 仍可本地使用；自由对话和 Agent 工具编排才依赖 3080 运行时。当前服务没有多用户鉴权，不应直接暴露到公网。
 
-## 接入DeepSeek Harness
+DeepSeek Harness 是可选适配层，不是训练核心的 fork。当前 bundle 注册 **37 个** `model_harness_*` 工具，覆盖任务规格、数据、声明式 Recipe Factory、HF 固定资产、Run、EvaluationReport、新样本试跑和 Bundle。所有结果仍来自本地真实 HTTP 对象；Agent 投影会剥离本机绝对路径。详见 [DeepSeek Harness Adapter](integrations/deepseek-harness/README.md)。
 
-DeepSeek Harness是推荐的对话宿主，但不是训练运行时的硬依赖。本项目通过profile bundle接入，没有复制、fork或修改DeepSeek Harness源码：
+## 真实验收命令
+
+### 1. 官方 Hugging Face 固定 commit 场景
 
 ```bash
-npm --prefix integrations/deepseek-harness install --ignore-scripts
-./scripts/install_dsh_preset.sh
-dsh plugin --profile web add "$PWD/integrations/deepseek-harness"
-dsh web --host 127.0.0.1 --port 3080
+.venv/bin/python scripts/run_hf_real_scenario.py
 ```
 
-15个工具覆盖任务列表/创建/详情、ZIP导入、合同配置/确认、任务运行、优化策略，以及教学Recipe的运行、事件、策略和取消。项目还安装一个默认的“模型训练模式”preset：保留训练工具、提问、任务跟踪和上下文压缩，不向模型暴露通用Shell或文件编辑工具。数据导入、合同变更、确认、启动、优化和取消还会经过DSH原生审批；后端继续独立校验业务前置条件。
+该脚本会真实联网，使用官方 HF 客户端读取模型卡和下载默认公开模型的固定 commit，然后完成显式批准、哈希验证、CPU ONNX 特征提取、图片分类训练、深度验证、EvaluationReport、全新图片试跑、隐私 Bundle 和应用实例重建查询。它不冒充真实 PID 重启；进程级重启由 L5 独立门禁验证。报告默认写入 `runs/acceptance/hf-real/<timestamp>/report.json`，数据和下载制品不进入 Git。
 
-产品架构见 [docs/v0.5-conversational-harness.md](docs/v0.5-conversational-harness.md)，真实数据闭环见 [docs/v0.4-real-training-loop.md](docs/v0.4-real-training-loop.md)，插件开发说明见 [integrations/deepseek-harness/README.md](integrations/deepseek-harness/README.md)。
+可显式指定公开仓库与 40 位 commit：
 
-## 编写外部Recipe
-
-外部包实现 `RecipePlugin` 协议后，通过entry point注册：
-
-```toml
-[project.entry-points."ai_pm_model_harness.recipes"]
-my-recipe = "my_package.recipe:PLUGIN"
+```bash
+.venv/bin/python scripts/run_hf_real_scenario.py \
+  --repo-id pyronear/mobilenet_v3_small \
+  --commit a6a0b39ca1f5b0a247eb0a2e83f06cd95fc03674
 ```
 
-插件负责自己的合同验证、训练、评测、打包、优化策略和深度验证；核心负责运行目录、状态、事件、父子关系和通用哈希。详细约束见 [Recipe authoring reference](skills/train-small-model/references/recipe-authoring.md)。
+### 2. v0.7 L0–L5 fail-closed 验收
+
+```bash
+.venv/bin/python scripts/verify_v07_beta.py \
+  --output runs/acceptance/manual-v07/acceptance-report.json
+```
+
+门槛契约位于 `acceptance/v0.7-gates.json`。脚本只接受 `passed` / `failed` / `blocked`，不允许用 `skipped` 伪装完成。它不接受人工填写的验收结论：每次运行都会生成新 challenge，由受控 producer 实际运行固定 HF 场景、两个浏览器视口、两个服务 PID 和冷克隆，再由聚合器重算制品哈希并实时查询对象。工作树不干净、旧证据目录、缺少联网依赖或任何原始证据不一致都会失败关闭。
+
+如需指定受控制品位置，只能传入一个尚不存在的新目录：
+
+```bash
+.venv/bin/python scripts/verify_v07_beta.py \
+  --controlled-evidence-dir /absolute/path/to/fresh-evidence-dir
+```
+
+GitHub commit、PR、CI、tag 和 Release 由 `gh api` 独立查询；发布链缺失不会冒充失败的本地 Beta，也不会被手写 URL 补齐。
+
+仅检查仓库单元/集成测试：
+
+```bash
+.venv/bin/python scripts/verify_project.py
+```
+
+更完整的能力账本和发布语义见 [v0.7 Beta 能力与边界](docs/v0.7-beta-boundaries.md)。
 
 ## 项目结构
 
 ```text
-model_harness/plugin_api.py     Recipe插件协议
-model_harness/plugins.py        内置与entry point注册表
-model_harness/runner.py         同步执行与通用制品验证
-model_harness/service.py        后台任务、取消、恢复、优化子运行
-model_harness/workspace.py      训练任务、数据集、合同与运行所有权
-model_harness/chat.py           兼容适配器的确定性命令调度
-model_harness/server.py         可选HTTP/SSE适配层
-model_harness/web/              同一任务的训练证据工作台
-model_harness/recipes/          数字教学与用户图片分类Recipe
-integrations/deepseek-harness/  DeepSeek Harness工具bundle
-skills/train-small-model/       Code Agent Skill
-tests/                          单元与端到端测试
-runs/                           本地运行制品，不进入版本控制
+model_harness/task_specs.py       TaskSpec 修订与能力决策
+model_harness/plugin_api.py       Recipe 协议
+model_harness/data_adapters.py    数据导入与体检协议
+model_harness/recipe_factory.py   可信声明式 Recipe Factory
+model_harness/model_assets.py     固定版本模型资产和哈希
+model_harness/runner.py           真实训练执行与验证
+model_harness/evidence.py         评测、推理和 Bundle 证据
+model_harness/sample_inference.py 用户新样本试跑
+model_harness/service.py          Run 服务与父子谱系
+model_harness/workspace.py        Task/Data/Contract/Run 所有权
+model_harness/server.py           本地 HTTP/SSE 适配层
+model_harness/web/                对话式训练任务工作台
+model_harness/recipes/            内置 Recipe
+integrations/deepseek-harness/    可选 DSH profile bundle
+tests/                            单元与端到端测试
+runs/                             本地数据/运行/验收证据，不入 Git
 ```
 
-## 安全和开源边界
+## 安全与开源边界
 
 - 用户数据、客户合同、个人语音、凭证和下载模型不进入仓库；
-- Agent不得为通过测试而降低冻结门槛或打开最终测试集调参；
-- 优化建议不会自动执行，真实数据、成本、发布和许可决定仍由人批准；
-- 公开数据高分不等于真实场景、影子测试或生产验收；
-- 运行LLM生成代码或加载未知模型应使用隔离环境；
+- 生产数据、成本、门槛修改、优化、注册和发布仍由人批准；
+- 公开数据高分不等于真实现场、影子测试或生产验收；
+- 加载未知 Joblib/Pickle、执行生成代码或远程模型代码均不在当前可信边界内；
 - 第三方框架、数据集和模型权重保留各自许可，详见 `THIRD_PARTY.md`。
 
-## 下一步
+## 下一步（未实现）
 
-增加OCR、语音或工业检测中的一个独立Recipe，并让对话Agent支持更长时间的后台运行通知。无论使用何种对话宿主，任务状态、数据授权、验收门槛、审批和制品仍由Harness后端负责。
+- 在真正隔离的构建环境中验证第三方/生成 Recipe，而不是在主进程执行 Python；
+- 按独立 Recipe + Data Adapter + 真实验收数据增加 OCR、检测、ASR/TTS、时序和文本能力；
+- 将 HF 资产边界扩展到经单独审查的其他 Recipe；
+- 补齐多用户鉴权、远程计算隔离、生产影子评测和部署。
