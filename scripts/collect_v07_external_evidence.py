@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
@@ -367,13 +368,17 @@ def _start_service(
 def _collect_family(base_url: str, family: str, journey: dict[str, Any]) -> dict[str, Any]:
     task_id = journey["task_id"]
     run_id = journey["run_id"]
-    _, task_payload = _http_json(f"{base_url}/tasks/{task_id}")
-    _, result = _http_json(f"{base_url}/runs/{run_id}/result")
-    _, evaluation_payload = _http_json(f"{base_url}/tasks/{task_id}/runs/{run_id}/evaluation-report")
-    _, inference_payload = _http_json(f"{base_url}/tasks/{task_id}/runs/{run_id}/sample-inferences/{journey['inference_check_id']}")
-    _, bundle_payload = _http_json(f"{base_url}/tasks/{task_id}/runs/{run_id}/artifact-bundles/{journey['artifact_bundle_id']}")
-    _, events_payload = _http_json(f"{base_url}/runs/{run_id}/events")
-    bundle_status, bundle_bytes, _ = _http_bytes(f"{base_url}/tasks/{task_id}/runs/{run_id}/artifact-bundles/{journey['artifact_bundle_id']}/download")
+    task_path = urllib.parse.quote(str(task_id), safe="")
+    run_path = urllib.parse.quote(str(run_id), safe="")
+    inference_path = urllib.parse.quote(str(journey["inference_check_id"]), safe="")
+    bundle_path = urllib.parse.quote(str(journey["artifact_bundle_id"]), safe="")
+    _, task_payload = _http_json(f"{base_url}/tasks/{task_path}")
+    _, result = _http_json(f"{base_url}/runs/{run_path}/result")
+    _, evaluation_payload = _http_json(f"{base_url}/tasks/{task_path}/runs/{run_path}/evaluation-report")
+    _, inference_payload = _http_json(f"{base_url}/tasks/{task_path}/runs/{run_path}/sample-inferences/{inference_path}")
+    _, bundle_payload = _http_json(f"{base_url}/tasks/{task_path}/runs/{run_path}/artifact-bundles/{bundle_path}")
+    _, events_payload = _http_json(f"{base_url}/runs/{run_path}/events")
+    bundle_status, bundle_bytes, _ = _http_bytes(f"{base_url}/tasks/{task_path}/runs/{run_path}/artifact-bundles/{bundle_path}/download")
     if bundle_status != 200:
         raise RuntimeError(f"{family} bundle download failed")
     task = task_payload["task"]
@@ -399,12 +404,13 @@ def _collect_family(base_url: str, family: str, journey: dict[str, Any]) -> dict
         "event_last_seq": int(events[-1]["seq"]),
     }
     if family == "image":
-        _, verification = _http_json(f"{base_url}/tasks/{task_id}/model-assets/current/verify")
+        _, verification = _http_json(f"{base_url}/tasks/{task_path}/model-assets/current/verify")
         if verification.get("ok") is not True:
             raise RuntimeError("image ModelAsset verification failed")
         snapshot["model_asset_id"] = task.get("selected_model_asset_id")
     if family == "audio":
-        _, build_payload = _http_json(f"{base_url}/tasks/{task_id}/recipe-builds/{journey['build_attempt_id']}")
+        build_path = urllib.parse.quote(str(journey["build_attempt_id"]), safe="")
+        _, build_payload = _http_json(f"{base_url}/tasks/{task_path}/recipe-builds/{build_path}")
         build = build_payload["recipe_build"]
         snapshot["build_attempt_id"] = build.get("attempt_id")
         snapshot["recipe_version_id"] = journey.get("recipe_version_id")

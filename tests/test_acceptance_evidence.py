@@ -14,6 +14,7 @@ from scripts.acceptance_evidence import (
     validate_json_schema,
 )
 from scripts import verify_v07_beta as runner
+from scripts import collect_v07_external_evidence as producer
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -238,6 +239,47 @@ def build_evidence(root: Path) -> Path:
 
 
 class AcceptanceEvidenceTests(unittest.TestCase):
+    def test_controlled_family_requests_percent_encode_unicode_ids(self) -> None:
+        journey = {
+            "task_id": "中文任务-1234",
+            "run_id": "运行-5678",
+            "inference_check_id": "试跑-9012",
+            "artifact_bundle_id": "产物-3456",
+        }
+        requested: list[str] = []
+
+        def fake_json(url: str) -> tuple[int, dict]:
+            requested.append(url)
+            if url.endswith("/result"):
+                return 200, {"run_id": journey["run_id"], "status": "completed"}
+            if url.endswith("/evaluation-report"):
+                return 200, {"evaluation_report": {"report_id": "evaluation-1", "conclusion": "release_ready"}}
+            if "/sample-inferences/" in url:
+                return 200, {"sample_inference": {"check_id": journey["inference_check_id"], "status": "passed"}}
+            if "/artifact-bundles/" in url:
+                return 200, {"artifact_bundle": {"bundle_id": journey["artifact_bundle_id"], "status": "completed", "archive": {"sha256": "c" * 64}}}
+            if url.endswith("/events"):
+                return 200, {"events": [{"seq": 1}]}
+            if url.endswith("/model-assets/current/verify"):
+                return 200, {"ok": True}
+            return 200, {"task": {"task_id": journey["task_id"], "selected_model_asset_id": "asset-1"}}
+
+        def fake_bytes(url: str, *, timeout: float = 5.0) -> tuple[int, bytes, str]:
+            del timeout
+            requested.append(url)
+            return 200, b"bundle", "application/zip"
+
+        with patch.object(producer, "_http_json", side_effect=fake_json), patch.object(
+            producer,
+            "_http_bytes",
+            side_effect=fake_bytes,
+        ):
+            snapshot = producer._collect_family("http://127.0.0.1:8765", "image", journey)
+
+        self.assertEqual(snapshot["task_id"], journey["task_id"])
+        self.assertTrue(all(url.isascii() for url in requested))
+        self.assertTrue(any("%E4%B8%AD%E6%96%87" in url for url in requested))
+
     def test_controlled_environment_drops_execution_injection_variables(self) -> None:
         poisoned = {
             "PATH": "/tmp/attacker-bin",
