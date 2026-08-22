@@ -13,7 +13,7 @@
     <header class="topbar">
       <a class="brand" href="#top"><img src="./model-harness-mark.svg" alt="" /><span><b>Model Harness</b><small>v0.7 · Local Usable Beta</small></span></a>
       <nav aria-label="工作台导航"><a href="#baseline">事实基线</a><a href="#contract">产品合同</a><a href="#loops">迭代 Loop</a><a href="#gates">验收门槛</a></nav>
-      <span class="status-pill" id="headerStatus" data-status="implementing"><i></i><span>L0 进行中</span></span>
+      <span class="status-pill" id="headerStatus" data-status="implementing"><i></i><span>连续 Loop 执行中</span></span>
     </header>
 
     <main id="main">
@@ -21,17 +21,17 @@
         <div class="hero-copy">
           <span class="eyebrow">V0.7 · TRUTH BEFORE SCALE</span>
           <h1>先让每一次“完成”<br />都能被真实证据证明。</h1>
-          <p>v0.7 已获批准启动。当前只执行 L0「事实重置」：重新核对代码、服务、测试、能力边界与浏览器体验。基线未被用户验收前，不进入功能开发。</p>
-          <div class="hero-actions"><a class="primary" href="#loops">查看 L0 任务</a><a class="secondary" href="./requirements.md">阅读完整需求合同</a></div>
-          <div class="hero-meta"><span><i></i>独立开发分支</span><span><i></i>不沿用旧 done</span><span><i></i>每轮验收后才推送</span></div>
+          <p>用户已授权连续执行 L0–L5 大 Loop。每一层只有在对象、持久化、重入、守卫、错误/取消和真实证据全部闭环后才进入下一层；最终统一验收，不用页面动画代替完成。</p>
+          <div class="hero-actions"><a class="primary" href="#loops">查看当前 Loop</a><a class="secondary" href="./requirements.md">阅读完整需求合同</a></div>
+          <div class="hero-meta"><span><i></i>L0 已验收</span><span><i></i>逐层自动验证</span><span><i></i>最终统一验收与发布</span></div>
         </div>
         <aside class="active-loop-card">
-          <div class="loop-kicker"><span>L0</span><em>当前 Loop</em></div>
-          <h2>事实重置</h2>
-          <p>让代码、任务账本、运行服务和用户看到的能力回到同一事实源。</p>
+          <div class="loop-kicker"><span id="activeLoopId">—</span><em>当前 Loop</em></div>
+          <h2 id="activeLoopTitle">正在读取任务账本</h2>
+          <p id="activeLoopOutcome">只显示账本中真实处于 implementing 的层级。</p>
           <div class="progress-track"><i id="l0Progress"></i></div>
           <div class="progress-copy"><span id="l0ProgressText">正在读取任务账本…</span><strong id="l0ProgressValue">—</strong></div>
-          <small>退出条件：自动检查、真实场景、服务能力和双视口证据齐全。</small>
+          <small>退出条件：本层所有 P0 纵向闭环达到 6/6，并保存可复现证据。</small>
         </aside>
       </section>
 
@@ -85,14 +85,14 @@
         <div class="closure-layout">
           <div class="closure-table" id="closureTable"></div>
           <aside class="review-card">
-            <span>L0 REVIEW GATE</span><h3 id="reviewTitle">正在收集基线证据</h3><p id="reviewDescription">完成所有 L0 验证后，工作台会生成验收摘要；用户确认后才进入 L1。</p>
-            <button id="copyReview" type="button" disabled>复制 L0 验收摘要</button><small id="copyFeedback">目前不会启动下一轮。</small>
+            <span>MACRO LOOP GATE</span><h3 id="reviewTitle">正在读取当前层级</h3><p id="reviewDescription">只有自动验证和真实运行证据通过，才会进入下一层。</p>
+            <button id="copyReview" type="button" disabled>最终统一验收时启用</button><small id="copyFeedback">逐层 verified 不等于最终 accepted。</small>
           </aside>
         </div>
       </section>
     </main>
 
-    <footer><span>Model Harness v0.7 · Local Usable Beta</span><span id="footerState">L0 事实重置进行中 · 2026-08-21</span></footer>
+    <footer><span>Model Harness v0.7 · Local Usable Beta</span><span id="footerState">连续 L0–L5 大 Loop · 2026-08-22</span></footer>
     <script src="./workbench.js" defer></script>
   </body>
 </html>

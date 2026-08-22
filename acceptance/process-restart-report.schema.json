@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wanghui2323/ai-pm-model-harness/acceptance/process-restart-report.schema.json",
+  "title": "Model Harness v0.7 Process Restart Observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_commit", "producer_run_id", "base_url", "before_pid", "after_pid", "before_exit_code", "old_port_closed", "health_status_after", "openapi_status_after", "before", "after"],
+  "properties": {
+    "schema_version": {"const": "0.1"},
+    "source_commit": {"$ref": "#/$defs/commit"},
+    "producer_run_id": {"$ref": "#/$defs/runId"},
+    "base_url": {"type": "string", "pattern": "^http://127\\.0\\.0\\.1:[0-9]{2,5}$"},
+    "before_pid": {"type": "integer", "minimum": 1},
+    "after_pid": {"type": "integer", "minimum": 1},
+    "before_exit_code": {"type": "integer"},
+    "old_port_closed": {"type": "boolean"},
+    "health_status_after": {"type": "integer"},
+    "openapi_status_after": {"type": "integer"},
+    "before": {"$ref": "#/$defs/families"},
+    "after": {"$ref": "#/$defs/families"}
+  },
+  "$defs": {
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nonEmpty": {"type": "string", "minLength": 1},
+    "runId": {"type": "string", "pattern": "^evidence-[0-9TZ-]+-[0-9a-f]{8}$"},
+    "commonProperties": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "run_id", "evaluation_report_id", "inference_check_id", "artifact_bundle_id", "training_status", "evaluation_conclusion", "inference_status", "bundle_status", "bundle_sha256", "bundle_download_sha256", "event_count", "event_last_seq"],
+      "properties": {
+        "task_id": {"$ref": "#/$defs/nonEmpty"}, "run_id": {"$ref": "#/$defs/nonEmpty"}, "evaluation_report_id": {"$ref": "#/$defs/nonEmpty"}, "inference_check_id": {"$ref": "#/$defs/nonEmpty"}, "artifact_bundle_id": {"$ref": "#/$defs/nonEmpty"}, "training_status": {"$ref": "#/$defs/nonEmpty"}, "evaluation_conclusion": {"$ref": "#/$defs/nonEmpty"}, "inference_status": {"$ref": "#/$defs/nonEmpty"}, "bundle_status": {"$ref": "#/$defs/nonEmpty"}, "bundle_sha256": {"$ref": "#/$defs/sha256"}, "bundle_download_sha256": {"$ref": "#/$defs/sha256"}, "event_count": {"type": "integer", "minimum": 1}, "event_last_seq": {"type": "integer", "minimum": 1}
+      }
+    },
+    "image": {
+      "type": "object", "additionalProperties": false,
+      "required": ["task_id", "run_id", "evaluation_report_id", "inference_check_id", "artifact_bundle_id", "model_asset_id", "training_status", "evaluation_conclusion", "inference_status", "bundle_status", "bundle_sha256", "bundle_download_sha256", "event_count", "event_last_seq"],
+      "properties": {
+        "task_id": {"$ref": "#/$defs/nonEmpty"}, "run_id": {"$ref": "#/$defs/nonEmpty"}, "evaluation_report_id": {"$ref": "#/$defs/nonEmpty"}, "inference_check_id": {"$ref": "#/$defs/nonEmpty"}, "artifact_bundle_id": {"$ref": "#/$defs/nonEmpty"}, "model_asset_id": {"$ref": "#/$defs/nonEmpty"}, "training_status": {"$ref": "#/$defs/nonEmpty"}, "evaluation_conclusion": {"$ref": "#/$defs/nonEmpty"}, "inference_status": {"$ref": "#/$defs/nonEmpty"}, "bundle_status": {"$ref": "#/$defs/nonEmpty"}, "bundle_sha256": {"$ref": "#/$defs/sha256"}, "bundle_download_sha256": {"$ref": "#/$defs/sha256"}, "event_count": {"type": "integer", "minimum": 1}, "event_last_seq": {"type": "integer", "minimum": 1}
+      }
+    },
+    "audio": {
+      "type": "object", "additionalProperties": false,
+      "required": ["task_id", "run_id", "evaluation_report_id", "inference_check_id", "artifact_bundle_id", "build_attempt_id", "recipe_version_id", "training_status", "evaluation_conclusion", "inference_status", "bundle_status", "bundle_sha256", "bundle_download_sha256", "event_count", "event_last_seq"],
+      "properties": {
+        "task_id": {"$ref": "#/$defs/nonEmpty"}, "run_id": {"$ref": "#/$defs/nonEmpty"}, "evaluation_report_id": {"$ref": "#/$defs/nonEmpty"}, "inference_check_id": {"$ref": "#/$defs/nonEmpty"}, "artifact_bundle_id": {"$ref": "#/$defs/nonEmpty"}, "build_attempt_id": {"$ref": "#/$defs/nonEmpty"}, "recipe_version_id": {"$ref": "#/$defs/nonEmpty"}, "training_status": {"$ref": "#/$defs/nonEmpty"}, "evaluation_conclusion": {"$ref": "#/$defs/nonEmpty"}, "inference_status": {"$ref": "#/$defs/nonEmpty"}, "bundle_status": {"$ref": "#/$defs/nonEmpty"}, "bundle_sha256": {"$ref": "#/$defs/sha256"}, "bundle_download_sha256": {"$ref": "#/$defs/sha256"}, "event_count": {"type": "integer", "minimum": 1}, "event_last_seq": {"type": "integer", "minimum": 1}
+      }
+    },
+    "families": {
+      "type": "object", "additionalProperties": false, "required": ["image", "tabular", "audio"],
+      "properties": {"image": {"$ref": "#/$defs/image"}, "tabular": {"$ref": "#/$defs/commonProperties"}, "audio": {"$ref": "#/$defs/audio"}}
+    }
+  }
+}

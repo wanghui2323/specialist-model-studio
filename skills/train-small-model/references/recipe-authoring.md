@@ -29,7 +29,7 @@ Implement every method in `model_harness.plugin_api.RecipePlugin`:
 - `learning_report` explains the run and recommendations to a learner;
 - `deep_verify` checks trusted task-specific artifacts after generic hashes pass.
 
-Declare a stable `RecipeManifest`, instantiate the plugin as `PLUGIN`, and register an external package with:
+Declare a stable `RecipeManifest`, instantiate the plugin as `PLUGIN`, and register a developer-reviewed external package with:
 
 ```toml
 [project.entry-points."ai_pm_model_harness.recipes"]
@@ -37,6 +37,8 @@ my-recipe = "my_package.recipe:PLUGIN"
 ```
 
 Core owns state, events, manifests, hashes, cancellation and parent-child lineage. Plugins must not overwrite an existing run directory or mutate a prior run's artifacts.
+
+This entry-point protocol is a source-development interface, not permission for the running Agent to execute generated Python. In v0.7, any new executable plugin must be reviewed, tested and installed outside the product loop by an accountable developer; without a verified isolation environment, Agent-generated code remains `blocked_environment`.
 
 Optimization proposals must separate diagnosis from action. Use `actionable: false` when more data, authorization, labeling or business judgment is required. Applying a supported strategy creates a new contract and child run; it must never weaken release gates or expose the final test set to candidate selection.
 

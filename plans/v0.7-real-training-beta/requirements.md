@@ -1,10 +1,10 @@
 # Model Harness v0.7 本地可用 Beta 需求合同
 
-> 状态：L0「事实重置」已于 2026-08-22 获用户验收；L1 已获授权启动。  
+> 状态：L0 已验收，L1 有历史 `verified` 证据；L2–L4 实现为 `implemented`，L5 验收工具为 `implementing`。L2–L5 仍需在同一 source commit 上通过受控 producer、真实浏览器、进程重启、冷克隆和聚合门禁后才能升级为 `verified`。
 > 启动日期：2026-08-21  
 > 开发分支：`codex/v0.7-real-training-beta`  
 > 主对象：`Training Task`  
-> 当前发布边界：本地、单用户、Alpha 基线；未合并 `main`，未发布 Beta。
+> 当前发布边界：本地、单用户的 v0.7 Beta 候选；L5 尚未 `verified`，未合并 `main`，也未发布 GitHub Beta。
 
 ## 1. 产品目标
 
@@ -16,7 +16,9 @@ v0.7 不承诺“所有模型现在都能训练”。“通用”被严格定义
 2. 可扩展能力可以在产品内完成 `Build → Test → Register → Resume`；
 3. 超出安全或资源边界的能力必须明确说明原因，不得伪装成已支持。
 
-## 2. L0 重新确认的当前事实
+## 2. L0 重新确认的冻结基线
+
+> 下表是 L0 当时的基线快照，不是 2026-08-22 当前工作树的能力清单。当前实现只能由 `acceptance/v0.7-gates.json` 与 `scripts/verify_v07_beta.py` 对精确 source commit 重新执行后定级；代码已出现不等于 gate 已通过。
 
 | 项目 | 当前事实 | 产品判定 |
 |---|---|---|
@@ -140,7 +142,7 @@ OCR 文本行识别作为 v0.8 的第二个动态扩展证明，不挤入 v0.7 �
 4. Recipe 生成代码必须进入安全隔离环境；没有隔离能力就停止，不回退到宿主 Python；
 5. v0.7 验收覆盖图片分类、表格回归和语音关键词三个真实训练家族；
 6. Hugging Face 作为受控模型资产入口，不替代 Training Task、Recipe 和 Run 事实源；
-7. 每轮用户验收后才提交并推送开发分支；L5 通过后才合并、Tag 和 Release。
+7. L1–L5 按证据门槛连续执行，不再等待逐层人工确认；每层保持 `verified`，最终统一验收后才标记 `accepted`；commit、push、PR、CI、merge、Tag 和 Release 仍分别记录。
 
 ## 9. 状态与证据规则
 
@@ -177,8 +179,8 @@ OCR 文本行识别作为 v0.8 的第二个动态扩展证明，不挤入 v0.7 �
 → 刷新、重入、拒绝和恢复
 → 桌面与移动浏览器验证
 → 保存 ID、哈希、日志和截图
-→ 用户确认
-→ 提交推送或回退
+→ 写入本层验证证据
+→ 自动进入下一层或留在本层修复
 ```
 
-L0 已验收。当前允许执行 L1「任务理解与可信控制面」；L1 验收前不进入 Recipe Factory，不训练新的语音模型。
+L0 已验收，L1 保留旧轮 `verified` 证据。连续大 Loop 已授权，但后续层级仍必须在同一 source commit 上通过官方 HF 固定 commit、真实三家族训练、原样本推理与 Bundle、篡改、双视口、进程重启和冷克隆门禁。安全边界不因连续授权而放宽；任意 Agent 生成代码在没有通过自检的 OCI 沙箱前保持 `blocked_environment`。

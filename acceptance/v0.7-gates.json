@@ -1,0 +1,128 @@
+{
+  "schema_version": "0.1",
+  "iteration": "v0.7-local-usable-beta",
+  "expected_product_version": "0.7.0-beta.1",
+  "allowed_gate_statuses": ["passed", "failed", "blocked"],
+  "aggregation_contract": {
+    "required_gate_pass_condition": "status must equal passed",
+    "level_pass_condition": "every required gate must equal passed",
+    "local_beta_verified_condition": "every L0-L5 level must equal passed",
+    "github_released_condition": "local_beta_verified plus every required_for_github_release gate must equal passed",
+    "skipped_policy": "skipped is forbidden and must never aggregate to passed"
+  },
+  "live_scenarios": {
+    "official_huggingface_fixed_commit": {
+      "provider": "huggingface",
+      "client": "official_huggingface_hub",
+      "runner_script": "scripts/run_hf_real_scenario.py",
+      "repo_id": "pyronear/mobilenet_v3_small",
+      "commit": "a6a0b39ca1f5b0a247eb0a2e83f06cd95fc03674",
+      "dataset_total_images": 100,
+      "minimum_test_samples": 20,
+      "required_outputs": ["evaluation_report", "new_sample_inference", "artifact_bundle", "restart"],
+      "moving_revision_forbidden": true
+    }
+  },
+  "release_contract": {
+    "repository": "wanghui2323/ai-pm-model-harness",
+    "tag": "v0.7.0-beta.1",
+    "required_check_names": [
+      "python-full-suite",
+      "deepseek-harness-suite"
+    ],
+    "verification": "github_api_only",
+    "unavailable_policy": "blocked"
+  },
+  "external_evidence_contract": {
+    "source_commit_must_match": true,
+    "desktop_viewport": {"width": 1440, "height": 900},
+    "mobile_viewport": {"width": 390, "height": 844},
+    "producer": "scripts/collect_v07_external_evidence.py",
+    "fresh_verifier_challenge_required": true,
+    "preexisting_manifest_policy": "refuse",
+    "restart_identity_kinds": {
+      "image": ["task_id", "model_asset_id", "run_id", "evaluation_report_id", "inference_check_id", "artifact_bundle_id"],
+      "tabular": ["task_id", "run_id", "evaluation_report_id", "inference_check_id", "artifact_bundle_id"],
+      "audio": ["task_id", "build_attempt_id", "recipe_version_id", "run_id", "evaluation_report_id", "inference_check_id", "artifact_bundle_id"]
+    },
+    "release_evidence_is_separate_from_local_beta": true
+  },
+  "levels": [
+    {
+      "level_id": "L0",
+      "name": "truth-baseline",
+      "gates": [
+        {"gate_id": "L0-isolated-workspace", "required": true, "description": "Acceptance execution uses a fresh temporary runtime and does not reuse project runs."},
+        {"gate_id": "L0-source-commit-clean", "required": true, "description": "Acceptance runs from a clean worktree whose exact 40-character commit can bind browser, restart and cold-clone evidence."},
+        {"gate_id": "L0-contract-truth", "required": true, "description": "Requirements, Loop state and gate definitions are readable and use the declared status contract."},
+        {"gate_id": "L0-version-sync", "required": true, "description": "Python package, server and Node adapter identify the same v0.7 Beta version."},
+        {"gate_id": "L0-health-openapi", "required": true, "description": "Health and OpenAPI respond successfully from a fresh application instance."},
+        {"gate_id": "L0-full-suite", "required": true, "description": "The complete Python and DeepSeek Harness adapter suites pass."},
+        {"gate_id": "L0-registry-claim-match", "required": true, "description": "The built-in Recipe and Data Adapter registry matches the declared baseline without implying dynamic audio support."}
+      ]
+    },
+    {
+      "level_id": "L1",
+      "name": "task-understanding-control-plane",
+      "gates": [
+        {"gate_id": "L1-ambiguity-guard", "required": true, "description": "Ambiguous OCR or recognition requests cannot create data, Recipe or Run objects before clarification."},
+        {"gate_id": "L1-same-id-revision", "required": true, "description": "Clarification appends an immutable TaskSpec revision while preserving task_id across restart."},
+        {"gate_id": "L1-control-projection-consistency", "required": true, "description": "List, detail and write responses expose one authoritative current stage, blockers and next action."},
+        {"gate_id": "L1-task-draft-browser", "required": true, "description": "Two task drafts remain isolated across switching and browser reload."},
+        {"gate_id": "L1-dual-cancel", "required": true, "description": "Agent cancellation and task-owned Run cancellation remain separate and restart-safe."},
+        {"gate_id": "L1-rejected-write-no-lineage", "required": true, "description": "Stale revisions, cross-task cancellation and offline Agent failures do not mutate task or Run lineage."}
+      ]
+    },
+    {
+      "level_id": "L2",
+      "name": "declarative-recipe-factory",
+      "gates": [
+        {"gate_id": "L2-staged-no-run", "required": true, "description": "Audio samples are staged persistently without becoming a DatasetVersion or Run."},
+        {"gate_id": "L2-malicious-quarantine", "required": true, "description": "Traversal, symlink, encryption, decompression and malformed WAV inputs fail closed with queryable evidence."},
+        {"gate_id": "L2-build-events-restart", "required": true, "description": "BuildAttempt transitions, events, cancellation and validating-state restart recovery are persistent."},
+        {"gate_id": "L2-declarative-only", "required": true, "description": "Only the trusted audio RecipeSpec is accepted and every Python or executable build is blocked."},
+        {"gate_id": "L2-approval-digest-atomicity", "required": true, "description": "Registration requires explicit approval, validation, exact digests and the current TaskSpec revision."},
+        {"gate_id": "L2-audio-train-deep-verify-restart", "required": true, "description": "The same audio task resumes after registration, trains a real model, deep-verifies artifacts and survives restart."}
+      ]
+    },
+    {
+      "level_id": "L3",
+      "name": "model-assets-trustworthy-training",
+      "gates": [
+        {"gate_id": "L3-official-hf-fixed-commit", "required": true, "description": "The official huggingface_hub client downloads the declared public immutable commit and the same asset lineage completes real training, a 20-sample test evaluation, new-sample inference, bundle verification and application restart."},
+        {"gate_id": "L3-hf-discovery-card-compat", "required": true, "description": "A product API exposes Hugging Face repository, immutable revision, Model Card, license, files and local compatibility."},
+        {"gate_id": "L3-immutable-commit-reject-no-cache", "required": true, "description": "Downloads require approval and a resolved immutable commit; rejection produces no cache or lineage."},
+        {"gate_id": "L3-token-license-hashes-tamper", "required": true, "description": "Ephemeral credentials never persist; license and per-file hashes persist; tampering quarantines the asset."},
+        {"gate_id": "L3-task-contract-lineage", "required": true, "description": "Selected ModelAsset identity is frozen into TrainingTask and TrainingContract lineage, or trained-from-scratch is explicit."},
+        {"gate_id": "L3-real-run-time-resource-events", "required": true, "description": "Training exposes backend events, measured duration, resource evidence, candidates and logs without simulated progress."},
+        {"gate_id": "L3-interrupted-download-recovery", "required": true, "description": "Restart recovers interrupted staging safely without activating partial payloads."}
+      ]
+    },
+    {
+      "level_id": "L4",
+      "name": "evaluation-inference-delivery",
+      "gates": [
+        {"gate_id": "L4-conclusion-dimensions", "required": true, "description": "Run completion, integrity, metric gates and evidence sufficiency produce separate conclusions."},
+        {"gate_id": "L4-three-family-evaluation", "required": true, "description": "Image, tabular and audio Runs each persist an EvaluationReport bound to task, Run and model hashes."},
+        {"gate_id": "L4-candidates-failures-history", "required": true, "description": "Candidate evidence, failure samples, thresholds and parent-child Run history are inspectable."},
+        {"gate_id": "L4-raw-sample-inference-reentry", "required": true, "description": "A user can submit a new raw image, row or WAV and reopen its hash-bound InferenceCheck."},
+        {"gate_id": "L4-tamper-block", "required": true, "description": "Tampered or unsupported model artifacts create persistent blocked inference evidence."},
+        {"gate_id": "L4-bundle-hash-privacy-reentry", "required": true, "description": "The delivery bundle is atomic, hashed, restart-safe and excludes raw/private/internal data."}
+      ]
+    },
+    {
+      "level_id": "L5",
+      "name": "beta-acceptance-release",
+      "gates": [
+        {"gate_id": "L5-all-negative", "required": true, "description": "Integrated rejection, failure, cancellation, disconnect, tamper and restart paths all retain auditable objects."},
+        {"gate_id": "L5-three-family-real", "required": true, "description": "Image, tabular and audio product journeys each complete training, evaluation, inference and bundle delivery."},
+        {"gate_id": "L5-desktop-browser", "required": true, "description": "The complete product journey passes at 1440x900 with clean Console and Network evidence."},
+        {"gate_id": "L5-mobile-browser", "required": true, "description": "The complete product journey passes at 390x844 with reachable Context/results, no overflow and 44px targets."},
+        {"gate_id": "L5-process-restart", "required": true, "description": "A real service-process restart preserves task, build, asset, Run, evaluation, inference and bundle identities."},
+        {"gate_id": "L5-cold-clone", "required": true, "description": "A clean checkout of the exact release commit installs and reproduces the minimal loop without existing local state."},
+        {"gate_id": "L5-zero-p0", "required": true, "description": "No required gate or declared P0 remains failed or blocked."},
+        {"gate_id": "L5-release-chain", "required": false, "required_for_github_release": true, "description": "Commit, push, PR, CI, merge, tag and GitHub Release are independently evidenced; this gate does not rewrite local Beta verification."}
+      ]
+    }
+  ]
+}

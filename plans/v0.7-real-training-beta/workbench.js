@@ -13,10 +13,10 @@ const ui = Object.fromEntries([
   "headerStatus", "l0Progress", "l0ProgressText", "l0ProgressValue", "gitHead", "gitBranch",
   "readyFamilyCount", "registryCount", "agentState", "serviceVersion", "evidenceGrid", "loopTabs",
   "loopSummary", "taskTable", "closureTable", "reviewTitle", "reviewDescription", "copyReview",
-  "copyFeedback", "footerState",
+  "copyFeedback", "footerState", "activeLoopId", "activeLoopTitle", "activeLoopOutcome",
 ].map((id) => [id, document.getElementById(id)]));
 
-const state = { ledger: null, baseline: null, selectedLoop: "L0" };
+const state = { ledger: null, baseline: null, selectedLoop: null };
 
 function clear(element) { while (element.firstChild) element.firstChild.remove(); }
 function label(status) { return STATUS_LABELS[status] || status || "未知"; }
@@ -95,39 +95,27 @@ function renderLoops() {
 }
 
 function renderGate() {
-  const l0 = state.ledger.loops.find((loop) => loop.loop_id === "L0");
-  const evidenceTasks = l0.tasks.filter((task) => task.id !== "MH-705");
+  const active = state.ledger.loops.find((loop) => ["implementing", "implemented"].includes(loop.status)) || state.ledger.loops.find((loop) => loop.status !== "accepted") || state.ledger.loops.at(-1);
+  const evidenceTasks = active.tasks;
   const verified = evidenceTasks.filter((task) => ["verified", "accepted"].includes(task.status)).length;
   const percent = evidenceTasks.length ? Math.round(verified / evidenceTasks.length * 100) : 0;
   ui.l0Progress.style.width = `${percent}%`;
   ui.l0ProgressValue.textContent = `${verified}/${evidenceTasks.length}`;
-  ui.l0ProgressText.textContent = percent === 100 ? "基线证据已经齐全" : `仍有 ${evidenceTasks.length - verified} 项等待验证`;
-  const readyForReview = percent === 100;
-  const accepted = l0.status === "accepted";
-  ui.copyReview.disabled = accepted || !readyForReview;
-  ui.headerStatus.dataset.status = accepted ? "accepted" : readyForReview ? "verified" : "implementing";
-  ui.headerStatus.lastElementChild.textContent = accepted ? "L0 已验收" : readyForReview ? "L0 待验收" : "L0 进行中";
-  ui.footerState.textContent = accepted ? "L0 已验收 · L1 已获授权" : readyForReview ? "L0 证据已齐 · 等待用户验收" : "L0 事实重置进行中 · 2026-08-21";
-  ui.reviewTitle.textContent = accepted ? "L0 已验收，L1 已获授权" : readyForReview ? "L0 已验证，等待用户验收" : "正在收集基线证据";
-  ui.reviewDescription.textContent = accepted
-    ? "用户已确认事实基线与能力边界。下一轮聚焦可纠错任务规格、唯一下一步与真实控制语义。"
-    : readyForReview
-      ? "代码、服务、测试和双视口证据已经记录。用户确认后，L0 才进入 accepted 并允许开始 L1。"
-      : "完成所有 L0 验证后，工作台会生成验收摘要；用户确认后才进入 L1。";
-  ui.copyFeedback.textContent = accepted ? "验收记录：2026-08-22。" : "目前不会启动下一轮。";
+  ui.l0ProgressText.textContent = percent === 100 ? "本层证据已经齐全" : `仍有 ${evidenceTasks.length - verified} 项等待验证`;
+  ui.activeLoopId.textContent = active.loop_id; ui.activeLoopTitle.textContent = active.name; ui.activeLoopOutcome.textContent = active.outcome;
+  ui.copyReview.disabled = true; ui.headerStatus.dataset.status = percent === 100 ? "verified" : "implementing"; ui.headerStatus.lastElementChild.textContent = `${active.loop_id} ${percent === 100 ? "已验证" : "执行中"}`;
+  ui.footerState.textContent = `连续 L0–L5 大 Loop · 当前 ${active.loop_id} · 2026-08-22`;
+  ui.reviewTitle.textContent = `${active.loop_id} · ${active.name}`;
+  ui.reviewDescription.textContent = percent === 100 ? "本层自动证据已通过；大 Loop 会写入证据账本后进入下一层，最终再统一验收。" : `当前 ${verified}/${evidenceTasks.length} 项通过。任何 P0 闭环未达 6/6 都会停留在本层修复。`;
+  ui.copyFeedback.textContent = "逐层 verified 不等于最终 accepted；发布动作仍单独记录。";
 }
-
-ui.copyReview.addEventListener("click", async () => {
-  const summary = "我确认 Model Harness v0.7 的 L0 事实基线与能力边界，并批准进入 L1「任务理解与可信控制面」。";
-  try { await navigator.clipboard.writeText(summary); ui.copyFeedback.textContent = "验收摘要已复制，请粘贴回项目对话。"; }
-  catch { ui.copyFeedback.textContent = summary; }
-});
 
 async function boot() {
   try {
     const [ledgerResponse, baselineResponse] = await Promise.all([fetch("./loop-tasks.json"), fetch("./baseline-evidence.json")]);
     if (!ledgerResponse.ok || !baselineResponse.ok) throw new Error(`HTTP ${ledgerResponse.status}/${baselineResponse.status}`);
     state.ledger = await ledgerResponse.json(); state.baseline = await baselineResponse.json();
+    state.selectedLoop = state.ledger.loops.find((loop) => ["implementing", "implemented"].includes(loop.status))?.loop_id || state.ledger.loops[0]?.loop_id;
     renderBaseline(); renderLoops(); renderGate();
   } catch (error) {
     ui.evidenceGrid.textContent = `工作台数据读取失败：${error.message}。请通过本地 HTTP 服务打开本目录。`;

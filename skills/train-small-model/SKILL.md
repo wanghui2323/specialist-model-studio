@@ -21,7 +21,7 @@ Ask only for missing information that blocks safe progress. Typical questions co
 
 Freeze release gates before model selection. Never weaken them merely because a run failed. Keep the final test set outside candidate selection and tuning.
 
-## Select and run a Recipe
+## Select and run a trusted Recipe
 
 Prefer a registered, deterministic Recipe. Check the framework, code, model-weight and dataset licenses separately. Keep downloaded datasets, weights, private data and credentials outside the public repository.
 
@@ -32,9 +32,17 @@ python -m model_harness.cli init --recipe digit-classification --output workspac
 python -m model_harness.cli run workspaces/my-first-model/task_contract.json
 ```
 
-The v0.4 local Console also implements `image-folder-classification`: create a training task, upload a ZIP organized as `class/image.jpg`, inspect the persisted data report, confirm authorization/labels/gates, then start a run. Every class needs at least five valid images. This is a real user-data feasibility loop, but it is not OCR detection/recognition, object detection, audio training, arbitrary model discovery or production release. External Recipes can be registered through the plugin protocol. When adding one, read [references/recipe-authoring.md](references/recipe-authoring.md).
+The v0.7 Beta product has two built-in user-data Recipes and one trusted dynamic Recipe path:
 
-Run external or Agent-generated training code in an isolated workspace with a declared compute budget. Stop for approval before expanding cost, accessing sensitive data, loading an untrusted pickle-based model, or publishing externally.
+- `image-folder-classification` accepts a ZIP organized as `class/image.jpg`;
+- `tabular-regression` accepts a CSV with a numeric target column;
+- audio keyword classification becomes executable only after its declarative `RecipeSpec` is validated, explicitly approved, versioned and registered for the same task.
+
+The audio path accepts class-folder ZIPs containing 16 kHz mono PCM WAV files. It is offline short-audio classification, not ASR, TTS, voice cloning or a streaming wake-word engine. The static built-in registry intentionally does not include audio before registration.
+
+For an unsupported task, keep the task in `needs_recipe` and expose the real capability gap. Do not translate OCR, detection, segmentation, forecasting, text/NLP or another unknown intent into image classification or simulated progress.
+
+Do not run external or Agent-generated Python, shell, remote code or dependency installers in the host process. v0.7 has no verified OCI sandbox, so executable Recipe requests must remain `blocked_environment`. Only the allowlisted declarative audio `RecipeSpec` may compile to the trusted backend engine. Read [references/recipe-authoring.md](references/recipe-authoring.md) when designing a future Recipe, but do not treat a scaffold or generated source file as a registered capability.
 
 ## Evaluate and hand off
 
@@ -73,9 +81,13 @@ Use `events` to report progress from the versioned event stream. A cancellation 
 
 The optional HTTP/SSE service is the adapter boundary for chat frontends. Bind it to `127.0.0.1` unless authentication and network controls have been added.
 
-For a learning-first interactive run, start the local service and use `/app`. The primary v0.4 surface is a task workbench rather than a chat transcript: task, dataset report, contract confirmation, run, events, failures, artifacts and parent-child optimization are persisted backend objects. The legacy deterministic chat endpoint remains available for adapters but is not the source of task truth.
+For a learning-first interactive run, start the local service and use `/app`. The v0.7 primary surface is conversation-first, with backend-owned task truth and a visual Context/results inspector. TaskSpec revisions, data reports, contracts, Runs, events, evaluations, sample-inference checks, model assets and Artifact Bundles are persisted objects; chat text and frontend animation never substitute for them.
 
-DeepSeek Harness can optionally load the bundle in `integrations/deepseek-harness`. Use its tools to list Recipes, start runs, read status/events/strategies, request cancellation and apply an explicitly approved strategy. Keep DSH as a thin orchestration host: do not move task state or approval truth into the model conversation, and do not require DSH for CLI or standalone Console users.
+DeepSeek Harness can optionally load the bundle in `integrations/deepseek-harness`. Use its real task-scoped tools to plan and inspect the workflow, and require native approval for data use, Recipe registration, model download, training, optimization and delivery mutations. Keep DSH as a thin orchestration host: do not move task state, hashes or approval truth into the model conversation, and do not require DSH for CLI or standalone workbench users.
+
+Hugging Face support is deliberately narrow: official discovery and Model Card inspection, an explicitly approved immutable 40-character commit, verified allowlisted files, and CPU ONNX image features for the image-classification Recipe. It is not arbitrary Hub fine-tuning and must never enable `trust_remote_code`.
+
+After a completed Run, read the five-dimensional `EvaluationReport`, try exactly one user-provided new raw image/WAV/row, and build the privacy-filtered Artifact Bundle only from verified hashes. A quality gate, artifact integrity, evidence sufficiency and release readiness are separate conclusions.
 
 ## Human-owned decisions
 

@@ -3,19 +3,45 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
 try:  # optional server dependency
+    from fastapi import Body, FastAPI, Header, HTTPException, Query
+    from fastapi.responses import (
+        FileResponse,
+        JSONResponse,
+        RedirectResponse,
+        Response,
+        StreamingResponse,
+    )
+    from fastapi.staticfiles import StaticFiles
     from starlette.requests import Request
-except ImportError:  # pragma: no cover
+except ImportError as exc:  # pragma: no cover
+    _SERVER_IMPORT_ERROR: ImportError | None = exc
     Request = Any  # type: ignore[misc,assignment]
+else:
+    _SERVER_IMPORT_ERROR = None
 
 from .chat import ChatController
-from .agent_bridge import AgentRuntimeError, ConversationBridge, DshEventHub, DshRpcClient
+from .agent_bridge import (
+    AgentRuntimeError,
+    ConversationBridge,
+    DshEventHub,
+    DshRpcClient,
+    agent_public_projection,
+)
+from .data_adapters import DataAdapterRegistry
+from .errors import ContractError, HarnessError
+from .huggingface_catalog import HuggingFaceCatalogError
+from .model_assets import ModelAssetError
+from .plugins import PluginRegistry
 from .service import RunService
+from .sample_inference import SampleInferenceBlocked
+from .staged_assets import StagedAssetRejected
 from .state import TERMINAL_STATUSES
 from .workspace import TrainingWorkspace
 
@@ -26,25 +52,27 @@ def create_app(
     workspace_dir: str | Path | None = None,
     conversation_url: str | None = None,
 ) -> Any:
-    try:
-        from fastapi import Body, FastAPI, Header, HTTPException, Query
-        from fastapi.responses import (
-            FileResponse,
-            JSONResponse,
-            RedirectResponse,
-            StreamingResponse,
-        )
-        from fastapi.staticfiles import StaticFiles
-    except ImportError as exc:  # pragma: no cover - depends on optional extra
+    if _SERVER_IMPORT_ERROR is not None:  # pragma: no cover - optional extra
         raise RuntimeError(
             "HTTP server dependencies are missing; install ai-pm-model-harness[server]"
-        ) from exc
+        ) from _SERVER_IMPORT_ERROR
 
     resolved_runs_dir = Path(runs_dir).expanduser().resolve()
-    service = RunService(runs_dir=resolved_runs_dir, max_workers=max_workers)
+    # Dynamic task-owned versions must never leak across app/workspace
+    # instances through the process-wide default registries.
+    registry = PluginRegistry(include_builtins=True)
+    registry.discover()
+    data_adapter_registry = DataAdapterRegistry(include_builtins=True)
+    data_adapter_registry.discover()
+    service = RunService(
+        runs_dir=resolved_runs_dir,
+        max_workers=max_workers,
+        registry=registry,
+    )
     workspace = TrainingWorkspace(
         workspace_dir or (resolved_runs_dir / "_workspace"),
         service,
+        data_adapters=data_adapter_registry,
     )
     chat = ChatController(service)
     web_dir = Path(__file__).parent / "web"
@@ -73,7 +101,7 @@ def create_app(
 
     app = FastAPI(
         title="AI PM Model Harness",
-        version="0.6.0-alpha.1",
+        version="0.7.0-beta.1",
         description="Conversation-first product runtime for auditable specialist-model training.",
         lifespan=lifespan,
     )
@@ -83,11 +111,114 @@ def create_app(
     app.state.conversation_bridge = conversations
     app.mount("/app/static", StaticFiles(directory=web_dir), name="app-static")
 
+    @app.middleware("http")
+    async def project_remote_agent_response(request: Request, call_next: Any) -> Any:
+        response = await call_next(request)
+        projection = request.headers.get("x-model-harness-projection", "").lower()
+        if projection not in {"agent", "agent-v1"}:
+            return response
+        if "application/json" not in response.headers.get("content-type", ""):
+            return response
+
+        chunks = [bytes(chunk) async for chunk in response.body_iterator]
+        body = b"".join(chunks)
+        try:
+            value = json.loads(body.decode("utf-8"))
+        except (UnicodeError, ValueError):
+            headers = dict(response.headers)
+            headers.pop("content-length", None)
+            return Response(
+                content=body,
+                status_code=response.status_code,
+                headers=headers,
+                background=response.background,
+            )
+        headers = dict(response.headers)
+        headers.pop("content-length", None)
+        headers.pop("content-type", None)
+        return JSONResponse(
+            status_code=response.status_code,
+            content=agent_public_projection(value),
+            headers=headers,
+            background=response.background,
+        )
+
+    @app.get("/model-assets/huggingface/capability")
+    def huggingface_capability() -> dict[str, Any]:
+        return workspace.huggingface_catalog.capability()
+
+    @app.get("/model-assets/huggingface/search")
+    def search_huggingface_models(
+        q: str = Query(..., min_length=1, max_length=160),
+        pipeline_tag: str | None = Query(default=None),
+        limit: int = Query(default=10, ge=1, le=20),
+        x_hf_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            return {
+                "provider": "huggingface",
+                "models": workspace.search_huggingface_models(
+                    q,
+                    pipeline_tag=pipeline_tag,
+                    limit=limit,
+                    token=x_hf_token,
+                ),
+            }
+        except HuggingFaceCatalogError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get("/model-assets/huggingface/card")
+    def get_huggingface_model_card(
+        repo_id: str = Query(...),
+        revision: str | None = Query(default=None),
+        x_hf_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            return {
+                "model": workspace.huggingface_model_card(
+                    repo_id,
+                    revision=revision,
+                    token=x_hf_token,
+                )
+            }
+        except HuggingFaceCatalogError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/model-assets/huggingface")
+    async def attach_huggingface_model_asset(
+        task_id: str,
+        body: dict[str, Any] = Body(...),
+        x_hf_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            return workspace.attach_huggingface_model(
+                task_id,
+                repo_id=str(body.get("repo_id", "")),
+                commit=str(body.get("commit", "")),
+                approval_confirmed=body.get("approval_confirmed") is True,
+                token=x_hf_token,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ContractError, HuggingFaceCatalogError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (HarnessError, ModelAssetError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/tasks/{task_id}/model-assets/current/verify")
+    def verify_task_model_asset(task_id: str) -> dict[str, Any]:
+        try:
+            return workspace.verify_task_model_asset(task_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ModelAssetError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.get("/health")
     def health() -> dict[str, Any]:
         return {
             "ok": True,
-            "version": "0.6.0-alpha.1",
+            "version": "0.7.0-beta.1",
             "recovered_runs": service.recovered_runs,
             "primary_experience": "conversation",
             "conversation_url": "/app",
@@ -226,6 +357,41 @@ def create_app(
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.get("/tasks/{task_id}/spec/revisions")
+    def list_task_spec_revisions(task_id: str) -> dict[str, Any]:
+        try:
+            revisions = workspace.list_task_spec_revisions(task_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "task_id": task_id,
+            "current_revision": revisions[-1]["revision"],
+            "revisions": revisions,
+        }
+
+    @app.get("/tasks/{task_id}/spec/revisions/{revision}")
+    def get_task_spec_revision(task_id: str, revision: int) -> dict[str, Any]:
+        try:
+            return {
+                "task_spec": workspace.get_task_spec_revision(task_id, revision)
+            }
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.patch("/tasks/{task_id}/spec")
+    async def update_task_spec(
+        task_id: str,
+        body: dict[str, Any] = Body(...),
+    ) -> dict[str, Any]:
+        try:
+            return {"task": workspace.update_task_spec(task_id, body)}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.post("/tasks/{task_id}/recipe")
     async def select_task_recipe(
         task_id: str,
@@ -265,6 +431,146 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/staged-assets")
+    async def stage_task_asset(
+        task_id: str,
+        request: Request,
+        x_filename: str | None = Header(default=None),
+        x_spec_revision: int | None = Header(default=None),
+    ) -> JSONResponse:
+        filename = unquote(x_filename or "samples.zip")
+        try:
+            result = workspace.stage_asset(
+                task_id,
+                await request.body(),
+                filename,
+                spec_revision=x_spec_revision,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except StagedAssetRejected as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": str(exc),
+                    "asset_id": exc.asset_id,
+                    "status": "quarantined",
+                },
+            ) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse(status_code=201, content=result)
+
+    @app.get("/tasks/{task_id}/staged-assets")
+    def list_task_staged_assets(task_id: str) -> dict[str, Any]:
+        try:
+            assets = workspace.list_staged_assets(task_id)
+            task = workspace.get_task(task_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "task_id": task_id,
+            "staged_assets": assets,
+            "summary": task["staged_assets"],
+        }
+
+    @app.get("/tasks/{task_id}/staged-assets/{asset_id}")
+    def get_task_staged_asset(task_id: str, asset_id: str) -> dict[str, Any]:
+        try:
+            asset = workspace.get_staged_asset(task_id, asset_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"staged_asset": asset}
+
+    @app.post("/tasks/{task_id}/recipe-builds")
+    async def create_task_recipe_build(
+        task_id: str,
+        body: dict[str, Any] = Body(default={}),
+    ) -> JSONResponse:
+        build_type = str(body.get("build_type", "declarative")).strip()
+        recipe_spec = body.get("recipe_spec")
+        if recipe_spec is not None and not isinstance(recipe_spec, dict):
+            raise HTTPException(status_code=422, detail="recipe_spec must be an object")
+        try:
+            result = workspace.start_recipe_build(
+                task_id,
+                recipe_spec,
+                build_type=build_type,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse(status_code=201, content=result)
+
+    @app.get("/tasks/{task_id}/recipe-builds")
+    def list_task_recipe_builds(task_id: str) -> dict[str, Any]:
+        try:
+            return {
+                "task_id": task_id,
+                "recipe_builds": workspace.list_recipe_builds(task_id),
+            }
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/tasks/{task_id}/recipe-builds/{attempt_id}")
+    def get_task_recipe_build(task_id: str, attempt_id: str) -> dict[str, Any]:
+        try:
+            return {"recipe_build": workspace.get_recipe_build(task_id, attempt_id)}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/recipe-builds/{attempt_id}/register")
+    async def register_task_recipe_build(
+        task_id: str,
+        attempt_id: str,
+        body: dict[str, Any] = Body(...),
+    ) -> dict[str, Any]:
+        try:
+            return workspace.register_recipe_build(
+                task_id,
+                attempt_id,
+                {
+                    "decision": body.get("decision"),
+                    "actor": str(body.get("actor", "")).strip(),
+                    "reason": str(body.get("reason", "")).strip(),
+                },
+                candidate_digest=str(body.get("candidate_digest", "")),
+                validation_digest=str(body.get("validation_digest", "")),
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/recipe-builds/{attempt_id}/reject")
+    async def reject_task_recipe_build(
+        task_id: str,
+        attempt_id: str,
+        body: dict[str, Any] = Body(...),
+    ) -> dict[str, Any]:
+        try:
+            return workspace.reject_recipe_build(
+                task_id,
+                attempt_id,
+                actor=str(body.get("actor", "")).strip(),
+                reason=str(body.get("reason", "rejected by user")).strip(),
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/tasks/{task_id}/dataset")
     async def upload_task_dataset(
@@ -337,6 +643,15 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return JSONResponse(status_code=202, content={"task": task})
 
+    @app.post("/tasks/{task_id}/runs/{run_id}/cancel")
+    async def cancel_task_run(task_id: str, run_id: str) -> dict[str, Any]:
+        try:
+            return workspace.cancel_run(task_id, run_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.post("/tasks/{task_id}/runs/{run_id}/strategies/{strategy_id}/apply")
     async def apply_task_strategy(
         task_id: str,
@@ -353,6 +668,175 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return JSONResponse(status_code=202, content={"task": task})
+
+    @app.get("/tasks/{task_id}/runs/{run_id}/evaluation-report")
+    def task_run_evaluation_report(
+        task_id: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return workspace.evaluation_report(task_id, run_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/runs/{run_id}/sample-inferences")
+    async def create_task_run_sample_inference(
+        task_id: str,
+        run_id: str,
+        request: Request,
+        x_filename: str | None = Header(default=None, alias="X-Filename"),
+        x_sample_type: str | None = Header(default=None, alias="X-Sample-Type"),
+    ) -> JSONResponse:
+        payload = await request.body()
+        if len(payload) > 25 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="sample upload exceeds 25MB")
+        supplied_name = unquote(x_filename or "").strip()
+        if not supplied_name:
+            supplied_name = (
+                "sample.json"
+                if "application/json" in request.headers.get("content-type", "")
+                else "sample.bin"
+            )
+        normalized_name = supplied_name.replace("\\", "/")
+        if (
+            not normalized_name
+            or "\x00" in normalized_name
+            or Path(normalized_name).name != normalized_name
+        ):
+            raise HTTPException(status_code=422, detail="invalid sample filename")
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix="model-harness-sample-"
+            ) as temporary:
+                sample_path = Path(temporary) / normalized_name
+                sample_path.write_bytes(payload)
+                result = workspace.run_sample_inference(
+                    task_id,
+                    run_id,
+                    sample_path,
+                    sample_type=(x_sample_type or "").strip().lower() or None,
+                )
+        except SampleInferenceBlocked as exc:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "task": workspace.get_task(task_id),
+                    "run_id": run_id,
+                    "detail": str(exc),
+                    "sample_inference": exc.report,
+                },
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return JSONResponse(status_code=201, content=result)
+
+    @app.get("/tasks/{task_id}/runs/{run_id}/sample-inferences")
+    def list_task_run_sample_inferences(
+        task_id: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return workspace.list_sample_inferences(task_id, run_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(
+        "/tasks/{task_id}/runs/{run_id}/sample-inferences/{check_id}"
+    )
+    def get_task_run_sample_inference(
+        task_id: str,
+        run_id: str,
+        check_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return workspace.get_sample_inference(task_id, run_id, check_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/runs/{run_id}/artifact-bundles")
+    async def build_task_run_artifact_bundle(
+        task_id: str,
+        run_id: str,
+        body: dict[str, Any] | None = Body(default=None),
+    ) -> JSONResponse:
+        selected = body or {}
+        try:
+            result = workspace.build_artifact_bundle(
+                task_id,
+                run_id,
+                sample_inference_check_id=(
+                    str(selected["sample_inference_check_id"])
+                    if selected.get("sample_inference_check_id")
+                    else None
+                ),
+                inference_check_id=(
+                    str(selected["inference_check_id"])
+                    if selected.get("inference_check_id")
+                    else None
+                ),
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse(status_code=201, content=result)
+
+    @app.get("/tasks/{task_id}/runs/{run_id}/artifact-bundles")
+    def list_task_run_artifact_bundles(
+        task_id: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return workspace.list_artifact_bundles(task_id, run_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/tasks/{task_id}/runs/{run_id}/artifact-bundles/{bundle_id}")
+    def get_task_run_artifact_bundle(
+        task_id: str,
+        run_id: str,
+        bundle_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return workspace.get_artifact_bundle(task_id, run_id, bundle_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(
+        "/tasks/{task_id}/runs/{run_id}/artifact-bundles/{bundle_id}/download"
+    )
+    def download_task_run_artifact_bundle(
+        task_id: str,
+        run_id: str,
+        bundle_id: str,
+    ) -> FileResponse:
+        try:
+            path = workspace.artifact_bundle_file(task_id, run_id, bundle_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return FileResponse(
+            path,
+            media_type="application/zip",
+            filename=f"{run_id}-{bundle_id}.zip",
+        )
 
     @app.get("/tasks/{task_id}/datasets/{dataset_id}/{relative_path:path}")
     def task_dataset_file(task_id: str, dataset_id: str, relative_path: str) -> FileResponse:

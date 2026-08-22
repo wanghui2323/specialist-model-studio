@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import http.client
+import re
 import threading
 import time
 from pathlib import Path
@@ -24,11 +25,24 @@ TOOL_LABELS = {
     "model_harness_create_task": "创建训练任务",
     "model_harness_scaffold_recipe": "生成Recipe构建包",
     "model_harness_get_task": "读取训练任务",
+    "model_harness_hf_capability": "检查HF能力边界",
+    "model_harness_hf_search": "搜索HF模型",
+    "model_harness_hf_card": "读取HF模型卡",
+    "model_harness_hf_attach": "绑定HF固定版本模型",
+    "model_harness_hf_verify": "验证HF模型资产",
     "model_harness_import_dataset": "导入并体检数据",
     "model_harness_configure_contract": "调整训练合同",
     "model_harness_confirm_contract": "确认训练合同",
     "model_harness_start_task_run": "启动真实训练",
     "model_harness_get_run": "读取训练结果",
+    "model_harness_get_evaluation_report": "读取评测报告",
+    "model_harness_run_sample_inference": "试跑用户新样本",
+    "model_harness_list_sample_inferences": "查看新样本试跑",
+    "model_harness_get_sample_inference": "读取试跑证据",
+    "model_harness_build_artifact_bundle": "构建交付包",
+    "model_harness_list_artifact_bundles": "查看交付包",
+    "model_harness_get_artifact_bundle": "读取交付包证据",
+    "model_harness_download_artifact_bundle": "下载交付包",
     "model_harness_get_events": "读取运行事件",
     "model_harness_get_strategies": "分析优化策略",
     "model_harness_apply_task_strategy": "执行下一轮优化",
@@ -36,6 +50,121 @@ TOOL_LABELS = {
     "ask_user_question": "等待你的决定",
     "todo_write": "更新执行计划",
 }
+
+
+_AGENT_PUBLIC_REDACTED = "[local-path-redacted]"
+_AGENT_PUBLIC_SENSITIVE_KEYS = frozenset(
+    {
+        "root",
+        "cwd",
+        "working_directory",
+        "workspace_root",
+        "dataset_root",
+        "manifest_path",
+        "report_path",
+        "contract_path",
+        "archive_path",
+        "local_path",
+        "filesystem_path",
+        "source_path",
+        "run_dir",
+        "task_dir",
+        "dataset_dir",
+        "artifact_dir",
+    }
+)
+_AGENT_PUBLIC_ROUTE_ROOTS = (
+    "/agent",
+    "/app",
+    "/capabilities",
+    "/chat",
+    "/data-adapters",
+    "/health",
+    "/model-assets",
+    "/recipes",
+    "/runs",
+    "/runtime",
+    "/tasks",
+)
+_AGENT_PUBLIC_WINDOWS_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
+_AGENT_PUBLIC_EMBEDDED_WINDOWS_PATH = re.compile(
+    r"(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/]|\\\\)[^\s\"'<>]+"
+)
+_AGENT_PUBLIC_EMBEDDED_POSIX_PATH = re.compile(
+    r"(?<![A-Za-z0-9:/])/[^\s\"'<>]+"
+)
+
+
+def _agent_public_route(value: str) -> bool:
+    return any(
+        value == root
+        or value.startswith(f"{root}/")
+        or value.startswith(f"{root}?")
+        for root in _AGENT_PUBLIC_ROUTE_ROOTS
+    )
+
+
+def _agent_local_absolute_path(value: str) -> bool:
+    selected = value.strip()
+    if not selected:
+        return False
+    if selected.startswith(("file://", "~/", "~\\")):
+        return True
+    if _AGENT_PUBLIC_WINDOWS_PATH.match(selected):
+        return True
+    return selected.startswith("/") and not _agent_public_route(selected)
+
+
+def _agent_public_text(value: str) -> str:
+    if _agent_local_absolute_path(value):
+        return _AGENT_PUBLIC_REDACTED
+    projected = _AGENT_PUBLIC_EMBEDDED_WINDOWS_PATH.sub(
+        _AGENT_PUBLIC_REDACTED,
+        value,
+    )
+    return _AGENT_PUBLIC_EMBEDDED_POSIX_PATH.sub(
+        lambda match: (
+            match.group(0)
+            if _agent_public_route(match.group(0))
+            else _AGENT_PUBLIC_REDACTED
+        ),
+        projected,
+    )
+
+
+def agent_public_projection(value: Any) -> Any:
+    """Return the path-safe object contract exposed to a remote Agent.
+
+    Local APIs and the product UI keep their full local projection.  The DSH
+    boundary uses this recursive copy so dataset, contract, model-asset and
+    evidence objects cannot reveal host filesystem locations.
+    """
+
+    if isinstance(value, dict):
+        projected: dict[str, Any] = {}
+        for raw_key, child in value.items():
+            key = str(raw_key)
+            normalized = key.strip().lower().replace("-", "_")
+            sensitive = (
+                normalized in _AGENT_PUBLIC_SENSITIVE_KEYS
+                or normalized.endswith("_root")
+                or (
+                    normalized == "path" or normalized.endswith("_path")
+                )
+                and isinstance(child, (str, Path))
+                and _agent_local_absolute_path(str(child))
+            )
+            if sensitive:
+                continue
+            projected[key] = agent_public_projection(child)
+        return projected
+    if isinstance(value, (list, tuple)):
+        return [agent_public_projection(item) for item in value]
+    if isinstance(value, Path):
+        return _AGENT_PUBLIC_REDACTED
+    if isinstance(value, str):
+        return _agent_public_text(value)
+    return value
 
 
 def _text_content(blocks: Any) -> str:
@@ -130,14 +259,39 @@ class DshRpcClient:
 
 
 class DshEventHub:
-    """Keeps DSH's transient approval and question requests visible to our UI."""
+    """Keeps DSH approval and question requests visible and restart-safe."""
+
+    PENDING_SCHEMA_VERSION = "0.1"
+    PENDING_STATE_FILENAME = "conversation_pending.json"
 
     def __init__(self, client: DshRpcClient) -> None:
         self.client = client
         self._pending: dict[str, dict[str, dict[str, Any]]] = {}
+        self._state_path: Path | None = None
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+
+    def bind_workspace(self, root: Path) -> None:
+        """Bind pending requests to the workspace before consuming runtime events."""
+
+        state_path = root.expanduser().resolve() / self.PENDING_STATE_FILENAME
+        with self._lock:
+            if self._state_path is not None and self._state_path != state_path:
+                raise RuntimeError("DSH event hub is already bound to another workspace")
+            self._state_path = state_path
+            if state_path.is_file():
+                value = read_json(state_path)
+                sessions = value.get("sessions") if isinstance(value, dict) else None
+                if (
+                    not isinstance(value, dict)
+                    or value.get("schema_version") != self.PENDING_SCHEMA_VERSION
+                    or not isinstance(sessions, dict)
+                ):
+                    raise AgentRuntimeError("Agent待决状态文件格式无效")
+                self._pending = self._normalize_pending(sessions)
+            elif self._pending:
+                self._persist_locked()
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -158,7 +312,45 @@ class DshEventHub:
 
     def resolve_local(self, session_id: str, rpc_id: str) -> None:
         with self._lock:
-            self._pending.get(session_id, {}).pop(rpc_id, None)
+            bucket = self._pending.get(session_id, {})
+            if bucket.pop(rpc_id, None) is None:
+                return
+            if not bucket:
+                self._pending.pop(session_id, None)
+            self._persist_locked()
+
+    @staticmethod
+    def _normalize_pending(value: dict[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
+        pending: dict[str, dict[str, dict[str, Any]]] = {}
+        for session_id, raw_bucket in value.items():
+            if not isinstance(session_id, str) or not isinstance(raw_bucket, dict):
+                raise AgentRuntimeError("Agent待决状态文件格式无效")
+            bucket: dict[str, dict[str, Any]] = {}
+            for rpc_id, raw_item in raw_bucket.items():
+                if (
+                    not isinstance(rpc_id, str)
+                    or not isinstance(raw_item, dict)
+                    or raw_item.get("rpc_id") != rpc_id
+                    or raw_item.get("session_id") != session_id
+                    or raw_item.get("kind") not in {"approval", "question"}
+                    or not isinstance(raw_item.get("received_at"), (int, float))
+                ):
+                    raise AgentRuntimeError("Agent待决状态文件格式无效")
+                bucket[rpc_id] = dict(raw_item)
+            if bucket:
+                pending[session_id] = bucket
+        return pending
+
+    def _persist_locked(self) -> None:
+        if self._state_path is None:
+            return
+        write_json(
+            self._state_path,
+            {
+                "schema_version": self.PENDING_SCHEMA_VERSION,
+                "sessions": self._pending,
+            },
+        )
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -202,6 +394,7 @@ class DshEventHub:
             return
         with self._lock:
             bucket = self._pending.setdefault(session_id, {})
+            changed = False
             if event_type == "approval/requested":
                 bucket[rpc_id] = {
                     "kind": "approval",
@@ -213,6 +406,7 @@ class DshEventHub:
                     "reason": payload.get("reason") or "Agent 请求执行会改变训练任务状态的操作。",
                     "received_at": time.time(),
                 }
+                changed = True
             elif event_type == "question/requested":
                 bucket[rpc_id] = {
                     "kind": "question",
@@ -221,13 +415,19 @@ class DshEventHub:
                     "questions": payload.get("questions", []),
                     "received_at": time.time(),
                 }
+                changed = True
             elif event_type == "approval/resolved":
                 approval_id = payload.get("approvalId")
                 for key, value in list(bucket.items()):
                     if value.get("approval_id") == approval_id:
                         bucket.pop(key, None)
+                        changed = True
             elif event_type == "question/resolved":
-                bucket.pop(str(payload.get("questionRpcId")), None)
+                changed = bucket.pop(str(payload.get("questionRpcId")), None) is not None
+            if not bucket:
+                self._pending.pop(session_id, None)
+            if changed:
+                self._persist_locked()
 
 
 class ConversationBridge:
@@ -237,6 +437,7 @@ class ConversationBridge:
         self.path = root / "conversations.json"
         self.client = client
         self.events = events
+        self.events.bind_workspace(root)
         self.cwd = cwd.resolve()
         self._lock = threading.RLock()
 
@@ -252,20 +453,22 @@ class ConversationBridge:
             return self._read().get(task_id, {}).get("session_id")
 
     def ensure_session(self, task_id: str, title: str) -> str:
-        existing = self.session_for(task_id)
-        if existing:
-            return existing
-        value = self.client.call(
-            "session.create",
-            {"cwd": str(self.cwd), "agentPreset": "model-training"},
-        )
-        session_id = value["sessionId"]
-        try:
-            self.client.call("session.rename", {"sessionId": session_id, "title": title})
-        except AgentRuntimeError:
-            pass
         with self._lock:
             mappings = self._read()
+            existing = mappings.get(task_id, {}).get("session_id")
+            if isinstance(existing, str) and existing:
+                return existing
+            value = self.client.call(
+                "session.create",
+                {"cwd": str(self.cwd), "agentPreset": "model-training"},
+            )
+            session_id = value.get("sessionId") if isinstance(value, dict) else None
+            if not isinstance(session_id, str) or not session_id:
+                raise AgentRuntimeError("训练 Agent 未返回有效会话 ID")
+            try:
+                self.client.call("session.rename", {"sessionId": session_id, "title": title})
+            except AgentRuntimeError:
+                pass
             mappings[task_id] = {
                 "session_id": session_id,
                 "created_at": time.time(),

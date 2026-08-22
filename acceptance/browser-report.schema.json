@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wanghui2323/ai-pm-model-harness/acceptance/browser-report.schema.json",
+  "title": "Model Harness v0.7 Browser Observation Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_commit", "producer_run_id", "runs"],
+  "properties": {
+    "schema_version": {"const": "0.1"},
+    "source_commit": {"$ref": "#/$defs/commit"},
+    "producer_run_id": {"$ref": "#/$defs/runId"},
+    "runs": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/browserRun"}}
+  },
+  "$defs": {
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nonEmpty": {"type": "string", "minLength": 1},
+    "runId": {"type": "string", "pattern": "^evidence-[0-9TZ-]+-[0-9a-f]{8}$"},
+    "viewport": {"oneOf": [{"const": {"width": 1440, "height": 900}}, {"const": {"width": 390, "height": 844}}]},
+    "family": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "run_id", "evaluation_report_id", "inference_check_id", "artifact_bundle_id", "evaluation_text", "bundle_text"],
+      "properties": {
+        "task_id": {"$ref": "#/$defs/nonEmpty"}, "run_id": {"$ref": "#/$defs/nonEmpty"}, "evaluation_report_id": {"$ref": "#/$defs/nonEmpty"}, "inference_check_id": {"$ref": "#/$defs/nonEmpty"}, "artifact_bundle_id": {"$ref": "#/$defs/nonEmpty"}, "evaluation_text": {"$ref": "#/$defs/nonEmpty"}, "bundle_text": {"$ref": "#/$defs/nonEmpty"}
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selector", "width", "height"],
+      "properties": {"selector": {"$ref": "#/$defs/nonEmpty"}, "width": {"type": "number", "minimum": 0}, "height": {"type": "number", "minimum": 0}}
+    },
+    "browserRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["viewport", "start_url", "end_url", "drafts", "families", "measurements", "console_error_count", "request_failure_count", "http_error_count"],
+      "properties": {
+        "viewport": {"$ref": "#/$defs/viewport"},
+        "start_url": {"type": "string", "pattern": "^http://127\\.0\\.0\\.1:"},
+        "end_url": {"type": "string", "pattern": "^http://127\\.0\\.0\\.1:"},
+        "drafts": {
+          "type": "object", "additionalProperties": false,
+          "required": ["first_task_id", "second_task_id", "first_value_sha256", "second_value_sha256", "first_restored", "first_survived_reload", "second_restored"],
+          "properties": {"first_task_id": {"$ref": "#/$defs/nonEmpty"}, "second_task_id": {"$ref": "#/$defs/nonEmpty"}, "first_value_sha256": {"$ref": "#/$defs/sha256"}, "second_value_sha256": {"$ref": "#/$defs/sha256"}, "first_restored": {"type": "boolean"}, "first_survived_reload": {"type": "boolean"}, "second_restored": {"type": "boolean"}}
+        },
+        "families": {
+          "type": "object", "additionalProperties": false, "required": ["image", "tabular", "audio"],
+          "properties": {"image": {"$ref": "#/$defs/family"}, "tabular": {"$ref": "#/$defs/family"}, "audio": {"$ref": "#/$defs/family"}}
+        },
+        "measurements": {
+          "type": "object", "additionalProperties": false,
+          "required": ["horizontal_overflow_px", "primary_targets", "context_reachable", "results_reachable"],
+          "properties": {"horizontal_overflow_px": {"type": "number", "minimum": 0}, "primary_targets": {"type": "array", "minItems": 3, "items": {"$ref": "#/$defs/target"}}, "context_reachable": {"type": "boolean"}, "results_reachable": {"type": "boolean"}}
+        },
+        "console_error_count": {"type": "integer", "minimum": 0},
+        "request_failure_count": {"type": "integer", "minimum": 0},
+        "http_error_count": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

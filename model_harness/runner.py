@@ -15,7 +15,9 @@ import sklearn
 
 from .contracts import load_contract, validate_contract
 from .errors import RunCancelled
+from .evidence import EvaluationReport
 from .io_utils import read_json, sha256_file, write_json
+from .optimization import attach_provenance, propose_strategies_with_provenance
 from .plugins import PluginRegistry, default_registry
 from .state import RunState
 
@@ -52,12 +54,12 @@ def _write_manifest(
     plugin_version: str,
 ) -> dict[str, Any]:
     artifacts = {
-        path.name: {
+        path.relative_to(artifact_dir).as_posix(): {
             "sha256": sha256_file(path),
             "bytes": path.stat().st_size,
         }
-        for path in sorted(artifact_dir.iterdir())
-        if path.is_file()
+        for path in sorted(artifact_dir.rglob("*"))
+        if path.is_file() and not path.is_symlink()
     }
     manifest = {
         "schema_version": "0.2",
@@ -195,6 +197,25 @@ def execute_run(
         state.transition("evaluating")
         stage_started = time.perf_counter()
         evaluation = plugin.evaluate(training, raw)
+        evidence_policy = raw.get("evidence_policy", {})
+        inherited_contamination = bool(
+            isinstance(evidence_policy, dict)
+            and evidence_policy.get("test_contaminated")
+        )
+        contamination_reasons = (
+            [
+                str(value)
+                for value in evidence_policy.get("contamination_reasons", [])
+                if str(value).strip()
+            ]
+            if isinstance(evidence_policy, dict)
+            else []
+        )
+        evaluation.metrics["test_contaminated"] = bool(
+            inherited_contamination
+            or evaluation.metrics.get("test_contaminated", False)
+        )
+        evaluation.metrics["contamination_reasons"] = contamination_reasons
         timings_ms["evaluating"] = (time.perf_counter() - stage_started) * 1000
         state.event(
             "evaluation.completed",
@@ -210,13 +231,20 @@ def execute_run(
         _check_cancel(state, cancel_check)
         state.transition("proposing")
         stage_started = time.perf_counter()
-        strategies = plugin.propose_strategies(evaluation.metrics, raw)
+        strategies, optimization_provenance = propose_strategies_with_provenance(
+            plugin,
+            evaluation.metrics,
+            raw,
+        )
         timings_ms["proposing"] = (time.perf_counter() - stage_started) * 1000
         state.event(
             "optimization.strategies_proposed",
             {
                 "strategy_count": len(strategies),
                 "actionable_count": sum(item.actionable for item in strategies),
+                "test_evidence_used": optimization_provenance[
+                    "uses_test_evidence"
+                ],
                 "duration_ms": timings_ms["proposing"],
             },
         )
@@ -236,7 +264,11 @@ def execute_run(
                 "require_approval": raw.get("optimization", {}).get(
                     "require_approval", True
                 ),
-                "strategies": [item.to_dict() for item in strategies],
+                "evidence_provenance": optimization_provenance,
+                "strategies": [
+                    attach_provenance(item, optimization_provenance)
+                    for item in strategies
+                ],
             },
         )
         (artifact_dir / "learning_report.md").write_text(
@@ -271,6 +303,31 @@ def execute_run(
             timings_ms=timings_ms,
             total_duration_ms=total_duration_ms,
         )
+        minimum_test_samples = raw.get("diagnostics", {}).get(
+            "minimum_test_samples",
+            20,
+        )
+        if (
+            isinstance(minimum_test_samples, bool)
+            or not isinstance(minimum_test_samples, int)
+            or minimum_test_samples <= 0
+        ):
+            minimum_test_samples = 20
+        try:
+            EvaluationReport(resolved).build(
+                minimum_test_samples=minimum_test_samples,
+                test_contaminated=bool(
+                    evaluation.metrics.get("test_contaminated", False)
+                ),
+            )
+        except Exception as exc:
+            # Evidence failure must remain visible without rewriting a genuinely
+            # completed training Run as a training failure.
+            state.event(
+                "evidence.evaluation_report_failed",
+                {"error": f"{type(exc).__name__}: {exc}"},
+                stage="completed",
+            )
         return resolved
     except RunCancelled as exc:
         state.cancel(str(exc))
@@ -303,40 +360,60 @@ def verify_run(
     resolved = Path(run_dir).expanduser().resolve()
     manifest = read_json(resolved / "run_manifest.json")
     state = read_json(resolved / "run_state.json")
-    errors: list[str] = []
+    integrity_errors: list[str] = []
+    quality_errors: list[str] = []
     if state.get("status") != "completed":
-        errors.append(f"run status is {state.get('status')}, expected completed")
+        integrity_errors.append(
+            f"run status is {state.get('status')}, expected completed"
+        )
     contract_path = resolved / "task_contract.json"
     if sha256_file(contract_path) != manifest["contract_snapshot_sha256"]:
-        errors.append("task contract hash mismatch")
+        integrity_errors.append("task contract hash mismatch")
     artifact_dir = resolved / "artifacts"
     for name, expected in manifest["artifacts"].items():
         path = artifact_dir / name
         if not path.is_file():
-            errors.append(f"missing artifact: {name}")
+            integrity_errors.append(f"missing artifact: {name}")
             continue
         if sha256_file(path) != expected["sha256"]:
-            errors.append(f"artifact hash mismatch: {name}")
+            integrity_errors.append(f"artifact hash mismatch: {name}")
 
     metrics_path = artifact_dir / "metrics.json"
+    metric_gate_status = "not_evaluated"
     if metrics_path.is_file():
         metrics = read_json(metrics_path)
         if not metrics["gate_checks"]["all_offline_gates_passed"]:
-            errors.append("one or more offline gates failed")
+            quality_errors.append("one or more offline gates failed")
+            metric_gate_status = "failed"
+        else:
+            metric_gate_status = "passed"
 
     deep_verified = False
-    if deep and not errors:
+    if deep and not integrity_errors:
         selected_registry = registry or default_registry()
         plugin = selected_registry.get_recipe(str(manifest["recipe"]))
         plugin_errors = plugin.deep_verify(artifact_dir)
-        errors.extend(plugin_errors)
+        integrity_errors.extend(plugin_errors)
         deep_verified = not plugin_errors
+
+    report_path = resolved / "evidence" / "evaluation_report.json"
+    evaluation_report = read_json(report_path) if report_path.is_file() else None
 
     return {
         "run_dir": str(resolved),
-        "ok": not errors,
+        "ok": not integrity_errors,
+        "integrity_status": "passed" if not integrity_errors else "failed",
+        "metric_gate_status": metric_gate_status,
+        "release_ready": bool(
+            not integrity_errors
+            and metric_gate_status == "passed"
+            and evaluation_report
+            and evaluation_report.get("release_ready")
+        ),
         "deep_verified": deep_verified,
-        "errors": errors,
+        "errors": integrity_errors,
+        "quality_errors": quality_errors,
+        "evaluation_report": evaluation_report,
         "artifact_count": len(manifest.get("artifacts", {})),
     }
 
