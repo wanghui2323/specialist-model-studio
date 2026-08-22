@@ -8,13 +8,13 @@ AGENT_HOST="${MODEL_HARNESS_AGENT_HOST:-127.0.0.1}"
 AGENT_PORT="${MODEL_HARNESS_AGENT_PORT:-3080}"
 BACKEND_URL="http://${BACKEND_HOST}:${BACKEND_PORT}"
 AGENT_URL="http://${AGENT_HOST}:${AGENT_PORT}"
-HARNESS_CLI="${HARNESS_ROOT}/.venv/bin/small-model-harness"
+HARNESS_PYTHON="${HARNESS_ROOT}/.venv/bin/python"
 BACKEND_LOG="${HARNESS_ROOT}/runs/.conversation-backend.log"
 STARTED_BACKEND=0
 BACKEND_PID=""
 
-if [[ ! -x "${HARNESS_CLI}" ]]; then
-  echo "Missing ${HARNESS_CLI}. Run: python3 -m venv .venv && .venv/bin/python -m pip install -e '.[server]'" >&2
+if [[ ! -x "${HARNESS_PYTHON}" ]]; then
+  echo "Missing ${HARNESS_PYTHON}. Run: python3 -m venv .venv && .venv/bin/python -m pip install -e '.[server]'" >&2
   exit 1
 fi
 
@@ -51,7 +51,8 @@ trap cleanup EXIT INT TERM
 
 if ! curl --fail --silent --max-time 2 "${BACKEND_URL}/health" >/dev/null 2>&1; then
   MODEL_HARNESS_CONVERSATION_URL="${AGENT_URL}" \
-    "${HARNESS_CLI}" serve \
+    PYTHONPATH="${HARNESS_ROOT}" \
+    "${HARNESS_PYTHON}" -m model_harness.cli serve \
       --runs-dir "${HARNESS_ROOT}/runs" \
       --host "${BACKEND_HOST}" \
       --port "${BACKEND_PORT}" >"${BACKEND_LOG}" 2>&1 &

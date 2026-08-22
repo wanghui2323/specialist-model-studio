@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import http.client
 import json
 import tempfile
+import threading
 import unittest
 from copy import deepcopy
 from pathlib import Path
@@ -16,6 +18,7 @@ from model_harness.agent_bridge import (
     AgentRuntimeError,
     ConversationBridge,
     DshEventHub,
+    DshRpcClient,
 )
 from model_harness.io_utils import read_json, write_json
 from model_harness.runner import execute_run, prepare_run
@@ -63,6 +66,108 @@ class FakeDshClient:
         self.responses.append((rpc_id, value))
 
 
+class FakeHttpResponse:
+    def __init__(
+        self,
+        body: dict[str, Any],
+        *,
+        status: int = 200,
+        will_close: bool = False,
+        lines: list[bytes] | None = None,
+    ) -> None:
+        self.status = status
+        self.will_close = will_close
+        self._body = json.dumps(body).encode("utf-8")
+        self._lines = iter(lines or [])
+
+    def read(self) -> bytes:
+        return self._body
+
+    def readline(self) -> bytes:
+        return next(self._lines, b"")
+
+
+class FakeRpcConnection:
+    def __init__(
+        self,
+        *,
+        fail_request: bool = False,
+        fail_response: bool = False,
+    ) -> None:
+        self.fail_request = fail_request
+        self.fail_response = fail_response
+        self.requests: list[tuple[str, str, bytes | None, dict[str, str]]] = []
+        self.closed = 0
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        if self.fail_request:
+            self.fail_request = False
+            raise BrokenPipeError("stale keep-alive connection")
+        self.requests.append((method, path, body, dict(headers or {})))
+
+    def getresponse(self) -> FakeHttpResponse:
+        if self.fail_response:
+            raise http.client.RemoteDisconnected("response lost after request")
+        _method, path, raw_body, _headers = self.requests[-1]
+        envelope = json.loads((raw_body or b"{}").decode("utf-8"))
+        if path == "/api/respond":
+            return FakeHttpResponse({"accepted": True})
+        return FakeHttpResponse(
+            {
+                "rpcId": envelope["rpcId"],
+                "result": {
+                    "ok": True,
+                    "value": {"method": envelope["method"]},
+                },
+            }
+        )
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+class FakeStopEvent:
+    def __init__(self) -> None:
+        self.stopped = False
+        self.waits: list[float] = []
+
+    def is_set(self) -> bool:
+        return self.stopped
+
+    def wait(self, timeout: float) -> bool:
+        self.waits.append(timeout)
+        self.stopped = True
+        return True
+
+
+class BlockingStreamConnection(FakeRpcConnection):
+    def __init__(self) -> None:
+        super().__init__()
+        self.readline_started = threading.Event()
+        self.closed_event = threading.Event()
+
+    def getresponse(self) -> FakeHttpResponse:
+        response = FakeHttpResponse({})
+
+        def readline() -> bytes:
+            self.readline_started.set()
+            self.closed_event.wait(timeout=2.0)
+            return b""
+
+        response.readline = readline  # type: ignore[method-assign]
+        return response
+
+    def close(self) -> None:
+        super().close()
+        self.closed_event.set()
+
+
 def build_bridge(
     root: Path,
     client: FakeDshClient,
@@ -101,6 +206,130 @@ def attach_queued_run(app: Any, task_id: str, run_id: str) -> Path:
 
 
 class AgentBridgeTests(unittest.TestCase):
+    def test_rpc_client_reuses_keep_alive_connection_for_unary_calls(self) -> None:
+        client = DshRpcClient("http://127.0.0.1:3080")
+        connection = FakeRpcConnection()
+        created: list[FakeRpcConnection] = []
+
+        def connection_factory(timeout: float | None = None) -> FakeRpcConnection:
+            self.assertIsNone(timeout)
+            created.append(connection)
+            return connection
+
+        client.connection = connection_factory  # type: ignore[method-assign]
+
+        self.assertEqual(client.call("session.list", {}), {"method": "session.list"})
+        self.assertEqual(client.call("session.create", {}), {"method": "session.create"})
+        client.respond("rpc-approval", {"decision": "allowed-once"})
+
+        self.assertEqual(created, [connection])
+        self.assertEqual(len(connection.requests), 3)
+        self.assertEqual(connection.closed, 0)
+        self.assertTrue(
+            all(
+                headers["connection"] == "keep-alive"
+                for _method, _path, _body, headers in connection.requests
+            )
+        )
+
+    def test_rpc_client_reconnects_once_after_stale_keep_alive_failure(self) -> None:
+        client = DshRpcClient("http://127.0.0.1:3080")
+        stale = FakeRpcConnection(fail_request=True)
+        replacement = FakeRpcConnection()
+        connections = iter([stale, replacement])
+        created: list[FakeRpcConnection] = []
+
+        def connection_factory(timeout: float | None = None) -> FakeRpcConnection:
+            self.assertIsNone(timeout)
+            connection = next(connections)
+            created.append(connection)
+            return connection
+
+        client.connection = connection_factory  # type: ignore[method-assign]
+
+        self.assertEqual(client.call("session.list", {}), {"method": "session.list"})
+
+        self.assertEqual(created, [stale, replacement])
+        self.assertEqual(stale.closed, 1)
+        self.assertEqual(len(replacement.requests), 1)
+        self.assertEqual(replacement.closed, 0)
+
+    def test_rpc_client_does_not_replay_request_after_send_completed(self) -> None:
+        client = DshRpcClient("http://127.0.0.1:3080")
+        uncertain = FakeRpcConnection(fail_response=True)
+        unused = FakeRpcConnection()
+        connections = iter([uncertain, unused])
+        created: list[FakeRpcConnection] = []
+
+        def connection_factory(timeout: float | None = None) -> FakeRpcConnection:
+            self.assertIsNone(timeout)
+            connection = next(connections)
+            created.append(connection)
+            return connection
+
+        client.connection = connection_factory  # type: ignore[method-assign]
+
+        with self.assertRaisesRegex(AgentRuntimeError, "response lost after request"):
+            client.call("session.create", {})
+
+        self.assertEqual(created, [uncertain])
+        self.assertEqual(len(uncertain.requests), 1)
+        self.assertEqual(uncertain.closed, 1)
+
+    def test_event_stream_reconnects_with_long_read_timeout_and_backoff(self) -> None:
+        connection = FakeRpcConnection()
+        response = FakeHttpResponse({}, lines=[])
+        connection.getresponse = lambda: response  # type: ignore[method-assign]
+        timeouts: list[float | None] = []
+
+        class EventClient:
+            def connection(_self, timeout: float | None = None) -> FakeRpcConnection:
+                timeouts.append(timeout)
+                return connection
+
+        events = DshEventHub(EventClient())  # type: ignore[arg-type]
+        stop = FakeStopEvent()
+        events._stop = stop  # type: ignore[assignment]
+
+        events._run()  # noqa: SLF001 - deterministic reconnect loop under test
+
+        self.assertEqual(timeouts, [DshEventHub.STREAM_TIMEOUT_SECONDS])
+        self.assertEqual(stop.waits, [DshEventHub.RECONNECT_DELAY_SECONDS])
+        self.assertEqual(connection.closed, 1)
+        self.assertEqual(connection.requests[0][0:2], ("GET", "/api/events.mux"))
+        self.assertEqual(
+            connection.requests[0][3],
+            {"accept": "text/event-stream", "connection": "keep-alive"},
+        )
+
+    def test_event_hub_stop_closes_blocked_stream_and_unary_connection(self) -> None:
+        stream = BlockingStreamConnection()
+
+        class EventClient:
+            def __init__(_self) -> None:
+                _self.closed = 0
+
+            def connection(
+                _self, timeout: float | None = None
+            ) -> BlockingStreamConnection:
+                self.assertEqual(timeout, DshEventHub.STREAM_TIMEOUT_SECONDS)
+                return stream
+
+            def close(_self) -> None:
+                _self.closed += 1
+
+        client = EventClient()
+        events = DshEventHub(client)  # type: ignore[arg-type]
+        events.start()
+        self.assertTrue(stream.readline_started.wait(timeout=1.0))
+
+        events.stop()
+
+        self.assertGreaterEqual(stream.closed, 1)
+        self.assertEqual(client.closed, 1)
+        self.assertIsNotNone(events._thread)  # noqa: SLF001
+        self.assertFalse(events._thread.is_alive())  # type: ignore[union-attr]  # noqa: SLF001
+
     def test_pending_approval_and_question_survive_restart_until_resolved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -188,6 +188,8 @@ class DshRpcClient:
             raise ValueError("DSH bridge currently requires an http:// host")
         self.host = parsed.hostname
         self.port = parsed.port or 80
+        self._rpc_lock = threading.RLock()
+        self._rpc_connection: http.client.HTTPConnection | None = None
 
     def connection(self, timeout: float | None = None) -> http.client.HTTPConnection:
         return http.client.HTTPConnection(
@@ -204,22 +206,13 @@ class DshRpcClient:
             "method": method,
             "payload": payload,
         }
-        connection = self.connection()
-        try:
-            connection.request(
-                "POST",
-                f"/api/{method}",
-                body=json.dumps(envelope, ensure_ascii=False).encode("utf-8"),
-                headers={"content-type": "application/json", "connection": "close"},
-            )
-            response = connection.getresponse()
-            body = json.loads(response.read().decode("utf-8"))
-            if response.status >= 400:
-                raise AgentRuntimeError(f"训练 Agent 返回 HTTP {response.status}")
-        except (OSError, http.client.HTTPException, TimeoutError, json.JSONDecodeError) as exc:
-            raise AgentRuntimeError(f"训练 Agent 运行时不可用：{exc}") from exc
-        finally:
-            connection.close()
+        status, body = self._post_envelope(
+            f"/api/{method}",
+            envelope,
+            error_prefix="训练 Agent 运行时不可用",
+        )
+        if status >= 400:
+            raise AgentRuntimeError(f"训练 Agent 返回 HTTP {status}")
         result = body.get("result", {}) if isinstance(body, dict) else {}
         if body.get("rpcId") != rpc_id or not result.get("ok"):
             error = result.get("error", {})
@@ -233,22 +226,74 @@ class DshRpcClient:
             "rpcId": rpc_id,
             "result": {"ok": True, "value": value},
         }
-        connection = self.connection()
-        try:
-            connection.request(
-                "POST",
-                "/api/respond",
-                body=json.dumps(envelope, ensure_ascii=False).encode("utf-8"),
-                headers={"content-type": "application/json", "connection": "close"},
-            )
-            response = connection.getresponse()
-            receipt = json.loads(response.read().decode("utf-8"))
-        except (OSError, http.client.HTTPException, TimeoutError, json.JSONDecodeError) as exc:
-            raise AgentRuntimeError(f"无法提交你的决定：{exc}") from exc
-        finally:
-            connection.close()
+        status, receipt = self._post_envelope(
+            "/api/respond",
+            envelope,
+            error_prefix="无法提交你的决定",
+        )
+        if status >= 400:
+            raise AgentRuntimeError(f"无法提交你的决定：HTTP {status}")
         if receipt.get("accepted") is not True:
             raise AgentRuntimeError("该决定已失效，请刷新任务后重试")
+
+    def _post_envelope(
+        self,
+        path: str,
+        envelope: dict[str, Any],
+        *,
+        error_prefix: str,
+    ) -> tuple[int, dict[str, Any]]:
+        encoded = json.dumps(envelope, ensure_ascii=False).encode("utf-8")
+        last_error: Exception | None = None
+        with self._rpc_lock:
+            for _attempt in range(2):
+                request_sent = False
+                connection = self._rpc_connection
+                if connection is None:
+                    connection = self.connection()
+                    self._rpc_connection = connection
+                try:
+                    connection.request(
+                        "POST",
+                        path,
+                        body=encoded,
+                        headers={
+                            "content-type": "application/json",
+                            "connection": "keep-alive",
+                        },
+                    )
+                    request_sent = True
+                    response = connection.getresponse()
+                    raw = response.read().decode("utf-8")
+                    body = json.loads(raw)
+                    if response.will_close:
+                        self._close_rpc_connection_locked()
+                    if not isinstance(body, dict):
+                        raise json.JSONDecodeError("response is not an object", raw, 0)
+                    return response.status, body
+                except (
+                    OSError,
+                    http.client.HTTPException,
+                    TimeoutError,
+                    json.JSONDecodeError,
+                ) as exc:
+                    last_error = exc
+                    self._close_rpc_connection_locked()
+                    if request_sent:
+                        break
+            raise AgentRuntimeError(f"{error_prefix}：{last_error}") from last_error
+
+    def _close_rpc_connection_locked(self) -> None:
+        connection = self._rpc_connection
+        self._rpc_connection = None
+        if connection is not None:
+            connection.close()
+
+    def close(self) -> None:
+        """Release the reusable unary connection during application shutdown."""
+
+        with self._rpc_lock:
+            self._close_rpc_connection_locked()
 
     def available(self) -> bool:
         try:
@@ -263,6 +308,8 @@ class DshEventHub:
 
     PENDING_SCHEMA_VERSION = "0.1"
     PENDING_STATE_FILENAME = "conversation_pending.json"
+    STREAM_TIMEOUT_SECONDS = 300.0
+    RECONNECT_DELAY_SECONDS = 2.0
 
     def __init__(self, client: DshRpcClient) -> None:
         self.client = client
@@ -271,6 +318,8 @@ class DshEventHub:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._stream_lock = threading.RLock()
+        self._stream_connection: http.client.HTTPConnection | None = None
 
     def bind_workspace(self, root: Path) -> None:
         """Bind pending requests to the workspace before consuming runtime events."""
@@ -302,8 +351,16 @@ class DshEventHub:
 
     def stop(self) -> None:
         self._stop.set()
+        with self._stream_lock:
+            connection = self._stream_connection
+            self._stream_connection = None
+            if connection is not None:
+                connection.close()
         if self._thread:
-            self._thread.join(timeout=1.0)
+            self._thread.join(timeout=self.RECONNECT_DELAY_SECONDS + 1.0)
+        close_client = getattr(self.client, "close", None)
+        if callable(close_client):
+            close_client()
 
     def pending_for(self, session_id: str) -> list[dict[str, Any]]:
         with self._lock:
@@ -355,10 +412,28 @@ class DshEventHub:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                connection = self.client.connection(timeout=15)
+                connection = self.client.connection(
+                    timeout=self.STREAM_TIMEOUT_SECONDS
+                )
+                with self._stream_lock:
+                    if self._stop.is_set():
+                        connection.close()
+                        return
+                    self._stream_connection = connection
                 try:
-                    connection.request("GET", "/api/events.mux")
+                    connection.request(
+                        "GET",
+                        "/api/events.mux",
+                        headers={
+                            "accept": "text/event-stream",
+                            "connection": "keep-alive",
+                        },
+                    )
                     response = connection.getresponse()
+                    if response.status >= 400:
+                        raise AgentRuntimeError(
+                            f"Agent 事件流返回 HTTP {response.status}"
+                        )
                     buffer: list[str] = []
                     while not self._stop.is_set():
                         raw_line = response.readline()
@@ -375,9 +450,14 @@ class DshEventHub:
                             self._consume("".join(buffer))
                             buffer = []
                 finally:
+                    with self._stream_lock:
+                        if self._stream_connection is connection:
+                            self._stream_connection = None
                     connection.close()
             except Exception:
-                self._stop.wait(1.0)
+                pass
+            if not self._stop.is_set():
+                self._stop.wait(self.RECONNECT_DELAY_SECONDS)
 
     def _consume(self, raw: str) -> None:
         try:

@@ -4,11 +4,30 @@ import json
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class RepositoryTruthTests(unittest.TestCase):
+    def test_ci_jobs_match_the_release_contract_check_names(self) -> None:
+        gates = json.loads(
+            (ROOT / "acceptance" / "v0.7-gates.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        workflow = yaml.safe_load(
+            (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        required = set(gates["release_contract"]["required_check_names"])
+        jobs = workflow["jobs"]
+
+        self.assertEqual(set(jobs), required)
+        self.assertEqual({job["name"] for job in jobs.values()}, required)
+
     def test_published_skill_preserves_v07_execution_boundary(self) -> None:
         skill = (ROOT / "skills" / "train-small-model" / "SKILL.md").read_text(
             encoding="utf-8"

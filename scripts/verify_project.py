@@ -69,6 +69,7 @@ def main() -> int:
         "acceptance/browser/package.json",
         "acceptance/browser/package-lock.json",
         "acceptance/browser/collect-browser.mjs",
+        ".github/workflows/ci.yml",
         "skills/train-small-model/SKILL.md",
         "examples/digit-classification/task_contract.json",
         "tests/test_workspace_loop.py",
