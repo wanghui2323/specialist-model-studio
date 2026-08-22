@@ -1140,7 +1140,11 @@ def probe_three_family_journeys(
 
 def _http_bytes(url: str, *, timeout: float = 5.0) -> tuple[int, bytes]:
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    # These calls independently re-check the controlled loopback service.  Do
+    # not inherit macOS system proxy settings: a proxy response is not evidence
+    # about the service bound to 127.0.0.1.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=timeout) as response:
         return int(response.status), response.read()
 
 

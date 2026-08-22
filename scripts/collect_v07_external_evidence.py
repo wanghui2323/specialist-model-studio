@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import os
+import signal
 import shutil
 import socket
 import subprocess
@@ -54,6 +55,13 @@ SOURCE_FILES = {
     "browser_lock": "acceptance/browser/package-lock.json",
 }
 TOOL_NAMES = ("python", "git", "node", "npm", "uv", "chrome")
+
+# The controlled producer only talks to the loopback service.  macOS may expose
+# system proxy settings even when the allowlisted subprocess environment omits
+# HTTP(S)_PROXY, so use an explicit no-proxy opener for every local evidence
+# request.  Otherwise a healthy local Uvicorn process can be mistaken for a
+# startup failure when urllib sends 127.0.0.1 through the system proxy.
+LOCAL_HTTP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def _now() -> str:
@@ -263,7 +271,7 @@ def _free_port() -> int:
 
 def _http_bytes(url: str, *, timeout: float = 5.0) -> tuple[int, bytes, str]:
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with LOCAL_HTTP_OPENER.open(request, timeout=timeout) as response:
         return int(response.status), response.read(), response.headers.get("content-type", "")
 
 
@@ -587,7 +595,11 @@ def collect(args: argparse.Namespace) -> Path:
             environment,
         )
         before = _collect_families(base_url, journeys["journey_families"])
-        before_process.terminate()
+        # Uvicorn treats SIGINT as its normal local shutdown path and returns
+        # zero after application cleanup.  Popen.terminate() sends SIGTERM on
+        # macOS and can bypass that handler, yielding -15 even though the
+        # service was healthy; the restart gate requires a clean first exit.
+        before_process.send_signal(signal.SIGINT)
         before_exit_code = before_process.wait(timeout=20)
         before_handle.close()
         before_handle = None
