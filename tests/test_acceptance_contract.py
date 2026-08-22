@@ -133,6 +133,15 @@ class AcceptanceContractTests(unittest.TestCase):
             browser_source,
         )
 
+    def test_cold_clone_keeps_fresh_caches_with_proxy_safe_timeout(self) -> None:
+        producer_source = (
+            ROOT / "scripts" / "collect_v07_external_evidence.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('"UV_CACHE_DIR": str(cache / "uv")', producer_source)
+        self.assertIn('"UV_HTTP_TIMEOUT": "300"', producer_source)
+        self.assertIn('"HF_HUB_CACHE": str(cache / "hf-hub")', producer_source)
+
     def test_local_beta_and_github_release_are_separate_fail_closed_states(self) -> None:
         levels = self.runner.instantiate_levels(self.gates)
         for level in levels:

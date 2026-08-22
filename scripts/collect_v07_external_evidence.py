@@ -463,6 +463,7 @@ def _cold_environment(
             "HF_HOME": str(cache / "hf-home"),
             "HF_HUB_CACHE": str(cache / "hf-hub"),
             "UV_CACHE_DIR": str(cache / "uv"),
+            "UV_HTTP_TIMEOUT": "300",
             "UV_PROJECT_ENVIRONMENT": str(clone / ".venv"),
             "npm_config_cache": str(cache / "npm"),
             "PYTHONUNBUFFERED": "1",
