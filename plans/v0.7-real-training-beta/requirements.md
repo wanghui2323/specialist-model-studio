@@ -1,10 +1,10 @@
 # Model Harness v0.7 本地可用 Beta 需求合同
 
-> 状态：L0 已验收，L1 有历史 `verified` 证据；L2–L4 实现为 `implemented`，L5 验收工具为 `implementing`。L2–L5 仍需在同一 source commit 上通过受控 producer、真实浏览器、进程重启、冷克隆和聚合门禁后才能升级为 `verified`。
+> 状态：L0 已由用户验收；L1–L5 的本地必选门禁均为 `verified`，最终用户验收仍待确认。GitHub 分支已推送，合并、CI、Tag 与 Release 继续单独记录。
 > 启动日期：2026-08-21  
 > 开发分支：`codex/v0.7-real-training-beta`  
 > 主对象：`Training Task`  
-> 当前发布边界：本地、单用户的 v0.7 Beta 候选；L5 尚未 `verified`，未合并 `main`，也未发布 GitHub Beta。
+> 当前发布边界：本地、单用户的 v0.7 Beta 已完成机器验证；未合并 `main`，也未创建 GitHub Tag / Release。
 
 ## 1. 产品目标
 
@@ -183,4 +183,4 @@ OCR 文本行识别作为 v0.8 的第二个动态扩展证明，不挤入 v0.7 �
 → 自动进入下一层或留在本层修复
 ```
 
-L0 已验收，L1 保留旧轮 `verified` 证据。连续大 Loop 已授权，但后续层级仍必须在同一 source commit 上通过官方 HF 固定 commit、真实三家族训练、原样本推理与 Bundle、篡改、双视口、进程重启和冷克隆门禁。安全边界不因连续授权而放宽；任意 Agent 生成代码在没有通过自检的 OCI 沙箱前保持 `blocked_environment`。
+L0 已验收，L1–L5 已通过本地必选机器门禁；`verified` 仍不等于用户 `accepted` 或 GitHub `released`。后续任何源码变化都必须在新的 source commit 上重新执行官方 HF 固定 commit、真实三家族训练、原样本推理与 Bundle、篡改、双视口、进程重启和冷克隆门禁。安全边界不因验证通过而放宽；任意 Agent 生成代码在没有通过自检的 OCI 沙箱前保持 `blocked_environment`。

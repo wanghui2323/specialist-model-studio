@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 
@@ -27,6 +28,41 @@ class RepositoryTruthTests(unittest.TestCase):
         self.assertIn(".[server,test]", readme)
         self.assertIn("npm ci --prefix integrations/deepseek-harness", readme)
         self.assertIn("它不冒充真实 PID 重启", readme)
+
+    def test_loop_ledger_separates_local_verification_from_release(self) -> None:
+        ledger = json.loads(
+            (
+                ROOT
+                / "plans"
+                / "v0.7-real-training-beta"
+                / "loop-tasks.json"
+            ).read_text(encoding="utf-8")
+        )
+        statuses = {
+            loop["loop_id"]: loop["status"] for loop in ledger["loops"]
+        }
+        self.assertEqual(statuses["L0"], "accepted")
+        self.assertEqual(
+            {statuses[f"L{index}"] for index in range(1, 6)},
+            {"verified"},
+        )
+        self.assertTrue(
+            all(
+                not task.get("blocked_by")
+                for loop in ledger["loops"]
+                for task in loop["tasks"]
+            )
+        )
+        self.assertEqual(
+            ledger["gate"],
+            "macro-loop-local-beta-verified-github-release-pending",
+        )
+
+        requirements = (
+            ROOT / "plans" / "v0.7-real-training-beta" / "requirements.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("最终用户验收仍待确认", requirements)
+        self.assertIn("未创建 GitHub Tag / Release", requirements)
 
 
 if __name__ == "__main__":

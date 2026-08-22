@@ -2,9 +2,9 @@
 
 一个面向 AI 产品经理和独立开发者的对话式专用小模型训练 Harness：用户描述目标、提供必要数据并保留关键决定权，Harness 用可审查的 Recipe 组织数据体检、训练、评测、优化和制品交付。
 
-> 当前代码版本是 `0.7.0b1`，对外记为 `v0.7.0-beta.1` 本地 Beta。这表示仓库已有可执行的本地验收链路，不表示生产就绪，也不表示这些本地变更已推送或发布到 GitHub。
+> 当前代码版本是 `0.7.0b1`，对外记为 `v0.7.0-beta.1` 本地 Beta。`codex/v0.7-real-training-beta` 开发分支已推送到 GitHub；这仍不表示生产就绪、已合并 `main`、已打 Tag 或已创建 GitHub Release。
 
-项目配置的远程地址是 <https://github.com/wanghui2323/ai-pm-model-harness>；请以远程 commit、tag 和 Release 页面判断 GitHub 上实际发布了什么。
+项目远程地址是 <https://github.com/wanghui2323/ai-pm-model-harness>；开发分支可在 <https://github.com/wanghui2323/ai-pm-model-harness/tree/codex/v0.7-real-training-beta> 查看。GitHub Release 仍须以远程 Tag 与 Release 页面为准。
 
 ## 先说能做什么
 

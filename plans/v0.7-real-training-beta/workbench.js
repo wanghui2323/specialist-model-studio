@@ -95,18 +95,19 @@ function renderLoops() {
 }
 
 function renderGate() {
-  const active = state.ledger.loops.find((loop) => ["implementing", "implemented"].includes(loop.status)) || state.ledger.loops.find((loop) => loop.status !== "accepted") || state.ledger.loops.at(-1);
+  const active = state.ledger.loops.find((loop) => ["implementing", "implemented"].includes(loop.status)) || state.ledger.loops.filter((loop) => loop.status !== "accepted").at(-1) || state.ledger.loops.at(-1);
   const evidenceTasks = active.tasks;
   const verified = evidenceTasks.filter((task) => ["verified", "accepted"].includes(task.status)).length;
   const percent = evidenceTasks.length ? Math.round(verified / evidenceTasks.length * 100) : 0;
+  const allVerified = state.ledger.loops.every((loop) => ["verified", "accepted"].includes(loop.status));
   ui.l0Progress.style.width = `${percent}%`;
   ui.l0ProgressValue.textContent = `${verified}/${evidenceTasks.length}`;
   ui.l0ProgressText.textContent = percent === 100 ? "本层证据已经齐全" : `仍有 ${evidenceTasks.length - verified} 项等待验证`;
   ui.activeLoopId.textContent = active.loop_id; ui.activeLoopTitle.textContent = active.name; ui.activeLoopOutcome.textContent = active.outcome;
-  ui.copyReview.disabled = true; ui.headerStatus.dataset.status = percent === 100 ? "verified" : "implementing"; ui.headerStatus.lastElementChild.textContent = `${active.loop_id} ${percent === 100 ? "已验证" : "执行中"}`;
-  ui.footerState.textContent = `连续 L0–L5 大 Loop · 当前 ${active.loop_id} · 2026-08-22`;
+  ui.copyReview.disabled = true; ui.copyReview.textContent = allVerified ? "本地 Beta 已验证 · 待用户确认" : "最终统一验收时启用"; ui.headerStatus.dataset.status = percent === 100 ? "verified" : "implementing"; ui.headerStatus.lastElementChild.textContent = allVerified ? "L0–L5 已验证" : `${active.loop_id} ${percent === 100 ? "已验证" : "执行中"}`;
+  ui.footerState.textContent = allVerified ? "连续 L0–L5 大 Loop · 本地已验证 · GitHub Release 待定" : `连续 L0–L5 大 Loop · 当前 ${active.loop_id} · 2026-08-22`;
   ui.reviewTitle.textContent = `${active.loop_id} · ${active.name}`;
-  ui.reviewDescription.textContent = percent === 100 ? "本层自动证据已通过；大 Loop 会写入证据账本后进入下一层，最终再统一验收。" : `当前 ${verified}/${evidenceTasks.length} 项通过。任何 P0 闭环未达 6/6 都会停留在本层修复。`;
+  ui.reviewDescription.textContent = allVerified ? "六层本地必选门禁均已通过；当前是 verified，仍待用户最终验收，GitHub Release 单独记录。" : percent === 100 ? "本层自动证据已通过；大 Loop 会写入证据账本后进入下一层，最终再统一验收。" : `当前 ${verified}/${evidenceTasks.length} 项通过。任何 P0 闭环未达 6/6 都会停留在本层修复。`;
   ui.copyFeedback.textContent = "逐层 verified 不等于最终 accepted；发布动作仍单独记录。";
 }
 
@@ -115,7 +116,7 @@ async function boot() {
     const [ledgerResponse, baselineResponse] = await Promise.all([fetch("./loop-tasks.json"), fetch("./baseline-evidence.json")]);
     if (!ledgerResponse.ok || !baselineResponse.ok) throw new Error(`HTTP ${ledgerResponse.status}/${baselineResponse.status}`);
     state.ledger = await ledgerResponse.json(); state.baseline = await baselineResponse.json();
-    state.selectedLoop = state.ledger.loops.find((loop) => ["implementing", "implemented"].includes(loop.status))?.loop_id || state.ledger.loops[0]?.loop_id;
+    state.selectedLoop = state.ledger.loops.find((loop) => ["implementing", "implemented"].includes(loop.status))?.loop_id || state.ledger.loops.filter((loop) => loop.status !== "accepted").at(-1)?.loop_id || state.ledger.loops.at(-1)?.loop_id;
     renderBaseline(); renderLoops(); renderGate();
   } catch (error) {
     ui.evidenceGrid.textContent = `工作台数据读取失败：${error.message}。请通过本地 HTTP 服务打开本目录。`;

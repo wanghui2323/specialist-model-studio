@@ -1,6 +1,6 @@
 # Model Harness v0.7 · L5 机器验收合同
 
-> 状态：`implementing`  
+> 状态：本地 Beta `verified`；GitHub Release pending
 > 聚合器：`scripts/verify_v07_beta.py`  
 > Gate 定义：`acceptance/v0.7-gates.json`  
 > 报告 Schema：`acceptance/report.schema.json`  
@@ -83,4 +83,4 @@ GitHub 发布链不读取这个 manifest。聚合器独立通过 `gh api` 查询
 - 它不改写已经独立得出的 `local_beta_verified`；
 - 只有所有本地 required gate 通过，且发布链也通过，`github_released` 才能为 `true`。
 
-当前文档与聚合器实现只是 `implementing`，不是验收报告，不予先把任何 L2–L5 gate 标成 `passed`。
+账本中的 L2–L5 可以标记为 `verified`，但只对最近一次由聚合器绑定的干净 source commit 成立；任何源码变化都必须完整重跑。本地结论不会替代用户 `accepted`，也不会替代 GitHub 的 PR、CI、merge、Tag 或 Release 证据。
