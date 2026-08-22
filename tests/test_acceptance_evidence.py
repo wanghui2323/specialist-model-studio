@@ -312,7 +312,11 @@ class AcceptanceEvidenceTests(unittest.TestCase):
         self.assertEqual(environment["PYTHONNOUSERSITE"], "1")
         self.assertEqual(environment["HF_HUB_DISABLE_XET"], "1")
         self.assertTrue(
-            environment["HF_HUB_CACHE"].startswith(str(Path(temporary)))
+            environment["HF_HOME"].startswith(str(Path(temporary)))
+        )
+        self.assertEqual(
+            environment["HF_HUB_CACHE"],
+            str(Path.home().resolve() / ".cache" / "huggingface" / "hub"),
         )
 
     def test_strict_schema_validator_covers_nested_unknown_const_and_pattern(self) -> None:

@@ -413,13 +413,16 @@ def _redacted_environment(
     environment = _base_trusted_environment(selected_tools)
     temp_root = runtime_root / "tmp"
     temp_root.mkdir(parents=True, exist_ok=True)
+    shared_hf_hub_cache = (
+        Path.home().resolve() / ".cache" / "huggingface" / "hub"
+    )
     environment.update(
         {
             "TMPDIR": str(temp_root),
             "PYTHONPYCACHEPREFIX": str(runtime_root / "pycache"),
             "XDG_CACHE_HOME": str(runtime_root / "cache"),
             "HF_HOME": str(runtime_root / "hf-home"),
-            "HF_HUB_CACHE": str(runtime_root / "hf-home" / "hub"),
+            "HF_HUB_CACHE": str(shared_hf_hub_cache),
             "HF_HUB_DISABLE_XET": "1",
             "TRANSFORMERS_CACHE": str(runtime_root / "hf-home" / "transformers"),
             "MODEL_HARNESS_ACCEPTANCE_ROOT": str(runtime_root),

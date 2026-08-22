@@ -1,6 +1,6 @@
 # Model Harness v0.7 · L5 机器验收合同
 
-> 状态：本地 Beta `verified`；GitHub Release pending
+> 状态：本地 Beta 与 GitHub Release 分别由最新验收报告定级
 > 聚合器：`scripts/verify_v07_beta.py`  
 > Gate 定义：`acceptance/v0.7-gates.json`  
 > 报告 Schema：`acceptance/report.schema.json`  
@@ -39,6 +39,8 @@ commit  = a6a0b39ca1f5b0a247eb0a2e83f06cd95fc03674
 - `EvaluationReport`、新图片 `SampleInference`、经下载哈希复核的 `ArtifactBundle`；
 - 重建应用实例后任务、Run、ModelAsset 与 commit 不变。
 
+受控运行可以复用官方 `huggingface_hub` 的内容寻址 blob 缓存，避免把同一固定文件的公网重复下载速度误作产品门禁；`HF_HOME`、ModelAsset 目标目录、数据、Run 与制品仍逐轮新建，在线 repository/commit 解析、许可检查和逐文件 SHA-256 校验仍必须通过。缓存命中不等于信任命中，哈希不符仍失败关闭。
+
 这条“应用实例 restart”证据不会冒充 L5 的真实 OS 进程 PID 切换门禁。
 
 ## 3. 浏览器、进程重启与冷克隆证据
@@ -52,7 +54,7 @@ commit  = a6a0b39ca1f5b0a247eb0a2e83f06cd95fc03674
 5. 用 `git clone --no-local --no-hardlinks` 创建冷克隆，按锁文件安装 Python、DSH 和浏览器证据依赖，再跑全量测试与离线三家族最小闭环；
 6. 由聚合器独立执行严格 JSON Schema、producer 源文件哈希、制品路径/大小/SHA-256、PNG 尺寸、原始日志、实时 HTTP 对象所有权、Bundle 下载哈希和 PID 存活复核。
 
-冷克隆必须使用全新的源码目录、`.venv`、运行对象和 Hugging Face 模型缓存。允许复用 `uv` / `npm` 的内容寻址包缓存以避免把公网下载速度误作产品门禁；安装仍由锁文件与包完整性哈希约束，并以 copy 模式生成新的虚拟环境。
+冷克隆必须使用全新的源码目录、`.venv` 和运行对象，且不能复用仓库内的 ModelAsset。允许复用 `uv` / `npm` 及官方 Hugging Face 的内容寻址包缓存以避免把公网下载速度误作产品门禁；安装仍由锁文件与包完整性哈希约束，并以 copy 模式生成新的虚拟环境。
 
 默认受控制品写入本轮验收报告目录下的 `controlled-external-evidence/`。如需指定位置，只能提供一个尚不存在的新目录：
 

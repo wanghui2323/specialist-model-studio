@@ -1,10 +1,10 @@
 # Model Harness v0.7 本地可用 Beta 需求合同
 
-> 状态：L0 已由用户验收；L1–L5 的本地必选门禁均为 `verified`，最终用户验收仍待确认。GitHub 分支已推送，合并、CI、Tag 与 Release 继续单独记录。
+> 状态：L0 已由用户验收；L1–L5 的本地必选门禁均为 `verified`。GitHub 发布状态不在文档中硬编码，由当前 source commit 的最新验收报告与远端 API 证据定级。
 > 启动日期：2026-08-21  
 > 开发分支：`codex/v0.7-real-training-beta`  
 > 主对象：`Training Task`  
-> 当前发布边界：本地、单用户的 v0.7 Beta 已完成机器验证；未合并 `main`，也未创建 GitHub Tag / Release。
+> 当前发布边界：本地 Beta 与 GitHub Release 分开定级；源码变化后必须完整重跑，本文件不替代 PR、CI、Tag 与 Release 证据。
 
 ## 1. 产品目标
 

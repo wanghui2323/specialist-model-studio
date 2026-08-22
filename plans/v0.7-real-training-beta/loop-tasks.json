@@ -2,7 +2,7 @@
   "schema_version": "0.3",
   "project": "AI PM Model Harness",
   "iteration": "v0.7 local-usable-beta",
-  "gate": "macro-loop-local-beta-verified-github-release-pending",
+  "gate": "macro-loop-local-beta-verified-release-chain-api-gated",
   "updated_at": "2026-08-22",
   "execution_mode": "continuous L0-L5 macro loop; each level must be verified before the next, final acceptance is unified",
   "status_contract": {

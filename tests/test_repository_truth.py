@@ -74,20 +74,21 @@ class RepositoryTruthTests(unittest.TestCase):
         )
         self.assertEqual(
             ledger["gate"],
-            "macro-loop-local-beta-verified-github-release-pending",
+            "macro-loop-local-beta-verified-release-chain-api-gated",
         )
 
         requirements = (
             ROOT / "plans" / "v0.7-real-training-beta" / "requirements.md"
         ).read_text(encoding="utf-8")
-        self.assertIn("最终用户验收仍待确认", requirements)
-        self.assertIn("未创建 GitHub Tag / Release", requirements)
+        self.assertIn("由当前 source commit 的最新验收报告", requirements)
+        self.assertNotIn("未创建 GitHub Tag / Release", requirements)
 
         l5_contract = (
             ROOT / "plans" / "v0.7-real-training-beta" / "l5-acceptance-contract.md"
         ).read_text(encoding="utf-8")
         self.assertIn("内容寻址包缓存", l5_contract)
-        self.assertIn("全新的源码目录、`.venv`、运行对象", l5_contract)
+        self.assertIn("全新的源码目录、`.venv` 和运行对象", l5_contract)
+        self.assertIn("ModelAsset 目标目录、数据、Run 与制品仍逐轮新建", l5_contract)
 
 
 if __name__ == "__main__":
