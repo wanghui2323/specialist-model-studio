@@ -420,6 +420,7 @@ def _redacted_environment(
             "XDG_CACHE_HOME": str(runtime_root / "cache"),
             "HF_HOME": str(runtime_root / "hf-home"),
             "HF_HUB_CACHE": str(runtime_root / "hf-home" / "hub"),
+            "HF_HUB_DISABLE_XET": "1",
             "TRANSFORMERS_CACHE": str(runtime_root / "hf-home" / "transformers"),
             "MODEL_HARNESS_ACCEPTANCE_ROOT": str(runtime_root),
             "MODEL_HARNESS_ACCEPTANCE": "1",
@@ -1879,7 +1880,7 @@ def execute_acceptance(
             cwd=ROOT,
             environment=environment,
             logs_dir=logs_dir,
-            timeout_seconds=300.0,
+            timeout_seconds=600.0,
         )
         hf_real_result = probe_huggingface_real_report(
             hf_report_root,

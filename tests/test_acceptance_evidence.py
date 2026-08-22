@@ -310,6 +310,10 @@ class AcceptanceEvidenceTests(unittest.TestCase):
         self.assertEqual(environment["GIT_CONFIG_GLOBAL"], "/dev/null")
         self.assertEqual(environment["NPM_CONFIG_USERCONFIG"], "/dev/null")
         self.assertEqual(environment["PYTHONNOUSERSITE"], "1")
+        self.assertEqual(environment["HF_HUB_DISABLE_XET"], "1")
+        self.assertTrue(
+            environment["HF_HUB_CACHE"].startswith(str(Path(temporary)))
+        )
 
     def test_strict_schema_validator_covers_nested_unknown_const_and_pattern(self) -> None:
         schema = {
