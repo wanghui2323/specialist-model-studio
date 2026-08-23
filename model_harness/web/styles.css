@@ -195,3 +195,7 @@
 #gateResult[data-state="warning"]{color:var(--amber)}
 #gateResult[data-state="neutral"]{color:var(--muted)}
 .gate-note{margin:0 0 9px!important;color:var(--muted);line-height:1.5}
+.task-meta{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 8px}
+.task-meta>time{grid-column:2;grid-row:1}
+.task-facts{grid-column:1/-1;overflow:hidden;color:var(--muted);text-overflow:ellipsis;white-space:nowrap}
+.task-id-hint{display:block;overflow:hidden;color:var(--muted);font-size:12px;text-overflow:ellipsis;white-space:nowrap}

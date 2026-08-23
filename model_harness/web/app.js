@@ -140,7 +140,12 @@ function renderTaskList() {
     const title = document.createElement("b"); title.textContent = task.name;
     const meta = document.createElement("span"); meta.className = "task-meta";
     const status = document.createElement("span"); const dot = document.createElement("i"); dot.dataset.status = task.status; status.append(dot, document.createTextNode(STATUS_LABELS[task.status] || task.status));
-    const time = document.createElement("time"); time.textContent = formatTime(task.updated_at_utc); meta.append(status, time); button.append(title, meta);
+    const capability = task.recipe_id ? `Recipe ${shortId(task.recipe_id)}` : STATUS_LABELS[task.capability_status] || task.capability_status || "能力待确认";
+    const dataCount = task.dataset_report ? datasetDetail(task)[0] : "未导入数据";
+    const facts = document.createElement("span"); facts.className = "task-facts"; facts.textContent = `${capability} · ${dataCount}`; facts.title = `${task.recipe_id ? `Recipe ${task.recipe_id}` : capability} · ${dataCount}`;
+    const time = document.createElement("time"); time.textContent = formatTime(task.updated_at_utc); meta.append(status, facts, time);
+    const idHint = document.createElement("small"); idHint.className = "task-id-hint"; idHint.textContent = shortId(task.task_id); idHint.title = task.task_id;
+    button.append(title, meta, idHint);
     button.addEventListener("click", () => selectTask(task.task_id)); ui.taskList.append(button);
   });
 }
