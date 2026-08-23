@@ -250,7 +250,10 @@ def evaluate(context: TrainingContext, contract: dict[str, Any]) -> EvaluationCo
         },
         "validation_candidates": context.validation_results,
         "clean_test": clean,
-        "failure_count": len(failures),
+        "failure_count": int(
+            np.sum(errors > float(contract["release_gates"]["clean_test_mae_max"]))
+        ),
+        "failure_sample_count": len(failures),
         "latency": _latency(context),
     }
     return EvaluationContext(prediction=prediction, metrics=metrics, failure_samples=failures)

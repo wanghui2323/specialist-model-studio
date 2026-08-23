@@ -7,11 +7,15 @@ import unittest
 import zipfile
 from pathlib import Path
 
+import numpy as np
+
 try:
     from fastapi.testclient import TestClient
 except ImportError:  # pragma: no cover
     TestClient = None  # type: ignore[assignment]
 
+from model_harness.io_utils import write_json
+from model_harness.recipes.tabular_regression import TrainingContext, evaluate
 from model_harness.runner import verify_run
 from model_harness.server import create_app
 
@@ -144,6 +148,70 @@ class TabularLoopTests(unittest.TestCase):
                 self.assertEqual(reopened["recipe_request"]["recipe_request_id"], request_id)
                 self.assertEqual(reopened["recipe_request"]["status"], "scaffold_ready")
                 self.assertEqual(reopened["run_ids"], [])
+
+    def test_failure_count_tracks_gate_breaches_not_diagnostic_sample_limit(self) -> None:
+        class OffsetRegressor:
+            def __init__(self, offset: float) -> None:
+                self.offset = offset
+
+            def predict(self, values: np.ndarray) -> np.ndarray:
+                return np.asarray(values[:, 0], dtype=np.float64) + self.offset
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report_path = Path(temp_dir) / "dataset_report.json"
+            write_json(
+                report_path,
+                {
+                    "dataset_id": "failure-count-dataset",
+                    "fingerprint_sha256": "fixture-fingerprint",
+                    "row_count": 90,
+                    "feature_columns": ["signal"],
+                    "target_column": "quality",
+                },
+            )
+            values = np.arange(90, dtype=np.float64)
+            test_idx = np.arange(50, 90, dtype=np.int64)
+
+            def context(offset: float) -> TrainingContext:
+                return TrainingContext(
+                    X=values.reshape(-1, 1),
+                    y=values,
+                    row_numbers=np.arange(2, 92, dtype=np.int64),
+                    train_idx=np.arange(0, 30, dtype=np.int64),
+                    validation_idx=np.arange(30, 50, dtype=np.int64),
+                    test_idx=test_idx,
+                    selected_name=f"offset-{offset}",
+                    final_model=OffsetRegressor(offset),
+                    validation_results={},
+                    feature_columns=["signal"],
+                    target_column="quality",
+                )
+
+            contract = {
+                "task_id": "failure-count-task",
+                "recipe": "tabular-regression",
+                "dataset": {"report_path": str(report_path)},
+                "diagnostics": {"failure_sample_limit": 24},
+                "release_gates": {"clean_test_mae_max": 0.8},
+            }
+            good_evaluation = evaluate(context(0.0), contract)
+            bad_evaluation = evaluate(context(2.0), contract)
+            good = good_evaluation.metrics
+            bad = bad_evaluation.metrics
+            self.assertGreater(len(test_idx), 24)
+            self.assertGreater(bad["clean_test"]["mae"], good["clean_test"]["mae"])
+            self.assertEqual(good["failure_count"], 0)
+            self.assertNotEqual(bad["failure_count"], 24)
+            self.assertGreater(bad["failure_count"], good["failure_count"])
+            self.assertLessEqual(bad["failure_count"], bad["split_counts"]["test"])
+            self.assertEqual(
+                bad["failure_sample_count"],
+                min(24, bad["split_counts"]["test"]),
+            )
+            self.assertEqual(
+                len(bad_evaluation.failure_samples),
+                bad["failure_sample_count"],
+            )
 
 
 if __name__ == "__main__":
