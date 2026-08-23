@@ -378,7 +378,7 @@ function renderContract(task) {
   const contract = task.contract; ui.contractCard.hidden = !contract; if (!contract) return; ui.contractState.textContent = task.contract_confirmed ? "已冻结" : "待确认"; clear(ui.gateGrid);
   gateEntries(contract.release_gates || {}).forEach(([value, label]) => { const cell = document.createElement("div"); const b = document.createElement("b"); b.textContent = typeof value === "number" ? value.toFixed(2) : "—"; const span = document.createElement("span"); span.textContent = label; cell.append(b, span); ui.gateGrid.append(cell); });
   const confirmed = task.contract_confirmed === true; ui.confirmations.hidden = confirmed; ui.startThroughAgentButton.hidden = !confirmed || task.status === "running";
-  const retryable = TERMINAL_RETRY_STATUSES.has(task.current_result?.status); ui.startThroughAgentButton.textContent = retryable ? "保留证据并重新训练" : task.current_run_id ? "分析结果或开启下一轮" : state.runtimeReady ? "让 Agent 启动真实训练" : "批准并启动真实训练";
+  const retryable = TERMINAL_RETRY_STATUSES.has(task.current_result?.status); ui.startThroughAgentButton.textContent = retryable ? "保留证据并重新训练" : task.current_run_id ? "查看本轮评测结论" : "批准并启动真实训练";
   ui.confirmations.querySelectorAll("input").forEach((input) => { input.disabled = task.status === "running"; input.checked = task.confirmations?.[input.dataset.confirm] === true; });
 }
 function releaseVerdict(task) {
@@ -724,14 +724,14 @@ async function uploadDataset(file, options = {}) {
   if (options.targetColumn) headers["x-target-column"] = encodeURIComponent(options.targetColumn);
   if (options.ignoredColumns) headers["x-ignored-columns"] = options.ignoredColumns.split(",").map((value) => encodeURIComponent(value.trim())).filter(Boolean).join(",");
   if (options.delimiter) headers["x-delimiter"] = encodeURIComponent(options.delimiter);
-  try { await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/dataset`, { method: "POST", body: file, headers }); showNotice("后端已真实导入数据并完成体检。", "ok"); activateContext("data"); await refreshSelected({ force: true }); if (state.runtimeReady) await submitMessage(`我已通过产品界面导入数据集 ${file.name}。请读取真实体检结果并解释风险。`); }
+  try { await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/dataset`, { method: "POST", body: file, headers }); showNotice("后端已真实导入数据并完成体检。", "ok"); activateContext("data"); await refreshSelected({ force: true }); }
   catch (error) { showNotice(error.message); }
   finally { setButtonBusy(ui.datasetButton, false, ""); ui.datasetInput.value = ""; }
 }
 async function confirmContract() {
   const fields = [...ui.confirmations.querySelectorAll("input")]; if (fields.some((field) => !field.checked)) { showNotice("请明确勾选数据授权、标签/目标字段和验收门槛三项确认。"); return; }
   setButtonBusy(ui.confirmContractButton, true, "确认中");
-  try { await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/confirm`, { method: "POST", json: Object.fromEntries(fields.map((field) => [field.dataset.confirm, true])) }); showNotice("训练合同已经真实冻结。", "ok"); await refreshSelected({ force: true }); if (state.runtimeReady) await submitMessage("我已明确确认数据授权、标签或目标字段和离线验收门槛。请读取最新合同。"); }
+  try { await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/confirm`, { method: "POST", json: Object.fromEntries(fields.map((field) => [field.dataset.confirm, true])) }); showNotice("训练合同已经真实冻结。", "ok"); await refreshSelected({ force: true }); }
   catch (error) { showNotice(error.message); }
   finally { setButtonBusy(ui.confirmContractButton, false, ""); }
 }
@@ -766,9 +766,9 @@ ui.scaffoldRecipeButton.addEventListener("click", async () => {
   finally { setButtonBusy(ui.scaffoldRecipeButton, false, ""); }
 });
 ui.startThroughAgentButton.addEventListener("click", () => {
-  if (TERMINAL_RETRY_STATUSES.has(state.task?.current_result?.status)) retryRunDirect();
-  else if (state.task?.current_run_id && state.task.status !== "ready") { if (state.runtimeReady) submitMessage("请读取当前运行的真实结果，解释失败样本和下一轮优化。"); else showNotice("连接 Agent Runtime 后可对话分析；指标和产物仍可在右侧查看。"); }
-  else if (state.runtimeReady) submitMessage("请基于已确认的训练合同启动真实训练。执行关键操作前向我请求批准。"); else startRunDirect();
+  if (TERMINAL_RETRY_STATUSES.has(state.task?.current_result?.status)) { retryRunDirect(); return; }
+  if (state.task?.current_run_id && state.task.status !== "ready") { openInspector("evaluation"); return; }
+  startRunDirect();
 });
 ui.cancelAgentButton.addEventListener("click", () => openSimpleDialog({ kicker: "只停止 Agent", title: "停止当前 Agent 回合？", body: "这只会停止智能协作服务的当前回合，不会取消正在执行的训练 Run。", allowLabel: "停止 Agent", onAllow: async () => { await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/conversation/cancel`, { method: "POST" }); showNotice("Agent 回合已停止；训练 Run 状态未被修改。", "ok"); await refreshSelected({ force: true }); } }));
 ui.cancelRunButton.addEventListener("click", cancelRun);
