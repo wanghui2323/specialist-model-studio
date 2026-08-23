@@ -17,7 +17,7 @@ const EVENT_LABELS = {
 };
 const ui = Object.fromEntries([
   "sidebar", "sidebarScrim", "menuButton", "newTaskButton", "refreshButton", "taskList", "taskEyebrow", "taskTitle", "runtimePill",
-  "taskPlan", "taskPlanTitle", "taskPlanProgress", "taskPlanSteps", "emptyState", "conversation", "conversationIntro", "messageList",
+  "taskPlan", "taskPlanTitle", "taskPlanProgress", "emptyState", "conversation", "conversationIntro", "messageList",
   "runEventList", "pendingZone", "agentWorking", "cancelAgentButton", "composerForm", "composerNotice", "messageInput", "sendButton",
   "datasetButton", "datasetInput", "recipeSampleInput", "inspectorDatasetButton", "inspectorEmpty", "inspectorContent", "taskStatus", "contextTabs",
   "stageList", "capabilityState", "capabilitySummary", "capabilityFacts", "datasetCount", "datasetSummary", "contractCard", "contractState",
@@ -50,6 +50,7 @@ const STAGE_LABELS = {
   task_understanding: "确认任务理解", capability_resolution: "解决能力缺口", data_preparation: "准备训练数据",
   contract_review: "审阅训练合同", ready_to_run: "准备启动训练", evaluation: "审阅评测结果", run_recovery: "处理运行异常",
 };
+const LIFECYCLE_STEPS = ["定义任务", "检查数据", "确认合同", "训练评测", "优化交付"];
 const SPEC_FAMILIES = [
   { family: "image_classification", label: "整张图片分类", output: "为每张图片输出一个类别" },
   { family: "ocr", label: "OCR 文字识别", output: "输出图片中的文字内容" },
@@ -202,7 +203,7 @@ function nextActionDescription(action, blocked) {
     confirm_training_contract: "确认数据授权、标签或目标字段与离线验收门槛。", start_training_run: "启动后端真实训练，并持续记录事件、指标与产物。",
     view_run_progress: "查看当前 Run 的真实状态；页面不会用动画模拟训练进度。", review_evaluation: "检查独立评测、失败样本与可追溯模型产物。",
     inspect_run_failure: "先阅读失败、取消或中断证据，再决定是否恢复。", retry_training_run: "旧 Run 的状态、错误和事件会保留；确认后由后端基于同一冻结合同创建新的 Run。", clarify_task_spec: "明确模型唯一输出，系统才会匹配训练能力。",
-    confirm_task_spec: "确认系统对输入、目标与输出的理解后再准备数据。",
+    confirm_task_spec: "确认系统对输入、目标与输出的理解后再检查数据。",
     stage_recipe_samples: "上传少量按类别整理的 PCM WAV 样例 ZIP；样例只用于构建能力，不会被当成正式训练数据。",
     start_recipe_build: "生成受约束的 RecipeSpec，并由可信音频引擎执行白名单、安全边界和版本校验。",
     approve_recipe_registration: "核对候选声明与两个摘要哈希；明确批准后才会把 Recipe / Data Adapter 绑定到当前任务。",
@@ -230,9 +231,8 @@ function renderTaskSpec(task) {
   ui.confirmTaskSpecButton.hidden = resolved; ui.confirmTaskSpecButton.textContent = decision.status === "needs_confirmation" ? "确认任务理解" : "提交澄清"; ui.editTaskSpecButton.disabled = task.status === "running";
 }
 function renderPlan(task) {
-  const current = planState(task); const labels = ["识别能力", "准备数据", "冻结合同", "训练评测", "交付优化"];
-  ui.taskPlanTitle.textContent = stageLabel(stageKey(task)); ui.taskPlanProgress.textContent = `${current} / 5`; clear(ui.taskPlanSteps);
-  labels.forEach((label, index) => { const item = document.createElement("li"); if (index + 1 < current || current === 5) item.className = "done"; else if (index + 1 === current) item.className = "active"; const mark = document.createElement("i"); mark.textContent = index + 1 < current || current === 5 ? "✓" : String(index + 1); item.append(mark, document.createTextNode(label)); ui.taskPlanSteps.append(item); });
+  ui.taskPlanTitle.textContent = stageLabel(stageKey(task));
+  ui.taskPlanProgress.textContent = `${planState(task)} / 5`;
 }
 function datasetDetail(task) {
   const report = task.dataset_report; if (!report) return ["等待数据集", "尚未执行数据体检"];
@@ -240,14 +240,17 @@ function datasetDetail(task) {
   if (typeof report.total_audio === "number") return [`${report.total_audio} 段音频`, `${report.class_count} 类 · ${report.speaker_count} 个说话人分组 · 排除 ${report.rejected_count || 0} 段`];
   return [`${report.row_count || 0} 行数据`, `${report.feature_count || Math.max((report.column_count || 1) - 1, 0)} 个特征 · 目标 ${report.target_column || "—"}`];
 }
+function deliveryDetail(task) {
+  return task.current_result?.status === "completed" ? "查看评测结论" : "等待评测结果";
+}
 function renderStages(task) {
   const [dataCount, dataSummary] = datasetDetail(task); const result = task.current_result; const hasData = Boolean(task.dataset_report); const confirmed = task.contract_confirmed === true; const finished = result?.status === "completed"; const blocked = task.status === "needs_recipe"; const current = planState(task);
   const stages = [
-    ["定义任务", blocked ? "能力缺口已记录" : `Recipe：${task.recipe_id || "待确认"}`],
-    ["检查数据", hasData ? `${dataCount} · ${dataSummary}` : blocked ? "等待训练方案 / 数据读取器" : "等待导入"],
-    ["确认合同", confirmed ? "授权、标签/目标、门槛已确认" : "等待人工确认"],
-    ["训练评测", finished ? "真实训练与独立评测完成" : result ? `运行状态：${result.status}` : "尚未启动"],
-    ["优化交付", finished ? (result.offline_gates_passed ? "门槛通过，可下载制品" : "查看错误样本与下一轮") : "等待评测结果"],
+    [LIFECYCLE_STEPS[0], blocked ? "能力缺口已记录" : `Recipe：${task.recipe_id || "待确认"}`],
+    [LIFECYCLE_STEPS[1], hasData ? `${dataCount} · ${dataSummary}` : blocked ? "等待训练方案 / 数据读取器" : "等待导入"],
+    [LIFECYCLE_STEPS[2], confirmed ? "授权、标签/目标、门槛已确认" : "等待人工确认"],
+    [LIFECYCLE_STEPS[3], finished ? "真实训练与独立评测完成" : result ? `运行状态：${result.status}` : "尚未启动"],
+    [LIFECYCLE_STEPS[4], deliveryDetail(task)],
   ];
   clear(ui.stageList); stages.forEach(([title, detail], index) => { const stageState = index + 1 < current || (current === 5 && index < 4) ? "done" : index + 1 === current ? "active" : "waiting";
     const item = document.createElement("li"); item.className = "stage-item"; item.dataset.state = stageState;
