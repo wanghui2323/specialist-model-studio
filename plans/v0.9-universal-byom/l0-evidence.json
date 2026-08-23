@@ -3,10 +3,19 @@
   "gate": "V09-L0-CONTRACT-BASELINE",
   "result": "passed",
   "scope": "L0 contract, baseline, lifecycle ledger, and requirements workbench only",
-  "verified_at_utc": "2026-08-23T03:23:41Z",
+  "verified_at_utc": "2026-08-23T04:38:34Z",
   "branch": "codex/v0.9-universal-byom",
-  "baseline_commit": "d73a774",
+  "baseline_commit": "d73a774ab285b6a14f09ead2395f4fee8a892567",
+  "source_commit": "602bc2750cdfef944d621f2c0a808f558af52338",
+  "producer_commit": "602bc2750cdfef944d621f2c0a808f558af52338",
   "acceptance_state": "verified_not_user_accepted",
+  "status_transition": {
+    "pre_gate": "implementing",
+    "gate_result": "passed",
+    "post_gate": "verified",
+    "authority": "ITERATION-PLAN.md#V0",
+    "scope": "L0 loop and tasks MH-900 through MH-902"
+  },
   "release_state": "not_pushed_not_ci_verified_not_released",
   "regression": {
     "python": {
@@ -21,7 +30,7 @@
   "structural_gate": {
     "command": ".venv/bin/python scripts/verify_v09_l0.py",
     "closure_rows": 15,
-    "confirmed_decisions": 4,
+    "confirmed_decisions": 9,
     "loop_count": 6,
     "task_count": 24
   },
@@ -57,16 +66,18 @@
     "automated_audit_note": "The project-local frontend_audit script could not import Playwright; the separate Playwright CLI skill performed the real-browser checks instead."
   },
   "artifact_sha256": {
-    "requirements.md": "d7123148ff51cb222a38dba912162f8c78f6caa6cac1620332c87d7c206c2c85",
-    "object-model.md": "1f5c4f9296bb942fd70be12cb587b01d5715ac07064cb2910ec0c318a365182a",
-    "closure-matrix.md": "29e440ecf22e4c0b553d537112bf80a6b0ba9edbb21483dd20a7fffac82b98b6",
+    "AGENTS.md": "059d0fadf0f9037fcdb37d15a68efed1bcbf03d0a5af81a9944660d59f0ca8f7",
+    "requirements.md": "e57bbe6fb886a5293f0b7fe3b08ea43e4677db289c92721c3681adf436b601dd",
+    "object-model.md": "d720a56dad70be0e2705ba364d95c510e0133df2f36dfe6e7a9ef83dedcd3e8c",
+    "closure-matrix.md": "e8b846ac44fa14d04df79b3f3ea5c82d3c9dc5ba7cef64cbea098fe618f1142a",
     "acceptance-contract.md": "94c6f422068b050cdf8d623f9a22ce2d713b1c290cf7f4a17446e7d13ea0c160",
     "baseline-evidence.json": "f51ac985290d77a112f5dd8adc935b0e3876346d9c1e6c8129c8552e1d8c5229",
+    "ITERATION-PLAN.md": "0ed4fe0c4af39c02cf849b5c4d9118e98c1c6618a3d78be2141f9b8b7adfd6a2",
     "index.html": "bddf9cdc5e0713f2ee59a213fca0590845757ac05225b662cb2a868e7ac98c99",
     "styles.css": "76cff5246a988915ddb7e3fa4e397825027d6f106cd647f2b50bbaf77ab1cf01",
     "workbench.js": "09ef9d256064786021698eb094e6bdf91b5b40d196c6c683efb0cd280fd27c12",
-    "loop-tasks.json": "8c447e6e9b7f6a2e220a609a99635a3e8d0ac2dcb8876be6a4bb68454f804321",
-    "scripts/verify_v09_l0.py": "b3d7d787ad9c46a1d42170d7cd780c261788dd78ab76d90d6a51bf6fa95bfbda"
+    "loop-tasks.json": "65b9f06a7e0eba2011cd1d09c3d042911397b8f82382f63d745a88be679f266f",
+    "scripts/verify_v09_l0.py": "ca53b6d27407f04320558c5e96e5ac715ccc6d9966052cb9d32afdd95c85b39c"
   },
   "truth_boundary": "This evidence verifies only the L0 contract and workbench. It is not evidence that GitHub source binding, arbitrary repository execution, universal training, CI, or a GitHub Release is implemented."
 }
