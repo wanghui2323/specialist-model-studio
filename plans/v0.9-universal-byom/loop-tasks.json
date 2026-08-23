@@ -55,7 +55,7 @@
         {
           "id": "MH-900",
           "title": "冻结Universal BYOM定义与唯一主对象",
-          "status": "verified",
+          "status": "implementing",
           "depends_on": [],
           "acceptance": "TrainingTask贯穿来源、Build、Run、Evaluation与Artifact；通用支持允许有证据的blocked/failed，不按Recipe数量或必然成功定义",
           "evidence_refs": [
@@ -67,7 +67,7 @@
         {
           "id": "MH-901",
           "title": "重取当前实现与运行事实基线",
-          "status": "verified",
+          "status": "implementing",
           "depends_on": [],
           "acceptance": "Python、Node、服务、注册表、浏览器与真实训练家族数字来自当前分支，不沿用v0.7/v0.8旧结论",
           "evidence_refs": [
@@ -79,7 +79,7 @@
         {
           "id": "MH-902",
           "title": "建立L0-L5机器验收与发布分级合同",
-          "status": "verified",
+          "status": "implementing",
           "depends_on": ["MH-900", "MH-901"],
           "acceptance": "每层有独立required机器退出门；本地、用户、CI、GitHub Release分别输出；规划阶段无implemented/verified/accepted预填",
           "evidence_refs": [
