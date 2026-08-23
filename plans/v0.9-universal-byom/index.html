@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Model Harness v0.9 Universal BYOM 需求、任务与验收工作台" />
+    <title>Model Harness · Universal BYOM 工作台</title>
+    <link rel="icon" href="../../model_harness/web/model-harness-mark.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到主要内容</a>
+    <div class="shell">
+      <header class="topbar">
+        <a class="brand" href="#overview" aria-label="Model Harness Universal BYOM 工作台首页">
+          <img src="../../model_harness/web/model-harness-mark.svg" alt="" />
+          <span><strong>Model Harness</strong><small>Universal BYOM · v0.9</small></span>
+        </a>
+        <div class="topbar-context">
+          <span class="branch">codex/v0.9-universal-byom</span>
+          <span class="live-state" id="headerState" data-state="implementing"><i></i><b>L0 架构冻结中</b></span>
+        </div>
+      </header>
+
+      <aside class="rail" aria-label="迭代导航">
+        <section class="rail-intent">
+          <span>PRODUCT CONTRACT</span>
+          <p>任何可训练模型都进入同一条可信构建链；成功训练或给出有证据的阻断，不生成伪进度。</p>
+        </section>
+        <nav class="loop-nav" id="loopNav" aria-label="L0 到 L5"></nav>
+        <section class="rail-links">
+          <span>合同与证据</span>
+          <a href="./requirements.md">需求合同 <b>↗</b></a>
+          <a href="./object-model.md">对象模型 <b>↗</b></a>
+          <a href="./acceptance-contract.md">机器验收 <b>↗</b></a>
+          <a href="./closure-matrix.md">闭环矩阵 <b>↗</b></a>
+        </section>
+      </aside>
+
+      <main id="main">
+        <section class="overview" id="overview">
+          <div class="overview-copy">
+            <span class="eyebrow">CURRENT ITERATION</span>
+            <h1 id="loopTitle">正在读取迭代账本</h1>
+            <p id="loopOutcome">工作台只读取仓库内的任务与证据状态，不把计划展示成已经完成。</p>
+          </div>
+          <div class="progress-card" aria-label="当前层级进度">
+            <div><span>证据进度</span><strong id="progressValue">0 / 0</strong></div>
+            <div class="progress-track"><i id="progressBar"></i></div>
+            <small id="progressDetail">等待任务账本</small>
+          </div>
+        </section>
+
+        <section class="flow-section" aria-labelledby="flowTitle">
+          <header class="section-head"><div><span>目标运行链</span><h2 id="flowTitle">从模型来源到可信交付</h2></div><small>TrainingTask 始终是唯一主对象</small></header>
+          <div class="flow-rail" aria-label="Universal BYOM 八阶段">
+            <div><i>01</i><b>任务定义</b><span>TaskSpec</span></div>
+            <div><i>02</i><b>模型来源</b><span>HF / GitHub</span></div>
+            <div><i>03</i><b>仓库分析</b><span>Trainability</span></div>
+            <div><i>04</i><b>资源方案</b><span>Fit Report</span></div>
+            <div><i>05</i><b>隔离构建</b><span>Worker / OCI</span></div>
+            <div><i>06</i><b>资格试跑</b><span>Qualification</span></div>
+            <div><i>07</i><b>训练评测</b><span>Real Run</span></div>
+            <div><i>08</i><b>可信交付</b><span>Bundle</span></div>
+          </div>
+        </section>
+
+        <section class="task-section" aria-labelledby="tasksTitle">
+          <header class="section-head"><div><span>执行账本</span><h2 id="tasksTitle">本层任务与退出门</h2></div><span class="loop-badge" id="loopStatus">未启动</span></header>
+          <div class="task-list" id="taskList" aria-live="polite"></div>
+        </section>
+      </main>
+
+      <aside class="inspector" aria-label="决策与验收上下文">
+        <section class="inspector-section">
+          <header><span>已确认决策</span><b>4 / 4</b></header>
+          <ol class="decision-list" id="decisionList"></ol>
+        </section>
+        <section class="inspector-section">
+          <header><span>当前事实基线</span><b id="baselineHead">—</b></header>
+          <dl class="facts" id="baselineFacts"></dl>
+        </section>
+        <section class="inspector-section gate-section">
+          <header><span>本层验收</span><b>6/6 闭环</b></header>
+          <p id="gateCopy">只有对象效果、持久化、同一身份、重入、状态守卫和错误/取消均有证据，才允许进入下一层。</p>
+          <button id="copyGate" type="button">复制本层验收清单</button>
+          <small id="copyFeedback" aria-live="polite">状态只分 planned、implemented、verified、accepted。</small>
+        </section>
+        <section class="truth-note">
+          <b>真实性边界</b>
+          <p>当前工作台是需求与证据控制面。L5 通过前，不对外宣称任意模型已可训练；GitHub push、PR、CI、Tag 和 Release 另行定级。</p>
+        </section>
+      </aside>
+    </div>
+    <script src="./workbench.js" defer></script>
+  </body>
+</html>

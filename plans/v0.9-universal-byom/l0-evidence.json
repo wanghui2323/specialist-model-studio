@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0",
+  "gate": "V09-L0-CONTRACT-BASELINE",
+  "result": "passed",
+  "scope": "L0 contract, baseline, lifecycle ledger, and requirements workbench only",
+  "verified_at_utc": "2026-08-23T03:23:41Z",
+  "branch": "codex/v0.9-universal-byom",
+  "baseline_commit": "d73a774",
+  "acceptance_state": "verified_not_user_accepted",
+  "release_state": "not_pushed_not_ci_verified_not_released",
+  "regression": {
+    "python": {
+      "passed": 163,
+      "total": 163
+    },
+    "node": {
+      "passed": 20,
+      "total": 20
+    }
+  },
+  "structural_gate": {
+    "command": ".venv/bin/python scripts/verify_v09_l0.py",
+    "closure_rows": 15,
+    "confirmed_decisions": 4,
+    "loop_count": 6,
+    "task_count": 24
+  },
+  "browser": {
+    "tool": "Playwright CLI",
+    "url": "http://127.0.0.1:8793/plans/v0.9-universal-byom/",
+    "desktop": {
+      "viewport": "1440x900",
+      "horizontal_overflow": false,
+      "clipped_visible_text": 0,
+      "tiny_visible_targets": 0
+    },
+    "mobile": {
+      "viewport": "390x844",
+      "horizontal_overflow": false,
+      "tiny_visible_targets": 0,
+      "local_horizontal_scrollers": [
+        "L0-L5 navigation",
+        "Universal BYOM stage rail"
+      ]
+    },
+    "interactions": {
+      "loop_navigation": "passed",
+      "copy_gate_checklist": "passed",
+      "copy_feedback": "本层验收清单已复制。"
+    },
+    "console_errors": 0,
+    "console_warnings": 0,
+    "required_json_requests": {
+      "loop-tasks.json": 200,
+      "baseline-evidence.json": 200
+    },
+    "automated_audit_note": "The project-local frontend_audit script could not import Playwright; the separate Playwright CLI skill performed the real-browser checks instead."
+  },
+  "artifact_sha256": {
+    "requirements.md": "d7123148ff51cb222a38dba912162f8c78f6caa6cac1620332c87d7c206c2c85",
+    "object-model.md": "1f5c4f9296bb942fd70be12cb587b01d5715ac07064cb2910ec0c318a365182a",
+    "closure-matrix.md": "29e440ecf22e4c0b553d537112bf80a6b0ba9edbb21483dd20a7fffac82b98b6",
+    "acceptance-contract.md": "94c6f422068b050cdf8d623f9a22ce2d713b1c290cf7f4a17446e7d13ea0c160",
+    "baseline-evidence.json": "f51ac985290d77a112f5dd8adc935b0e3876346d9c1e6c8129c8552e1d8c5229",
+    "index.html": "bddf9cdc5e0713f2ee59a213fca0590845757ac05225b662cb2a868e7ac98c99",
+    "styles.css": "76cff5246a988915ddb7e3fa4e397825027d6f106cd647f2b50bbaf77ab1cf01",
+    "workbench.js": "09ef9d256064786021698eb094e6bdf91b5b40d196c6c683efb0cd280fd27c12",
+    "loop-tasks.json": "8c447e6e9b7f6a2e220a609a99635a3e8d0ac2dcb8876be6a4bb68454f804321",
+    "scripts/verify_v09_l0.py": "b3d7d787ad9c46a1d42170d7cd780c261788dd78ab76d90d6a51bf6fa95bfbda"
+  },
+  "truth_boundary": "This evidence verifies only the L0 contract and workbench. It is not evidence that GitHub source binding, arbitrary repository execution, universal training, CI, or a GitHub Release is implemented."
+}

@@ -1,0 +1,83 @@
+{
+  "schema_version": "0.1",
+  "iteration": "v0.9-universal-byom",
+  "captured_at": "2026-08-23",
+  "source": {
+    "branch": "codex/v0.9-universal-byom",
+    "baseline_commit": "d73a774",
+    "worktree_clean_at_branch_creation": true
+  },
+  "confirmed_decisions": [
+    "Hugging Face and GitHub are the first model-source providers",
+    "untrusted executable code requires an isolated Worker or OCI runtime",
+    "v0.9 detects and adapts to local resources but does not schedule cloud GPU capacity",
+    "universal support means a verified training path or an evidence-backed blocker, never simulated progress"
+  ],
+  "verified_baseline": {
+    "python_tests": {
+      "status": "passed",
+      "passed": 163,
+      "failed": 0,
+      "command": ".venv/bin/python -m unittest discover -s tests"
+    },
+    "node_tests": {
+      "status": "passed",
+      "passed": 20,
+      "failed": 0,
+      "command": "npm run check && npm test",
+      "workdir": "integrations/deepseek-harness"
+    },
+    "browser": {
+      "status": "passed",
+      "viewports": ["1440x900", "390x844"],
+      "console_errors": 0,
+      "request_failures": 0,
+      "horizontal_overflow": false
+    }
+  },
+  "current_capability_boundary": {
+    "built_in_recipes": [
+      "digit-classification",
+      "image-folder-classification",
+      "tabular-regression"
+    ],
+    "dynamically_verified_recipe": "audio-keyword-classification",
+    "huggingface_binding": "image_classification_onnx_feature_v1",
+    "github_model_source": "missing",
+    "executable_recipe_build": "blocked_environment",
+    "execution_isolation": "missing"
+  },
+  "byom_closure_baseline": [
+    {
+      "flow": "training-intent-to-task-spec",
+      "score": 5,
+      "out_of": 6,
+      "state": "partial"
+    },
+    {
+      "flow": "hf-or-github-to-source-binding",
+      "score": 0,
+      "out_of": 6,
+      "state": "blocked"
+    },
+    {
+      "flow": "generic-build-test-register-resume",
+      "score": 3,
+      "out_of": 6,
+      "state": "partial"
+    },
+    {
+      "flow": "qualification-run",
+      "score": 0,
+      "out_of": 6,
+      "state": "blocked"
+    },
+    {
+      "flow": "dynamic-recipe-to-training-and-delivery",
+      "score": 0,
+      "out_of": 6,
+      "state": "blocked"
+    }
+  ],
+  "truth_boundary": "This file records the v0.9 starting point. It is not evidence that Universal BYOM is implemented, verified, accepted, pushed, or released."
+}
