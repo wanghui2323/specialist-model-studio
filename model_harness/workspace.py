@@ -19,7 +19,7 @@ from PIL import Image, UnidentifiedImageError
 from .contracts import validate_contract
 from .data_adapters import DataAdapterRegistry, default_data_adapter_registry
 from .errors import ContractError, HarnessError
-from .io_utils import read_json, write_json
+from .io_utils import read_json, sha256_file, write_json
 from .huggingface_assets import (
     HuggingFaceHubDownloader,
     download_huggingface_asset,
@@ -963,6 +963,7 @@ class TrainingWorkspace:
             task["data_adapter_id"] = adapter.manifest.adapter_id
             task["contract_confirmed"] = False
             task["confirmations"] = {}
+            task["confirmed_contract_sha256"] = None
             if task.get("current_run_id"):
                 task["last_run_id"] = task["current_run_id"]
                 task["current_run_id"] = None
@@ -996,6 +997,7 @@ class TrainingWorkspace:
             validate_contract(contract, registry=self.runs.registry)
             task["contract_confirmed"] = False
             task["confirmations"] = {}
+            task["confirmed_contract_sha256"] = None
             if task.get("current_run_id"):
                 task["last_run_id"] = task["current_run_id"]
                 task["current_run_id"] = None
@@ -1020,6 +1022,7 @@ class TrainingWorkspace:
             contract = read_json(self._contract_path(task_id))
             validate_contract(contract, registry=self.runs.registry)
             task["contract_confirmed"] = True
+            task["confirmed_contract_sha256"] = sha256_file(self._contract_path(task_id))
             task["confirmations"] = {**{name: True for name in required}, "confirmed_at_utc": _utc_now()}
             task["status"] = "ready"
             task["updated_at_utc"] = _utc_now()
@@ -1035,7 +1038,19 @@ class TrainingWorkspace:
                 raise HarnessError("当前任务已有运行正在执行")
             if not task.get("contract_confirmed"):
                 raise HarnessError("必须先确认数据授权、标签和验收门槛")
-            contract = read_json(self._contract_path(task_id))
+            contract_path = self._contract_path(task_id)
+            confirmed_digest = task.get("confirmed_contract_sha256")
+            if not confirmed_digest or confirmed_digest != sha256_file(contract_path):
+                task["contract_confirmed"] = False
+                task["confirmations"] = {}
+                task["confirmed_contract_sha256"] = None
+                task["status"] = "data_ready"
+                task["updated_at_utc"] = _utc_now()
+                write_json(self._task_path(task_id), task)
+                raise HarnessError(
+                    "训练合同在确认之后被修改，必须重新确认数据授权、标签和验收门槛"
+                )
+            contract = read_json(contract_path)
             validate_contract(contract, registry=self.runs.registry)
             run_dir = self.runs.submit(contract)
             task["current_run_id"] = run_dir.name
