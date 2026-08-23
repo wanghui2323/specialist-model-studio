@@ -19,7 +19,7 @@
 | --- | ---: | --- | ---: | --- |
 | 训练意图 → TaskSpec | 5/6 | 需把模型来源与任务规格变化的失效传播纳入同一 ID | 6/6 | L1 |
 | HF/GitHub → 来源绑定 | 0/6 | GitHub Provider、不可变快照、许可和漂移守卫缺失 | 6/6 | L1 |
-| 通用 Build → Test → Register → Resume | 3/6 | 可执行构建被阻断，安全隔离与真实自动修复缺失 | 6/6 | L3–L4 |
+| 通用 Build → Test → Register → Resume | 3/6 | 可执行构建被阻断，安全隔离与真实人工修复链路缺失 | 6/6 | L3–L4 |
 | 资格试跑 | 0/6 | 无通用最小训练/重载/推理协议和证据 | 6/6 | L3 |
 | 动态 Recipe → 正式训练与交付 | 0/6 | Runner/UI 仍非完全 schema 驱动，未证明任意来源接入 | 6/6 | L4–L5 |
 
@@ -37,7 +37,7 @@
 | C06 | 分析 → 训练计划审批 | 新建 `TrainingPlanRevision`、`ApprovalRecord` | 计划/digest/审批重启不变 | plan 仍属于原 task/snapshot | 修改创建新 revision | 审批只绑定展示 digest；上游变化失效 | 篡改计划、过期审批、拒绝 | 0/6 | 6/6 | plan JSON/digest、approval subject、tamper test、revision chain |
 | C07 | 计划 → 环境锁与资源报告 | 新建 `EnvironmentLock`、`ResourceFitReport` | 实测值与结论可恢复 | report 绑定 plan/env/task | 选择降级方案创建新 plan | blocked 不得 Build/Run | 资源不足、无沙箱、平台不兼容 | 0/6 | 6/6 | probe output、lock hash、阻断 API、替代方案 revision |
 | C08 | 批准计划 → 隔离 BuildAttempt | Worker 真实执行并创建 attempt/evidence | 日志、退出码、输出 hash 可重读 | attempt 绑定原 task/plan/snapshot | 中断后可查看并创建 child attempt | 无批准/无隔离/资源阻断禁止执行 | 路径逃逸、未准网络、fork bomb、timeout、cancel | 0/6 | 6/6 | worker job、sandbox profile、logs、resource usage、五类负例 |
-| C09 | 构建失败 → Agent 修复 Loop | 新建 child `BuildAttempt` 与 patch digest | 父子 attempt 历史不被覆盖 | 所有 attempt 仍属于原 task | 可从任意失败证据恢复，选择或拒绝修复 | Agent 不能降门槛/扩权限/覆盖证据 | 补丁校验失败、重复补丁、取消 | 0/6 | 6/6 | parent ID、patch diff/hash、拒绝结果、恢复结果 |
+| C09 | 构建失败 → 人工修复 → 新 attempt | 新建 child `BuildAttempt` 与 patch digest | 父子 attempt 历史不被覆盖 | 所有 attempt 仍属于原 task | 可从任意失败证据恢复，选择修复或放弃 | 系统不得自动改补丁/降门槛/扩权限；无人工批准不得执行 | 补丁校验失败、重复补丁、取消 | 0/6 | 6/6 | parent ID、patch diff/hash、人工批准记录、拒绝结果、恢复结果 |
 | C10 | Build passed → QualificationRun | 真实执行数据读取、训练步、评测、保存/重载/推理 | checks、指标、产物、hash 可重读 | qualification 绑定 attempt/task | 失败可用新 attempt 重试 | 任一必选 check 失败不得注册 | OOM、坏数据、坏产物、security violation | 0/6 | 6/6 | 七项 checks、artifact reload、inference、negative logs |
 | C11 | Qualification passed → Register/Resume | 新建不可变 Recipe/Adapter；任务进入数据阶段 | 注册表和任务重启一致 | 恢复同一 `task_id`，不建模型项目 | 从任务列表继续导入数据 | 资格未过或批准 digest 不符不得注册 | 重复注册、篡改证据、拒绝审批 | 3/6 | 6/6 | recipe/adapter IDs、approval digest、task route before/after/restart |
 | C12 | schema → 数据/评测/推理 UI | UI 从 Recipe schema 渲染，导入 `DatasetVersion` | 刷新后字段和数据状态一致 | dataset/schema 关联 task/recipe | 可更换数据并使合同失效 | schema 版本不兼容禁止继续 | 缺字段、未知类型、坏文件、取消 | 0/6 | 6/6 | 无模型 ID 分支检查、DOM/API、dataset hash、invalid schema test |

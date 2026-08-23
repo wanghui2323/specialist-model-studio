@@ -23,7 +23,9 @@
     "v0.9只负责本机资源探测、降级建议与阻断，不建设云GPU调度",
     "通用支持按同一闭环和有证据的结论定义，不按内置Recipe数量定义",
     "代码冻结后才选择第三个未参与开发的模型进行盲测",
-    "本地验证、用户验收、GitHub CI与GitHub Release分别定级"
+    "本地验证、用户验收、GitHub CI与GitHub Release分别定级",
+    "构建失败只产出证据与建议；修复补丁必须由人工提供并批准，patch_origin只允许human",
+    "v0.9隔离执行为CPU-only；已检测的MPS/CUDA必须标记为不可用并说明原因"
   ],
   "release_tiers": {
     "implementation_complete": "实现事实，不代表验证或用户验收",
@@ -37,7 +39,7 @@
       "loop_id": "L0",
       "name": "通用能力合同与事实基线",
       "outcome": "通用支持、主对象、状态机、安全/资源边界和证据口径被机器合同冻结",
-      "status": "verified",
+      "status": "implementing",
       "machine_exit_gate": {
         "gate_id": "V09-L0-CONTRACT-BASELINE",
         "required": true,

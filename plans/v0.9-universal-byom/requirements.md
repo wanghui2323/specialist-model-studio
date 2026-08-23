@@ -27,7 +27,7 @@ Model Harness 面向不具备模型训练工程能力、但拥有业务目标和
 → 生成 TrainingPlanRevision
 → 检查本机资源并给出 ResourceFitReport
 → 用户批准不可变计划与执行权限
-→ OCI / 等价 OS 沙箱 Worker 构建并自动修复
+→ OCI / 等价 OS 沙箱 Worker 构建；失败时输出证据和建议，由人工决定新 attempt
 → QualificationRun 资格试跑
 → 批准并注册 RecipeVersion
 → 回到原 task_id
@@ -43,6 +43,8 @@ Model Harness 面向不具备模型训练工程能力、但拥有业务目标和
 2. **执行安全**：静态分析可以在主服务中进行；任何来源仓库代码、安装脚本或 Agent 生成代码只能在 OCI 容器或具备等价文件、进程、网络和资源隔离的独立 Worker 中执行。普通宿主子进程不合格；无隔离运行时只能分析并返回 `blocked_environment`。
 3. **资源范围**：产品负责检测本地 CPU、GPU/MPS/CUDA、内存、显存、磁盘、平台兼容性，并生成 batch、精度、LoRA、量化、梯度累积等降级方案；v0.9 不购买、分配或调度云 GPU。
 4. **通用性口径**：成功产出训练模型和有证据地判定当前条件不可训练，都是 BYOM 编译流程的有效终态；只有前者可以显示“模型训练完成”。阻断不得包装成训练成功。
+5. **修复责任**：构建失败时系统只产出证据和可执行建议，由人工决定修改计划、参数、数据或环境后创建新的 `BuildAttempt`。v0.9 不实现 Agent 自动补丁 Loop；Agent 可以提出新 attempt，但不得自动生成代码补丁、覆盖既有证据、降低人工门槛或扩大执行权限。
+6. **加速器口径**：v0.9 在隔离边界内一律 CPU 执行。`ResourceProbe` 仍探测 MPS/CUDA/显存，但 `ResourceFitReport` 必须标记为“检测到但 v0.9 不可用”并给出原因（OCI 容器在 macOS 上无法访问 Metal）。资格试跑与正式训练的资源预算必须按 CPU 能力设定。禁止因宿主存在 GPU 而宣称可用。
 
 ## 4. 功能需求
 
@@ -69,13 +71,13 @@ Model Harness 面向不具备模型训练工程能力、但拥有业务目标和
 - `blocked_resources`、`blocked_platform`、`blocked_environment` 时禁止创建正式 `TrainingRun`。
 - 用户采用降级方案时创建新的 `TrainingPlanRevision` 和 `ResourceFitReport`，不得就地改写已批准计划。
 
-### R4 — 隔离构建与自动修复 Loop（L3，P0）
+### R4 — 隔离构建与人工修复 Loop（L3，P0）
 
 - 构建输入是不可变 `SourceSnapshot + TrainingPlanRevision + EnvironmentLock + StagedDataAsset`。
 - Worker 只能访问显式只读输入挂载和独立可写输出目录；禁止宿主 socket、任意宿主路径、未批准网络、越权凭据和无限进程。
 - 每次修复产生独立 `BuildAttempt`，记录代码补丁、命令、退出码、结构化日志、耗时、资源、输出哈希和父 attempt。
 - 超时、OOM、取消和进程异常必须可强制终止，主服务保持可用，任务可以从最后一个不可变 attempt 恢复。
-- Agent 只能提出新 attempt，不能覆盖先前证据、降低人工门槛或自动扩大权限。
+- 构建失败必须产出 BlockerEvidence 与可执行修复建议；补丁由人工提供，每个补丁产生独立 BuildAttempt 并记录 patch_sha256、patch_origin="human" 与 parent_attempt_id。系统不得自动生成或自动应用补丁。
 
 ### R5 — 资格试跑与能力注册（L3–L4，P0）
 

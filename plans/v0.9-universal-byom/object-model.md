@@ -120,6 +120,7 @@
   "source_snapshot_id": "snapshot_*",
   "platform": {"os": "darwin|linux", "arch": "arm64|x86_64"},
   "execution_backend": "oci|os_sandbox_worker",
+  "accelerator_policy": {"mode": "cpu_only", "detected": [], "unusable_reason": "..."},
   "base_image_digest": "sha256|null",
   "packages": [{"name": "torch", "version": "...", "hashes": []}],
   "system_dependencies": [],
@@ -127,6 +128,8 @@
   "lock_sha256": "sha256(canonical json)"
 }
 ```
+
+`accelerator_policy.mode` 在 v0.9 只允许 `"cpu_only"`；`detected` 保留宿主探测事实，但发现 MPS/CUDA 时必须填写 `unusable_reason`，任何将其标记为容器可用的输入都必须被校验拒绝。
 
 ```json
 {
@@ -155,6 +158,8 @@
   "staged_data_asset_id": "staged_*",
   "worker_job_id": "worker_*",
   "patch_sha256": "sha256",
+  "patch_origin": "human",
+  "patch_approval_id": "approval_*",
   "commands": [],
   "result": "queued|running|passed|failed|cancelled|timed_out|oom|security_violation",
   "exit_code": null,
@@ -163,6 +168,8 @@
   "output_manifest_sha256": null
 }
 ```
+
+`patch_origin` 在 v0.9 只允许 `"human"`；写入 `"agent"` 或 `"auto"` 必须被校验拒绝。
 
 ```json
 {
