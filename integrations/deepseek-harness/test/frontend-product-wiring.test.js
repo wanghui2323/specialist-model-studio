@@ -58,6 +58,8 @@ test("L4 evaluation, raw sample, and Artifact Bundle controls call task-owned ev
 test("mobile inspector remains a full-screen sheet with 44px action targets", async () => {
   const { css } = await sources();
   assert.match(css, /@media\(max-width:720px\)[\s\S]*?\.inspector\{position:fixed;inset:0;[^}]*height:100dvh/);
+  assert.match(css, /\.menu-button\{display:none;flex:none;width:32px/);
+  assert.match(css, /\.menu-button,\.send-button\{width:44px;height:44px\}/);
   assert.match(css, /\.inspector button\{min-height:44px\}/);
   assert.match(css, /\.asset-discovery>summary[^}]*min-height:44px/);
   assert.match(css, /\.sample-trial-actions button[^}]*min-height:44px/);
