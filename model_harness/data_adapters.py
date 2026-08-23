@@ -12,7 +12,7 @@ from typing import Any, Iterable, Protocol, runtime_checkable
 from uuid import uuid4
 
 from .errors import ContractError, PluginError
-from .io_utils import write_json
+from .io_utils import read_json, sha256_file, write_json
 
 
 ENTRY_POINT_GROUP = "ai_pm_model_harness.data_adapters"
@@ -42,6 +42,66 @@ class DataImportResult:
     report: dict[str, Any]
     dataset_dir: Path
     contract_dataset: dict[str, Any]
+
+
+def verify_training_dataset_integrity(dataset: dict[str, Any]) -> None:
+    """Fail closed when live training data differs from the inspected dataset."""
+
+    def fail(reason: str) -> None:
+        raise ContractError(f"数据完整性校验失败：{reason}")
+
+    expected = str(dataset.get("fingerprint_sha256", "")).strip()
+    if not expected:
+        fail("训练合同缺少数据指纹")
+    kind = str(dataset.get("kind", ""))
+    try:
+        if kind == "tabular_csv":
+            if sha256_file(Path(str(dataset["csv_path"]))) != expected:
+                fail("表格文件与导入时的数据指纹不一致")
+            return
+
+        if kind not in {"image_folder", "audio_keyword_class_folder"}:
+            fail(f"不支持的数据类型 {kind or '<empty>'}")
+        root = Path(str(dataset["root"])).expanduser().resolve()
+        manifest = read_json(Path(str(dataset["manifest_path"])))
+        samples = manifest.get("samples")
+        if not isinstance(samples, list) or not samples:
+            fail("数据清单没有可训练样本")
+        fingerprint_rows: list[str] = []
+        for sample in sorted(
+            samples,
+            key=lambda item: (
+                str(item.get("relative_path", "")) if isinstance(item, dict) else ""
+            ),
+        ):
+            if not isinstance(sample, dict):
+                fail("数据清单包含无效样本记录")
+            relative_path = Path(str(sample.get("relative_path", "")))
+            if relative_path.is_absolute() or not relative_path.parts:
+                fail("数据清单包含无效样本路径")
+            sample_path = (root / relative_path).resolve()
+            try:
+                sample_path.relative_to(root)
+            except ValueError:
+                fail("数据清单中的样本路径越出数据目录")
+            actual_digest = sha256_file(sample_path)
+            if actual_digest != str(sample.get("sha256", "")):
+                fail(f"样本 {relative_path.as_posix()} 与导入记录不一致")
+            label = str(sample.get("label", ""))
+            if kind == "image_folder":
+                fingerprint_rows.append(f"{label}:{actual_digest}")
+            else:
+                speaker_id = str(sample.get("speaker_id", ""))
+                fingerprint_rows.append(f"{label}:{speaker_id}:{actual_digest}")
+        actual_fingerprint = hashlib.sha256(
+            "\n".join(fingerprint_rows).encode("utf-8")
+        ).hexdigest()
+        if actual_fingerprint != expected:
+            fail("样本清单与导入时的数据指纹不一致")
+    except ContractError:
+        raise
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        raise ContractError(f"数据完整性校验失败：无法读取训练数据（{exc}）") from exc
 
 
 @runtime_checkable
