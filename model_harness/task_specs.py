@@ -75,6 +75,25 @@ FAMILY_DETAILS: dict[str, dict[str, str]] = {
 
 TASK_FAMILY_VALUES = tuple(FAMILY_DETAILS)
 
+_FAMILY_SCOPED_CAPABILITY_FIELDS = (
+    "target_kind",
+    "target_column",
+    "primary_metric",
+    "data_adapter",
+)
+
+MODALITY_CLARIFICATION_FAMILIES: dict[str, tuple[str, ...]] = {
+    "audio": ("audio_classification", "asr", "speech_synthesis", "custom"),
+    "image": ("image_classification", "ocr", "object_detection", "segmentation"),
+    "tabular": (
+        "tabular_classification",
+        "tabular_regression",
+        "time_series_forecasting",
+        "anomaly_detection",
+    ),
+    "text": ("text_classification", "named_entity_recognition", "custom"),
+}
+
 FAMILY_ALIASES = {
     "classification": "classification",
     "image_classification": "image_classification",
@@ -145,7 +164,23 @@ def capability_for_family(
     family: str,
     current: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Return capability facts that are internally consistent with ``family``.
+
+    A known family transition invalidates output, metric and adapter choices
+    owned by the previous family. Same-family updates, and requests whose
+    previous family cannot be inferred, retain user-provided details.
+    """
+
     result = deepcopy(current or {})
+    previous_family = normalize_family(result.get("family"))
+    if previous_family is None:
+        previous_family = _family_from_capability(
+            str(result.get("modality", "")).strip().lower(),
+            str(result.get("objective", "")).strip().lower(),
+        )
+    if previous_family is not None and previous_family != family:
+        for key in _FAMILY_SCOPED_CAPABILITY_FIELDS:
+            result.pop(key, None)
     result["family"] = family
     if family == "image_classification":
         result.update({"modality": "image", "objective": "classification"})
@@ -404,6 +439,7 @@ def capability_decision(
         "预测价格",
         "预测温度",
         "预测寿命",
+        "寿命预测",
         "预测分数",
         "评分预测",
         "连续值",
@@ -456,49 +492,43 @@ def capability_decision(
         if inferred == "ocr":
             return _clarification(
                 ["ocr", "image_classification", "object_detection"],
-                "OCR 需要确认是读取整体文字、判断文档类别还是定位文字区域",
+                "你希望它读出文字、判断文档类别，还是定位文字区域？",
                 [*reason_codes, "ocr_output_requires_clarification"],
             )
         return _needs_confirmation(inferred, reason_codes)
     if generic_visual_recognition:
         return _clarification(
-            [
-                "image_classification",
-                "ocr",
-                "object_detection",
-                "segmentation",
-                "anomaly_detection",
-            ],
-            "“识别/检测图片”未说明是输出类别、文字、位置、掩码还是异常",
+            list(MODALITY_CLARIFICATION_FAMILIES["image"]),
+            "你希望图片模型输出类别、文字、目标位置，还是分割区域？",
             [*reason_codes, "generic_visual_recognition"],
         )
-    if looks_audio and _contains_any(text, "识别", "检测", "判断", "理解"):
+    if looks_audio:
         return _clarification(
-            ["audio_classification", "asr", "speech_synthesis", "custom"],
-            "“处理音频”未说明是输出类别、转写文字、合成语音还是其他结果",
-            [*reason_codes, "generic_audio_recognition"],
+            list(MODALITY_CLARIFICATION_FAMILIES["audio"]),
+            "你希望这个语音模型最终输出什么？",
+            [*reason_codes, "generic_audio_task"],
+        )
+    if looks_image:
+        return _clarification(
+            list(MODALITY_CLARIFICATION_FAMILIES["image"]),
+            "你希望图片模型输出类别、文字、目标位置，还是分割区域？",
+            [*reason_codes, "generic_image_task"],
         )
     if looks_tabular:
         return _clarification(
-            [
-                "tabular_classification",
-                "tabular_regression",
-                "time_series_forecasting",
-                "anomaly_detection",
-                "custom",
-            ],
-            "表格或结构化数据任务未说明是输出类别、数值、未来序列还是异常",
+            list(MODALITY_CLARIFICATION_FAMILIES["tabular"]),
+            "你希望表格模型输出类别、数值、未来趋势，还是发现异常？",
             [*reason_codes, "generic_tabular_task"],
         )
     if looks_text:
         return _clarification(
-            ["text_classification", "named_entity_recognition", "custom"],
-            "文本任务未说明是输出类别、实体还是其他结构",
+            list(MODALITY_CLARIFICATION_FAMILIES["text"]),
+            "你希望文本模型输出类别、实体，还是其他结构？",
             [*reason_codes, "generic_text_task"],
         )
     return _clarification(
         ["classification", "regression", "custom"],
-        "尚未说明模型要接收什么、输出什么",
+        "模型会接收什么，最终应该输出什么？",
         [*reason_codes, "missing_input_output_definition"],
     )
 
@@ -609,13 +639,14 @@ def _needs_confirmation(
     family: str,
     reason_codes: list[str],
 ) -> dict[str, Any]:
+    label = FAMILY_DETAILS.get(family, {"label": family})["label"]
     return {
         "status": "needs_confirmation",
         "selected_family": family,
         "source": "business_goal",
         "confidence": 0.82,
         "reason_codes": reason_codes,
-        "question": "我已形成一个候选任务规格。请确认输出形式，或选择其他能力。",
+        "question": f"我理解为“{label}”。这个理解对吗？",
         "candidates": [_candidate(family)],
     }
 
@@ -625,13 +656,18 @@ def _clarification(
     reason: str,
     reason_codes: list[str],
 ) -> dict[str, Any]:
+    question = (
+        f"{reason}请选择一个最接近的选项。"
+        if reason.endswith(("？", "?"))
+        else f"{reason}。请选择你希望模型的唯一输出形式。"
+    )
     return {
         "status": "needs_clarification",
         "selected_family": None,
         "source": "ambiguous",
         "confidence": 0.0,
         "reason_codes": reason_codes,
-        "question": f"{reason}。请选择你希望模型的唯一输出形式。",
+        "question": question,
         "candidates": [_candidate(family) for family in families],
     }
 
@@ -684,6 +720,9 @@ def _looks_audio(text: str, modality: str) -> bool:
         text,
         "语音",
         "音频",
+        "录音",
+        "录制音频",
+        "录制声音",
         "声音",
         "唤醒词",
         "关键词",

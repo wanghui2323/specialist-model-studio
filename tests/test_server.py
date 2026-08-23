@@ -20,12 +20,40 @@ class ServerTests(unittest.TestCase):
                 health = client.get("/health")
                 self.assertEqual(health.status_code, 200)
                 self.assertTrue(health.json()["ok"])
+                self.assertEqual(health.json()["version"], "0.9.0-rc.1")
+                self.assertEqual(health.json()["package_version"], "0.9.0rc1")
+                self.assertEqual(
+                    health.json()["feature_track"], "v0.9-universal-byom"
+                )
+                self.assertEqual(health.json()["release_status"], "unreleased_rc")
+                self.assertEqual(health.json()["scope"], "backend")
+                self.assertFalse(health.json()["agent_required"])
                 self.assertEqual(health.json()["primary_experience"], "conversation")
                 self.assertEqual(health.json()["conversation_url"], "/app")
 
                 runtime = client.get("/runtime")
                 self.assertEqual(runtime.status_code, 200)
                 self.assertEqual(runtime.json()["workbench_url"], "/app")
+                self.assertEqual(
+                    runtime.json()["feature_track"], "v0.9-universal-byom"
+                )
+                self.assertEqual(runtime.json()["release_status"], "unreleased_rc")
+                self.assertEqual(
+                    runtime.json()["source_execution_policy"],
+                    "static_analysis_only_without_verified_isolation",
+                )
+                self.assertFalse(runtime.json()["byom_execution_available"])
+                self.assertEqual(
+                    runtime.json()["supported_protocol_end"],
+                    "resource_feasibility",
+                )
+                self.assertTrue(
+                    runtime.json()["registered_recipe_training_available"]
+                )
+
+                openapi = client.get("/openapi.json")
+                self.assertEqual(openapi.status_code, 200)
+                self.assertEqual(openapi.json()["info"]["version"], "0.9.0-rc.1")
 
                 root = client.get("/", follow_redirects=False)
                 self.assertEqual(root.status_code, 307)
@@ -38,6 +66,16 @@ class ServerTests(unittest.TestCase):
                     "digit-classification",
                 )
 
+                families = client.get("/task-spec/families")
+                self.assertEqual(families.status_code, 200)
+                family_values = {
+                    item["family"] for item in families.json()["families"]
+                }
+                self.assertTrue(
+                    {"asr", "speech_synthesis", "segmentation", "custom"}
+                    <= family_values
+                )
+
                 template = client.get("/recipes/digit-classification/template")
                 self.assertEqual(template.status_code, 200)
                 self.assertEqual(
@@ -47,8 +85,9 @@ class ServerTests(unittest.TestCase):
 
                 console = client.get("/app")
                 self.assertEqual(console.status_code, 200)
-                self.assertIn("Model Harness · 对话式模型训练", console.text)
-                self.assertIn("你希望模型", console.text)
+                self.assertIn("Specialist Model Studio · 专业模型智能工作台", console.text)
+                self.assertIn("把一句需求", console.text)
+                self.assertIn("可验收的小模型", console.text)
                 self.assertNotIn("Workspace Write", console.text)
 
                 chat = client.post("/chat", json={"message": "有哪些能力"})

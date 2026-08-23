@@ -55,6 +55,73 @@ test("L4 evaluation, raw sample, and Artifact Bundle controls call task-owned ev
   assert.match(app, /capability_unavailable/);
 });
 
+test("v0.9 model-source flow searches official catalogs and requires two explicit confirmations", async () => {
+  const { html, css, app } = await sources();
+  for (const id of [
+    "modelSourceCard", "modelSourceSearchForm", "modelSourceReferenceForm",
+    "modelSourceCandidates", "modelSourcePending", "pendingResolvedCommit",
+    "bindModelSourceButton", "modelSourceBlocker", "modelSourceFileList",
+    "modelSourceHfToken", "modelSourceGithubToken",
+  ]) assert.match(html, new RegExp(`id="${id}"`));
+
+  assert.match(app, /\/model-sources\/providers/);
+  assert.match(app, /\/model-source-searches/);
+  assert.match(app, /\/model-source-selections/);
+  assert.match(app, /\/model-source-resolutions/);
+  assert.match(app, /approval_confirmed:\s*true/);
+  assert.match(app, /expected_resolved_commit:\s*resolution\.resolved_commit/);
+  assert.match(app, /response\.binding_attempt\?\.attempt\?\.attempt_id/);
+  assert.match(app, /完成前不会显示为已绑定/);
+  assert.doesNotMatch(app, /response\.binding\.repository/);
+  assert.match(app, /task\.repository_analysis_attempt \|\| task\.model_binding_attempt/);
+  assert.match(app, /if \(!binding && analysisAttempt\)/);
+  assert.match(app, /repositoryAnalysisCard\.hidden = !binding && !attempt/);
+  assert.match(app, /label: "绑定并分析模型来源"/);
+  assert.match(app, /failure\.code \|\| "unknown_failure"/);
+  assert.match(app, /function retryFailedModelSourceBinding\(\)/);
+  assert.match(app, /旧失败证据不会被覆盖/);
+  assert.match(app, /if \(retryFailedModelSourceBinding\(\)\) return/);
+  assert.match(app, /搜索结果只是候选，不等于已经适配本机/);
+  assert.match(app, /不会执行第三方代码/);
+  assert.match(app, /task\.model_binding/);
+  assert.doesNotMatch(app, /localStorage[^\n;]*(modelSourceHfToken|modelSourceGithubToken)/i);
+  assert.match(css, /\.source-fact-list[^}]*overflow-wrap:anywhere/);
+  assert.match(css, /\.source-files>div\{max-height:220px/);
+  assert.match(css, /\.source-candidate button\{min-height:44px\}/);
+});
+
+test("R3 keeps source search compact in dialogue and complete in the on-demand workspace", async () => {
+  const { html, css, app } = await sources();
+  for (const id of [
+    "modelSourceCheckpointCard", "modelSourceCheckpointFacts", "modelSourceCheckpointCandidates",
+    "viewAllModelSourceCandidatesButton", "modelSourceCard", "modelSourceCandidates",
+  ]) assert.equal((html.match(new RegExp(`id="${id}"`, "g")) || []).length, 1, `${id} must be unique`);
+
+  assert.match(app, /modelSourceCardForCheckpoint\(task\)/);
+  assert.match(app, /hasCurrentModelSourceSearch\(task\) \? ui\.modelSourceCheckpointCard : ui\.modelSourceCard/);
+  assert.match(app, /state\.modelSourceCandidates\.slice\(0, 3\)\.forEach/);
+  assert.match(app, /state\.modelSourceCandidates\.forEach\(\(candidate\) =>/);
+  assert.match(app, /button\.dataset\.searchId = search\.search_id/);
+  assert.match(app, /article\.dataset\.searchId = selectionContext\.searchId/);
+  assert.match(app, /search_id: searchId, candidate_id: candidate\.candidate_id/);
+  assert.match(app, /searchId !== state\.modelSourceSearch\?\.search_id/);
+  assert.match(app, /state\.modelSourceCandidateRenderKey/);
+  assert.match(app, /key === state\.modelSourceCandidateRenderKey && ui\.modelSourceCandidates\.childElementCount === state\.modelSourceCandidates\.length/);
+  assert.match(app, /key === state\.modelSourceCheckpointRenderKey && ui\.modelSourceCheckpointCandidates\.childElementCount/);
+  assert.match(app, /card !== state\.checkpointCard \|\| card\.parentNode !== ui\.agentCheckpointBody/);
+  assert.match(app, /renderModelSource\(state\.task\); syncAgentCheckpoint\(state\.task\)/);
+  assert.match(app, /sourceStage && !state\.modelSourceSearchInFlight/);
+  assert.match(app, /state\.modelSourceSearchInFlight = true/);
+  assert.match(app, /function openAllModelSourceCandidates\(\) \{ openInspector\("plan"\); ui\.modelSourceDiscovery\.open = true/);
+  assert.match(app, /viewAllModelSourceCandidatesButton\.addEventListener\("click", openAllModelSourceCandidates\)/);
+  assert.match(app, /ui\.modelSourceCandidates\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(app, /候选只来自官方目录元数据，尚未下载、执行或验证训练适配性/);
+  assert.doesNotMatch(app, /候选已适配/);
+  assert.match(css, /\.source-candidate-compact-list\{[^}]*grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);
+  assert.match(css, /\.source-search-checkpoint-facts,\.source-candidate-compact-list\{grid-template-columns:1fr\}/);
+  assert.match(css, /\.source-search-checkpoint-card \.source-view-all\{width:100%;min-height:44px\}/);
+});
+
 test("mobile inspector remains a full-screen sheet with 44px action targets", async () => {
   const { css } = await sources();
   assert.match(css, /@media\(max-width:720px\)[\s\S]*?\.inspector\{position:fixed;inset:0;[^}]*height:100dvh/);
@@ -83,4 +150,147 @@ test("terminal runs expose an Agent-independent task-owned retry path", async ()
   assert.match(app, /页面也不会在后端返回前伪造运行状态/);
   assert.match(app, /TERMINAL_RETRY_STATUSES\.has\(state\.task\?\.current_result\?\.status\)\) \{ retryRunDirect\(\); return; \}/);
   assert.doesNotMatch(app, /state\.task\.status\s*=\s*"running"/);
+});
+
+test("conversation-native shell has one live checkpoint and an optional desktop workspace", async () => {
+  const { html, css, app } = await sources();
+  assert.match(html, /<title>Specialist Model Studio · 专业模型智能工作台<\/title>/);
+  assert.match(html, /<strong>Specialist Model Studio<\/strong>/);
+  for (const id of [
+    "workspaceToggleButton", "agentCheckpoint", "agentCheckpointStage",
+    "agentCheckpointTitle", "agentCheckpointState", "agentCheckpointBody",
+  ]) assert.equal((html.match(new RegExp(`id="${id}"`, "g")) || []).length, 1, `${id} must be unique`);
+
+  assert.match(html, /id="taskControlPanel" hidden/);
+  assert.match(html, /id="workspaceToggleButton"[^>]*aria-label="打开训练工作区"/);
+  assert.match(html, /id="taskPlan" hidden/);
+  assert.match(html, /id="stageList" hidden/);
+  assert.match(html, /data-context="plan"[^>]*>方案</);
+  assert.match(html, /data-context="data"[^>]*>数据</);
+  assert.match(html, /data-context="run"[^>]*>训练</);
+  assert.match(html, /data-context="evaluation"[^>]*>评测</);
+  assert.match(html, /data-context="artifacts"[^>]*>产物</);
+  assert.match(app, /checkpointHomes = new Map\(\)/);
+  assert.match(app, /ui\.agentCheckpointBody\.append\(card\)/);
+  assert.doesNotMatch(app, /cloneNode\(/);
+  assert.match(app, /ui\.inspector\.dataset\.open = "true"/);
+  assert.match(app, /ui\.inspector\.dataset\.open = "false"/);
+  assert.match(app, /workspaceToggleButton\.setAttribute\("aria-expanded", "true"\)/);
+  assert.match(app, /workspaceToggleButton\.setAttribute\("aria-label", "关闭训练工作区"\)/);
+  assert.match(app, /window\.requestAnimationFrame\(\(\) => ui\.closeInspectorButton\.focus\(\)\)/);
+  assert.match(app, /ui\.sidebar\.inert = isolated; ui\.conversationMain\.inert = isolated; ui\.mobileViewNav\.inert = isolated/);
+  assert.match(app, /ui\.inspector\.setAttribute\("aria-modal", "true"\)/);
+  assert.match(app, /event\.key === "Escape"[^\n]*closeInspector\(\)/);
+  assert.match(app, /event\.key !== "Tab"/);
+  assert.match(app, /active === first \|\| !ui\.inspector\.contains\(active\)/);
+  assert.match(app, /active === last \|\| !ui\.inspector\.contains\(active\)/);
+  assert.match(app, /const restoreTarget = opener\?\.isConnected[^\n]+ui\.workspaceToggleButton/);
+  assert.match(app, /inspectorMedia\.addEventListener\("change"/);
+  assert.match(css, /\.app-shell\{grid-template-columns:244px minmax\(0,1fr\)\}/);
+  assert.match(css, /\.inspector\[data-open="true"\]\{[^}]*visibility:visible[^}]*pointer-events:auto[^}]*transform:translateX\(0\)/);
+  assert.match(css, /@media\(max-width:720px\)[\s\S]*?\.inspector\{width:100%;z-index:42\}/);
+  assert.match(css, /#taskControlPanel,#taskPlan,#stageList\{display:none!important\}/);
+});
+
+test("runtime fallback is visible as a local workflow without disabling real task actions", async () => {
+  const { html, css, app } = await sources();
+  assert.match(html, /id="composerMode"[^>]*data-state="checking"/);
+  assert.match(html, /id="composerModeLabel">正在确认协作模式</);
+  assert.match(html, /aria-label="向 Specialist Model Studio 描述训练需求"/);
+  assert.doesNotMatch(html, /class="composer-mode"[^>]*>[^<]*训练 Agent/);
+  assert.match(app, /function renderRuntimeMode\(mode\)/);
+  assert.match(app, /本地流程模式 · 训练操作仍可用/);
+  assert.match(app, /本地流程模式 · 训练操作可用/);
+  assert.match(app, /renderRuntimeMode\(state\.runtimeReady \? "agent" : "local"\)/);
+  assert.match(app, /error\.status === 503\)[^\n]*renderRuntimeMode\("local"\)/);
+  assert.match(app, /当前是本地流程模式：需求快捷选项、模型搜索、数据导入、合同确认和训练操作仍可用/);
+  assert.match(css, /\.composer-mode\[data-state="local"\]/);
+  assert.match(css, /\.composer-mode:not\(\[data-state="local"\]\)\{display:none\}/);
+  assert.doesNotMatch(app, /if \(!state\.runtimeReady\)[^\n]*startRunDirect/);
+});
+
+test("fresh empty workspace enters the shared home composer state", async () => {
+  const { html, app } = await sources();
+  assert.match(html, /id="homeComposerSlot"/);
+  assert.match(html, /id="homeBoundary"/);
+  assert.match(html, /已验证 Recipe 可以真实训练；其他仓库当前会停在可审查的分析或阻断/);
+  assert.doesNotMatch(html, /匹配开源模型、准备数据、训练和评测/);
+  assert.match(app, /function enterHomeState\(\{ focusComposer = true \} = \{\}\)/);
+  assert.match(app, /ui\.homeComposerSlot\.append\(ui\.composerWrap\)/);
+  assert.match(app, /ui\.messageInput\.placeholder = "告诉我，你想让模型学会什么？"/);
+  assert.match(app, /function openNewTask\(\)[\s\S]*?enterHomeState\(\);/);
+  assert.match(app, /if \(!state\.selectedTaskId\) enterHomeState\(\{ focusComposer: false \}\)/);
+  assert.match(app, /if \(!requested\) \{ enterHomeState\(\{ focusComposer: false \}\); return; \}/);
+  assert.match(app, /没有替你打开其他任务/);
+  assert.doesNotMatch(app, /requested : state\.tasks\[0\]\?\.task_id/);
+});
+
+test("runtime and family-catalog failures preserve honest product boundaries", async () => {
+  const { app } = await sources();
+  assert.match(app, /request\("\/runtime"\)/);
+  assert.match(app, /byom_execution_available === true/);
+  assert.match(app, /已验证 Recipe 可以真实训练/);
+  assert.match(app, /taskSpecFamiliesError = error\.message/);
+  assert.match(app, /const loaded = await loadTaskSpecFamilies\(\)/);
+  assert.match(app, /模型类型目录加载失败/);
+});
+
+test("persisted source search and evidence timeline survive refresh without stale candidates", async () => {
+  const { app } = await sources();
+  assert.match(app, /request\(`\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/model-source-searches`\)/);
+  assert.match(app, /item\.base_spec_revision === response\.task\.current_spec_revision/);
+  assert.match(app, /state\.modelSourceCandidates = failedSearch \? \[\] : \[\.\.\.\(latestSearch\?\.candidates \|\| \[\]\)\]/);
+  assert.match(app, /state\.modelSourceCandidates\.length\) showNotice\("官方目录没有返回候选[^\n]+else hideNotice\(\)/);
+  assert.match(app, /ui\.capabilityState\.textContent = "模型已绑定"/);
+  assert.match(app, /ui\.capabilityState\.textContent = analysisStatus === "failed" \? "分析失败" : "分析已取消"/);
+  assert.match(app, /else if \(analysis\) \{ ui\.capabilityState\.textContent = analysisBlockers\.length \? "分析有阻断" : "来源已分析"/);
+  assert.doesNotMatch(app, /const SPEC_FAMILIES/);
+  assert.match(app, /request\("\/task-spec\/families"\)/);
+  assert.match(app, /if \(currentCandidate && !candidates\.some\(\(item\) => item\.family === currentCandidate\.family\)\) candidates\.unshift\(currentCandidate\)/);
+  assert.match(app, /allProvidersFailed \? "failed" : "completed_empty"/);
+  assert.match(app, /const systemOnlyNote = \/\^用户通过产品界面/);
+  assert.match(app, /function taskEvidenceTimeline\(task\)/);
+  assert.match(app, /官方模型目录搜索/);
+  assert.match(app, /生成不可变训练计划/);
+  assert.match(app, /本机资源探测/);
+  assert.match(app, /conversationWithEvidence\(state\.task, state\.conversation\)/);
+  assert.match(app, /item\.detail \|\| \(item\.status === "completed"/);
+});
+
+test("source, plan, and resource recovery controls fail closed across task changes", async () => {
+  const { app } = await sources();
+  assert.match(app, /String\(item\.created_at \|\| ""\) > bindingCreatedAt/);
+  assert.match(app, /ui\.manualEntrypointInput\.value = ""; ui\.baseImageDigestInput\.value = ""/);
+  assert.match(app, /ui\.searchHfProvider\.disabled = !canSearch \|\| !hfAvailable/);
+  assert.match(app, /ui\.searchGithubProvider\.disabled = !canSearch \|\| !githubAvailable/);
+  assert.match(app, /state\.modelSourceSearch = null; state\.modelSourceCandidates = \[\]/);
+  assert.match(app, /training-plans\/\$\{encodeURIComponent\(parent\.training_plan_revision_id\)\}\/revisions/);
+  assert.match(app, /expected_parent_sha256: parent\.plan_sha256/);
+  assert.match(app, /base_spec_revision: state\.task\.current_spec_revision/);
+  assert.match(app, /\^sha256:\[0-9a-f\]\{64\}\$/);
+  assert.match(app, /用此建议生成新 revision/);
+});
+
+test("task understanding is a backend-driven quick-reply conversation with advanced editing only", async () => {
+  const { html, css, app } = await sources();
+  assert.match(html, /id="taskSpecQuickReplies"[^>]*hidden/);
+  assert.match(html, /id="editTaskSpecButton"[^>]*>高级编辑</);
+  assert.match(app, /\(decision\.candidates \|\| \[\]\)\.slice\(0, 4\)/);
+  assert.match(app, /prefix: "就是这个："/);
+  assert.match(app, /switchOutput\.textContent = showAlternatives \? "收起其他输出" : "换一种输出"/);
+  assert.match(app, /describe\.textContent = "我自己描述"/);
+  assert.match(app, /base_revision: spec\.revision, selected_family: candidate\.family/);
+  assert.match(app, /\.\.\.\(confirm \? \{ confirm: true \} : \{\}\)/);
+  assert.match(app, /stageKey\(state\.task\) === "task_understanding"/);
+  assert.match(app, /state\.taskSpecDescriptionMode && stageKey\(state\.task\) === "task_understanding"/);
+  assert.match(app, /business_goal: nextGoal, user_note: `用户补充：\$\{text\}`/);
+  assert.ok(app.indexOf('stageKey(state.task) === "task_understanding"') < app.indexOf('if (!state.runtimeReady)'), "TaskSpec supplement must bypass Agent Runtime");
+  assert.match(app, /\/spec\/revisions`/);
+  assert.match(app, /需求版本 v\$\{spec\.revision\} 已根据补充重新判定/);
+  assert.match(app, /const confirmedOutput = selectedCandidate\?\.output/);
+  assert.doesNotMatch(app, /\$\{capability\.target_kind \|\| "待确认输出"\}/);
+  assert.match(app, /error\.status === 409\) await refreshSelected\(\{ force: true \}\)/);
+  assert.match(app, /\["clarify_task_spec", "confirm_task_spec"\][^\n]*scrollToCheckpoint\(\)/);
+  assert.match(css, /\.task-spec-quick-replies\{display:grid/);
+  assert.match(css, /\.task-spec-choice\.featured/);
 });

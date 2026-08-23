@@ -1,6 +1,6 @@
 {
   "schema_version": "0.4",
-  "project": "AI PM Model Harness",
+  "project": "Specialist Model Studio",
   "iteration": "v0.9 Universal BYOM",
   "gate": "universal-source-to-qualified-training-loop",
   "updated_at": "2026-08-23",

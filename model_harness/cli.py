@@ -9,27 +9,33 @@ from typing import Any
 from . import __version__
 from .errors import ContractError, HarnessError, PluginError
 from .io_utils import read_json
-from .plugins import default_registry
-from .runner import initialize_workspace, run_task, verify_run
-from .service import RunService
 
 
 def _print_json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
-def build_parser() -> argparse.ArgumentParser:
-    registry = default_registry()
+def build_parser(*, prog: str = "specialist-model-studio") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="small-model-harness",
-        description="Run auditable specialist-model training recipes.",
+        prog=prog,
+        description="Run the auditable specialist-model training engine used by Specialist Model Studio.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("list-recipes", help="List discovered recipe plugins.")
 
     init = sub.add_parser("init", help="Create a task contract from a recipe template.")
-    init.add_argument("--recipe", required=True, choices=registry.recipe_ids())
+    init.add_argument(
+        "--recipe",
+        required=True,
+        metavar="PLUGIN_ID",
+        help="Recipe plugin id; run list-recipes to inspect discovered plugins.",
+    )
     init.add_argument("--output", required=True)
     init.add_argument("--force", action="store_true")
 
@@ -92,10 +98,13 @@ def _read_events(path: Path, after_seq: int) -> list[dict[str, Any]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    registry = default_registry()
+    invoked_as = Path(sys.argv[0]).name if argv is None else "specialist-model-studio"
+    args = build_parser(prog=invoked_as).parse_args(argv)
     try:
         if args.command == "list-recipes":
+            from .plugins import default_registry
+
+            registry = default_registry()
             _print_json(
                 {
                     "version": __version__,
@@ -104,6 +113,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if args.command == "init":
+            from .plugins import default_registry
+            from .runner import initialize_workspace
+
+            registry = default_registry()
             contract = initialize_workspace(
                 args.recipe,
                 args.output,
@@ -113,6 +126,10 @@ def main(argv: list[str] | None = None) -> int:
             _print_json({"ok": True, "contract": str(contract)})
             return 0
         if args.command == "run":
+            from .plugins import default_registry
+            from .runner import run_task
+
+            registry = default_registry()
             run_dir = run_task(
                 args.contract,
                 args.runs_dir,
@@ -156,6 +173,10 @@ def main(argv: list[str] | None = None) -> int:
             _print_json(read_json(path))
             return 0
         if args.command in {"apply-strategy", "resume"}:
+            from .plugins import default_registry
+            from .service import RunService
+
+            registry = default_registry()
             parent = Path(args.run_dir).resolve()
             with RunService(
                 parent.parent,
@@ -182,6 +203,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0 if state["status"] == "completed" else 1
         if args.command == "verify":
+            from .plugins import default_registry
+            from .runner import verify_run
+
+            registry = default_registry()
             result = verify_run(args.run_dir, args.deep, registry=registry)
             _print_json(result)
             return 0 if result["ok"] else 1

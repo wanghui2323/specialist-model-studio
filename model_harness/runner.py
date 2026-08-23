@@ -78,7 +78,7 @@ def _write_manifest(
         },
         "contract_snapshot_sha256": sha256_file(run_dir / "task_contract.json"),
         "artifacts": artifacts,
-        "reproduce": "small-model-harness run <task_contract.json>",
+        "reproduce": "specialist-model-studio run <task_contract.json>",
     }
     write_json(run_dir / "run_manifest.json", manifest)
     return manifest

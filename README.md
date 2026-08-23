@@ -1,10 +1,10 @@
-# AI PM Model Harness
+# Specialist Model Studio
 
-一个面向 AI 产品经理和独立开发者的对话式专用小模型训练 Harness：用户描述目标、提供必要数据并保留关键决定权，Harness 用可审查的 Recipe 组织数据体检、训练、评测、优化和制品交付。
+一个从需求到可交付专业模型的对话式智能工作台：用户描述目标、提供必要数据并保留关键决定权，Studio 用可审查的研究证据、模型来源、Recipe、训练、评测和制品组织完整任务。当前 RC 已实现模型来源分析与注册 Recipe 的真实训练闭环；Research Agent 的论文证据链已完成架构设计，尚未作为已实现能力宣传。
 
-> 当前代码版本是 `0.7.0b1`，对外记为 `v0.7.0-beta.1` 本地 Beta。`codex/v0.7-real-training-beta` 开发分支已推送到 GitHub；这仍不表示生产就绪、已合并 `main`、已打 Tag 或已创建 GitHub Release。
+> 当前候选包版本是 `0.9.0rc1`（API 版本 `0.9.0-rc.1`），功能轨道是 `v0.9-universal-byom`，发布状态仍为 `unreleased_rc`。它只表示本地 RC 正在接受审查，不表示生产就绪、已合并 `main`、已打 Tag 或已创建 GitHub Release。
 
-项目远程地址是 <https://github.com/wanghui2323/ai-pm-model-harness>；开发分支可在 <https://github.com/wanghui2323/ai-pm-model-harness/tree/codex/v0.7-real-training-beta> 查看。GitHub Release 仍须以远程 Tag 与 Release 页面为准。
+项目远程地址已迁移为 <https://github.com/wanghui2323/specialist-model-studio>；当前本地开发分支是 `codex/v0.9-universal-byom`。远程分支、Tag 和 Release 状态仍必须在 GitHub 上分别核验，不能由仓库名称或本地版本号代替。
 
 ## 先说能做什么
 
@@ -76,53 +76,102 @@ v0.7 已实现：
 
 它尚不是任意 Hugging Face 模型的通用微调器，也不会执行 remote code。当前 HF 资产只接到图片分类特征链路，没有接到音频、表格、OCR、检测或文本 Recipe。
 
+## v0.9 Universal BYOM RC 的当前边界
+
+`v0.9-universal-byom` 在原有 Recipe 闭环之外增加了一条通用的模型来源入口：
+
+- 使用 Hugging Face 或 GitHub 官方 HTTP API 搜索公开仓库，并把候选列表作为服务端 `search record` 保存；
+- 只有用户显式选择候选后才解析 revision；branch/tag 会固定为不可变 40 位 commit，再生成可重复校验的文件 manifest；
+- 显式绑定来源后，绑定、snapshot、仓库静态分析、训练计划和本机资源适配结论可被审计与重启恢复；
+- 私有仓库只有在调用者显式提供凭据 fixture 时才可验证；没有凭据不会声称已验证；
+- v0.9 的隔离执行策略是 CPU-only。宿主机即使探测到 MPS/CUDA，也不能被标成容器内可用加速器。
+
+这里的“通用”是指任意公开 Hugging Face/GitHub 训练仓库都可以进入 `discover → analyze → plan → resource check` 协议，并得到可训练方案或有类型的阻断证据；不等于任意仓库都一定能在当前机器完成训练。**没有经过验证的 OCI 或等价隔离运行时，只允许静态分析，绝不执行第三方源码、安装脚本或模型 remote code。** 当前 RC 还不能把“来源已绑定”写成“模型已训练”。
+
 ## 快速开始
 
 ```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -e '.[server,test]'
-npm ci --prefix integrations/deepseek-harness
+uv sync --extra server --extra test
 
-.venv/bin/small-model-harness list-recipes
-.venv/bin/small-model-harness init \
+uv run specialist-model-studio --version
+uv run specialist-model-studio list-recipes
+uv run specialist-model-studio init \
   --recipe digit-classification \
   --output workspaces/my-first-model
-.venv/bin/small-model-harness run \
+uv run specialist-model-studio run \
   workspaces/my-first-model/task_contract.json
 ```
+
+没有安装 `uv` 时，可以先创建虚拟环境，再运行 `python -m pip install -e '.[server,test]'`。Node.js 和 DeepSeek Harness 都不是训练后端的启动前提。
 
 检查一个真实 Run：
 
 ```bash
-.venv/bin/small-model-harness status runs/<run-id>
-.venv/bin/small-model-harness events runs/<run-id>
-.venv/bin/small-model-harness explain runs/<run-id>
-.venv/bin/small-model-harness strategies runs/<run-id>
-.venv/bin/small-model-harness verify runs/<run-id> --deep
+uv run specialist-model-studio status runs/<run-id>
+uv run specialist-model-studio events runs/<run-id>
+uv run specialist-model-studio explain runs/<run-id>
+uv run specialist-model-studio strategies runs/<run-id>
+uv run specialist-model-studio verify runs/<run-id> --deep
 ```
 
 `--deep` 只应对哈希已匹配、由本地可信 Run 生成的 Joblib 模型使用。不要加载来源不明的 Pickle/Joblib。
 
-## 启动本地 Harness
+旧的 `small-model-harness` 命令在兼容期内保持可用，并调用同一个 `model_harness` 引擎。
+
+## 启动本地 Studio
+
+首选方式只启动 Specialist Model Studio 后端和它自带的工作台：
 
 ```bash
-npm --prefix integrations/deepseek-harness install --ignore-scripts
+uv run specialist-model-studio serve \
+  --runs-dir runs \
+  --host 127.0.0.1 \
+  --port 8765
+```
+
+- Specialist Model Studio：<http://127.0.0.1:8765/app>
+- 后端健康与发布口径：<http://127.0.0.1:8765/health>
+- 运行时与安全边界：<http://127.0.0.1:8765/runtime>
+- 本地 OpenAPI：<http://127.0.0.1:8765/docs>
+
+`/health` 的 `scope` 为 `backend`，且 `agent_required` 为 `false`。这说明本地服务可独立启动，不等于对话 Agent 已连接或 RC 已发布。当前服务没有多用户鉴权，不应直接暴露到公网。
+
+### 可选：接入 DeepSeek Harness 对话宿主
+
+```bash
+npm ci --prefix integrations/deepseek-harness --ignore-scripts
 ./scripts/install_dsh_preset.sh
 dsh plugin --profile web add "$PWD/integrations/deepseek-harness"
 ./scripts/start_conversation_harness.sh
 ```
 
-- Model Harness 任务工作台：<http://127.0.0.1:8765/app>
-- 本地 OpenAPI：<http://127.0.0.1:8765/docs>
 - 可选 DeepSeek Harness 对话宿主：<http://127.0.0.1:3080>
 
 没有启动 DeepSeek Harness 时，任务、数据、合同、Run、评测、新样本试跑和 Bundle API 仍可本地使用；自由对话和 Agent 工具编排才依赖 3080 运行时。当前服务没有多用户鉴权，不应直接暴露到公网。
 
-DeepSeek Harness 是可选适配层，不是训练核心的 fork。当前 bundle 注册 **37 个** `model_harness_*` 工具，覆盖任务规格、数据、声明式 Recipe Factory、HF 固定资产、Run、EvaluationReport、新样本试跑和 Bundle。所有结果仍来自本地真实 HTTP 对象；Agent 投影会剥离本机绝对路径。详见 [DeepSeek Harness Adapter](integrations/deepseek-harness/README.md)。
+DeepSeek Harness 是可选适配层，不是训练核心的 fork。bundle 注册一组 `model_harness_*` 工具，覆盖任务规格、数据、声明式 Recipe Factory、固定模型资产、Run、EvaluationReport、新样本试跑和 Bundle；工具数量会随功能轨道变化，不作为兼容性承诺。所有结果仍来自本地真实 HTTP 对象；Agent 投影会剥离本机绝对路径。详见 [DeepSeek Harness Adapter](integrations/deepseek-harness/README.md)。
 
 ## 真实验收命令
 
-### 1. 官方 Hugging Face 固定 commit 场景
+### 1. v0.9 L1 真实来源闭环（显式选择联网）
+
+默认运行不会联网，只用于确认门禁保持关闭：
+
+```bash
+uv run python scripts/verify_v09_l1_live.py
+```
+
+只有显式设置 `MH_LIVE_ACCEPTANCE=1` 才会访问 Hugging Face/GitHub 官方 API。下面的命令把证据写入 Git 忽略的 `runs/`，并运行安全的真实不存在仓库、无效 revision 负例：
+
+```bash
+MH_LIVE_ACCEPTANCE=1 \
+MH_L1_EVIDENCE_PATH=runs/acceptance/v09-l1-live.json \
+uv run python scripts/verify_v09_l1_live.py --negatives
+```
+
+公共正例只读取固定仓库的元数据与小型静态文档，不下载 Hugging Face LFS 权重，也不执行来源代码。rate-limit 只验证合成 transport 契约，不主动耗尽官方额度。没有显式私库 fixture 时，证据必须写 `not_run`，不能声称私库已验证。
+
+### 2. 官方 Hugging Face 固定 commit 场景
 
 ```bash
 .venv/bin/python scripts/run_hf_real_scenario.py
@@ -138,7 +187,7 @@ DeepSeek Harness 是可选适配层，不是训练核心的 fork。当前 bundle
   --commit a6a0b39ca1f5b0a247eb0a2e83f06cd95fc03674
 ```
 
-### 2. v0.7 L0–L5 fail-closed 验收
+### 3. v0.7 L0–L5 fail-closed 验收
 
 ```bash
 .venv/bin/python scripts/verify_v07_beta.py \
@@ -172,6 +221,11 @@ model_harness/plugin_api.py       Recipe 协议
 model_harness/data_adapters.py    数据导入与体检协议
 model_harness/recipe_factory.py   可信声明式 Recipe Factory
 model_harness/model_assets.py     固定版本模型资产和哈希
+model_harness/model_sources.py    HF/GitHub 通用来源合同与不可变快照
+model_harness/model_source_store.py  搜索、选择、绑定和重启恢复
+model_harness/repository_analysis.py 仓库静态分析合同
+model_harness/training_plans.py   版本化训练计划与人工批准
+model_harness/resource_feasibility.py 本机资源探测和 CPU-only 适配结论
 model_harness/runner.py           真实训练执行与验证
 model_harness/evidence.py         评测、推理和 Bundle 证据
 model_harness/sample_inference.py 用户新样本试跑

@@ -10,7 +10,207 @@ except ImportError:  # pragma: no cover
     TestClient = None  # type: ignore[assignment]
 
 from model_harness.server import create_app
-from model_harness.task_specs import TASK_FAMILY_VALUES
+from model_harness.task_specs import (
+    TASK_FAMILY_VALUES,
+    capability_decision,
+    capability_for_family,
+)
+
+
+class CapabilityDecisionCandidateTests(unittest.TestCase):
+    def test_home_starter_prompts_route_to_relevant_backend_families(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "我想训练一个模型，把普通话录音转成文字，用在本地设备上。",
+                "needs_confirmation",
+                "asr",
+                {"asr"},
+            ),
+            (
+                "我想训练一个模型，识别合同图片里的关键信息。",
+                "needs_clarification",
+                None,
+                {"ocr", "image_classification", "object_detection"},
+            ),
+            (
+                "我想用自己的零件图片训练一个缺陷检测模型。",
+                "needs_clarification",
+                None,
+                {"image_classification", "object_detection", "segmentation"},
+            ),
+            (
+                "我想用历史表格数据训练一个设备寿命预测模型。",
+                "needs_confirmation",
+                "tabular_regression",
+                {"tabular_regression"},
+            ),
+        )
+
+        for prompt, expected_status, expected_family, relevant_families in cases:
+            with self.subTest(prompt=prompt):
+                decision = capability_decision("首页示例任务", prompt, {})
+                candidate_families = {
+                    item["family"] for item in decision["candidates"]
+                }
+
+                self.assertEqual(decision["status"], expected_status)
+                self.assertEqual(decision["selected_family"], expected_family)
+                self.assertTrue(
+                    relevant_families.issubset(candidate_families),
+                    (relevant_families, candidate_families),
+                )
+                if expected_family == "asr":
+                    self.assertNotIn("ocr", candidate_families)
+
+    def test_ambiguous_modalities_offer_only_relevant_clarification_candidates(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "模糊语音模型",
+                "我想训练一个语音模型",
+                {
+                    "audio_classification",
+                    "asr",
+                    "speech_synthesis",
+                    "custom",
+                },
+            ),
+            (
+                "模糊图像模型",
+                "我想训练一个图像模型",
+                {
+                    "image_classification",
+                    "ocr",
+                    "object_detection",
+                    "segmentation",
+                },
+            ),
+            (
+                "模糊表格模型",
+                "我想用 CSV 表格训练一个模型",
+                {
+                    "tabular_classification",
+                    "tabular_regression",
+                    "time_series_forecasting",
+                    "anomaly_detection",
+                },
+            ),
+            (
+                "模糊文本模型",
+                "我想训练一个文本模型",
+                {
+                    "text_classification",
+                    "named_entity_recognition",
+                    "custom",
+                },
+            ),
+        )
+        for name, goal, expected in cases:
+            with self.subTest(name=name):
+                decision = capability_decision(name, goal, {})
+                candidates = {
+                    item["family"] for item in decision["candidates"]
+                }
+
+                self.assertEqual(decision["status"], "needs_clarification")
+                self.assertIsNone(decision["selected_family"])
+                self.assertEqual(candidates, expected)
+                self.assertGreaterEqual(len(candidates), 2)
+                self.assertLessEqual(len(candidates), 4)
+                self.assertIsInstance(decision["question"], str)
+                self.assertIn("请选择", decision["question"])
+
+    def test_unknown_modality_retains_generic_fallback(self) -> None:
+        decision = capability_decision(
+            "未知专用模型",
+            "我想训练一个模型，但还没有定义输入和输出",
+            {},
+        )
+
+        self.assertEqual(decision["status"], "needs_clarification")
+        self.assertIsNone(decision["selected_family"])
+        self.assertEqual(
+            [item["family"] for item in decision["candidates"]],
+            ["classification", "regression", "custom"],
+        )
+        self.assertEqual(
+            decision["reason_codes"],
+            ["missing_input_output_definition"],
+        )
+
+
+class CapabilityFamilyMigrationTests(unittest.TestCase):
+    def test_image_classification_to_asr_clears_family_owned_fields(self) -> None:
+        migrated = capability_for_family(
+            "asr",
+            {
+                "family": "image_classification",
+                "modality": "image",
+                "objective": "classification",
+                "target_kind": "multiclass",
+                "target_column": "label",
+                "primary_metric": "validation_macro_f1",
+                "data_adapter": "image-folder-zip",
+                "tags": ["edge"],
+                "constraints": {"latency_ms": 100},
+            },
+        )
+
+        self.assertEqual(migrated["family"], "asr")
+        self.assertEqual(migrated["modality"], "audio")
+        self.assertEqual(migrated["objective"], "speech_recognition")
+        for key in (
+            "target_kind",
+            "target_column",
+            "primary_metric",
+            "data_adapter",
+        ):
+            self.assertNotIn(key, migrated)
+        self.assertEqual(migrated["tags"], ["edge"])
+        self.assertEqual(migrated["constraints"], {"latency_ms": 100})
+
+    def test_tabular_regression_to_ocr_clears_regression_contract_fields(self) -> None:
+        migrated = capability_for_family(
+            "ocr",
+            {
+                "family": "tabular_regression",
+                "modality": "tabular",
+                "objective": "regression",
+                "target_kind": "numeric",
+                "target_column": "remaining_life",
+                "primary_metric": "validation_mae",
+                "data_adapter": "tabular-csv",
+            },
+        )
+
+        self.assertEqual(
+            migrated,
+            {
+                "family": "ocr",
+                "modality": "image",
+                "objective": "ocr",
+            },
+        )
+
+    def test_same_family_update_preserves_compatible_fields(self) -> None:
+        current = {
+            "family": "image_classification",
+            "modality": "image",
+            "objective": "classification",
+            "target_kind": "binary",
+            "primary_metric": "validation_macro_f1",
+            "data_adapter": "image-folder-zip",
+            "tags": ["edge"],
+            "constraints": {"latency_ms": 50},
+        }
+
+        self.assertEqual(
+            capability_for_family("image_classification", current),
+            current,
+        )
 
 
 @unittest.skipIf(TestClient is None, "server extra is not installed")
@@ -452,6 +652,48 @@ class TaskSpecRevisionTests(unittest.TestCase):
                     revised["control"]["next_action"]["id"],
                     "review_capability_gap",
                 )
+
+    def test_cross_family_revision_does_not_persist_previous_recipe_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = create_app(Path(temp_dir) / "runs")
+            with TestClient(app) as client:  # type: ignore[misc]
+                task = client.post(
+                    "/tasks",
+                    json={
+                        "name": "零件分类",
+                        "business_goal": "把零件图片分为合格和不合格",
+                        "capability_request": {
+                            "family": "image_classification",
+                            "modality": "image",
+                            "objective": "classification",
+                            "target_kind": "binary",
+                            "primary_metric": "validation_macro_f1",
+                            "data_adapter": "image-folder-zip",
+                        },
+                    },
+                ).json()["task"]
+
+                response = client.patch(
+                    f"/tasks/{task['task_id']}/spec",
+                    json={
+                        "base_revision": 1,
+                        "selected_family": "asr",
+                        "user_note": "改为把录音转写成文字",
+                    },
+                )
+
+                self.assertEqual(response.status_code, 200, response.text)
+                revised = response.json()["task"]
+                self.assertEqual(
+                    revised["capability_request"],
+                    {
+                        "family": "asr",
+                        "modality": "audio",
+                        "objective": "speech_recognition",
+                    },
+                )
+                self.assertEqual(revised["status"], "needs_recipe")
+                self.assertIsNone(revised["recipe_id"])
 
 
 if __name__ == "__main__":

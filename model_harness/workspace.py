@@ -7,6 +7,7 @@ import re
 import shutil
 import zipfile
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -16,6 +17,8 @@ from uuid import uuid4
 
 from PIL import Image, UnidentifiedImageError
 
+from .blockers import BlockerStore
+from .feasibility_store import FeasibilityStore
 from .contracts import validate_contract
 from .data_adapters import DataAdapterRegistry, default_data_adapter_registry
 from .errors import ContractError, HarnessError
@@ -26,9 +29,36 @@ from .huggingface_assets import (
     resolve_training_asset,
 )
 from .huggingface_catalog import HuggingFaceCatalog
+from .github_source import GitHubSourceProvider
 from .model_assets import ModelAssetError, ModelAssetStore
+from .model_source_store import ModelSourceStore, model_search_contains_credentials
+from .model_sources import (
+    ModelSourceError,
+    ModelSourceUpstreamError,
+    ResolvedSource,
+    SourceProvider,
+    collect_source_documents,
+    evaluate_license_policy,
+    parse_model_source_reference,
+    source_candidate_id,
+)
+from .huggingface_source import HuggingFaceSourceProvider
 from .recipe_builder import RecipeScaffoldBuilder
 from .recipe_factory import RecipeFactory
+from .repository_analysis import (
+    ANALYZER_VERSION,
+    RepositoryAnalysisError,
+    StaticRepositoryAnalyzer,
+)
+from .repository_analysis_store import (
+    BindingAnalysisAttemptStore,
+    RepositoryAnalysisStore,
+)
+from .resource_feasibility import (
+    EnvironmentLock,
+    ResourceProbe,
+    evaluate_resource_fit,
+)
 from .service import RunService
 from .staged_assets import StagedAssetNotFound, StagedAssetStore
 from .task_specs import (
@@ -36,6 +66,7 @@ from .task_specs import (
     capability_for_family,
     normalize_family,
 )
+from .training_plans import StaleTrainingPlanError, TrainingPlanStore
 
 
 TASK_SCHEMA_VERSION = "0.2"
@@ -45,9 +76,115 @@ MAX_UNCOMPRESSED_BYTES = 750 * 1024 * 1024
 MAX_IMAGE_FILES = 10_000
 MIN_IMAGES_PER_CLASS = 5
 
+_MODEL_SEARCH_TERMS = {
+    ("image", "classification"): ("image classification", "image-classification"),
+    ("image", "ocr"): ("optical character recognition OCR", "image-to-text"),
+    ("image", "object_detection"): ("object detection training", "object-detection"),
+    ("image", "segmentation"): ("image segmentation training", "image-segmentation"),
+    ("audio", "classification"): ("audio classification keyword spotting", "audio-classification"),
+    ("audio", "speech_recognition"): ("automatic speech recognition", "automatic-speech-recognition"),
+    ("audio", "speech_synthesis"): ("text to speech training", "text-to-speech"),
+    ("tabular", "classification"): ("tabular classification training", None),
+    ("tabular", "regression"): ("tabular regression training", None),
+    ("time_series", "forecasting"): ("time series forecasting training", "time-series-forecasting"),
+    ("text", "classification"): ("text classification training", "text-classification"),
+    ("text", "named_entity_recognition"): ("named entity recognition training", "token-classification"),
+    ("specialist", "anomaly_detection"): ("anomaly detection training", None),
+}
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _model_search_plan(
+    task: dict[str, Any],
+    query: str | None,
+) -> dict[str, Any]:
+    raw_query = str(query or "").strip()
+    if len(raw_query) > 160 or any(ord(character) < 32 for character in raw_query):
+        raise ContractError("模型搜索词无效")
+    if model_search_contains_credentials(raw_query):
+        raise ContractError("模型搜索词包含疑似凭据，请移除后重试")
+    capability = task.get("capability_request", {})
+    modality = str(capability.get("modality") or "specialist").strip().lower()
+    objective = str(capability.get("objective") or "custom").strip().lower()
+    fallback, pipeline_tag = _MODEL_SEARCH_TERMS.get(
+        (modality, objective),
+        (f"{modality} {objective} model training", None),
+    )
+    # Chinese business descriptions are valuable context for the user but are
+    # weak direct queries for the two English-first provider catalogs. Keep the
+    # original visible and use a deterministic capability query for providers.
+    ascii_letters = sum(
+        character.isascii() and character.isalpha() for character in raw_query
+    )
+    effective = raw_query if raw_query and ascii_letters >= 3 else fallback
+    if model_search_contains_credentials(effective):
+        raise ContractError("模型搜索词包含疑似凭据，请移除后重试")
+    return {
+        "user_query": raw_query or None,
+        "effective_query": effective,
+        "pipeline_tag": pipeline_tag,
+        "derived_from": {
+            "modality": modality,
+            "objective": objective,
+            "task_spec_revision": int(task.get("current_spec_revision") or 0),
+        },
+    }
+
+
+def _rank_model_source_candidate(candidate: dict[str, Any]) -> tuple[int, int, str]:
+    known_license = 1 if candidate.get("license_status") == "known" else 0
+    popularity = candidate.get("popularity") or {}
+    popularity_value = int(popularity.get("downloads") or popularity.get("stars") or 0)
+    return (-known_license, -popularity_value, str(candidate.get("repository") or ""))
+
+
+def _decorate_model_source_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    value = deepcopy(candidate)
+    reasons: list[str] = []
+    cautions: list[str] = []
+    if value.get("license_status") == "known":
+        reasons.append(f"目录声明许可证 {value.get('license')}")
+    else:
+        cautions.append("许可证未知，绑定后仍会阻断训练计划")
+    popularity = value.get("popularity") or {}
+    if value.get("provider") == "huggingface":
+        reasons.append(f"Hugging Face 任务标签：{value.get('task_tag') or 'unknown'}")
+        if int(popularity.get("downloads") or 0) > 0:
+            reasons.append(f"目录记录 {int(popularity['downloads']):,} 次下载")
+    else:
+        reasons.append("来自 GitHub 官方仓库搜索")
+        cautions.append("GitHub Tree 大小可能只包含 Git LFS 指针，绑定后会明确标注")
+        if int(popularity.get("stars") or 0) > 0:
+            reasons.append(f"目录记录 {int(popularity['stars']):,} Stars")
+    cautions.append("尚未完成固定版本的仓库分析与本机资源适配")
+    value["why_shortlisted"] = reasons
+    value["cautions"] = cautions
+    value["selection_state"] = "needs_user_confirmation"
+    return value
+
+
+def _model_source_error_message(code: str) -> str:
+    lowered = code.lower()
+    if "not_found" in lowered:
+        return "没有找到该公开仓库或版本；请检查地址、权限或 revision。"
+    if "authentication" in lowered or "private" in lowered:
+        return "该来源需要权限；可提供仅用于本次请求的 Token 后重试。"
+    if "rate_limit" in lowered or "rate_limited" in lowered:
+        return "官方目录当前触发限流；请稍后重试或提供仅用于本次请求的 Token。"
+    if "license" in lowered:
+        return "模型来源的许可证信息不足，当前不能进入后续训练计划。"
+    if "truncated" in lowered or "incomplete" in lowered:
+        return "官方接口返回了不完整仓库清单；系统已停止绑定以避免错误分析。"
+    if "digest" in lowered or "mismatch" in lowered:
+        return "来源内容与固定版本证据不一致；系统已停止绑定。"
+    return "官方模型来源请求失败；失败事实已保存，可在同一任务中重试。"
+
+
+def _license_policy(license_name: str, license_status: str) -> dict[str, Any]:
+    return evaluate_license_policy(license_name, license_status)
 
 
 def _safe_slug(value: str, fallback: str = "item") -> str:
@@ -285,8 +422,35 @@ class TrainingWorkspace:
         self.model_assets = ModelAssetStore(self.root / "model_assets")
         self.huggingface_catalog = HuggingFaceCatalog()
         self.huggingface_downloader = HuggingFaceHubDownloader()
+        self.model_source_store = ModelSourceStore(self.root)
+        self.blocker_store = BlockerStore(self.root)
+        self.training_plan_store = TrainingPlanStore(self.root)
+        self.feasibility_store = FeasibilityStore(self.root)
+        self.model_source_providers: dict[str, SourceProvider] = {
+            "github": GitHubSourceProvider(),
+            "huggingface": HuggingFaceSourceProvider(),
+        }
+        self.repository_analyzer = StaticRepositoryAnalyzer()
+        self.repository_analysis_store = RepositoryAnalysisStore(self.root)
+        self.binding_analysis_attempt_store = BindingAnalysisAttemptStore(self.root)
         self._lock = RLock()
+        self._binding_executor = ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="model-binding",
+        )
+        self._binding_futures: dict[str, Any] = {}
+        self._binding_executor_closed = False
+        self.binding_analysis_attempt_store.recover_interrupted_attempts()
+        self._recover_model_binding_commits()
+        self._restore_model_binding_task_projections()
         self._restore_registered_recipe_versions()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._binding_executor_closed:
+                return
+            self._binding_executor_closed = True
+        self._binding_executor.shutdown(wait=True, cancel_futures=False)
 
     def create_task(
         self,
@@ -367,6 +531,12 @@ class TrainingWorkspace:
             "dataset_history": [],
             "contract_confirmed": False,
             "confirmations": {},
+            "confirmed_contract_sha256": None,
+            "contract_stale": False,
+            "current_model_binding_revision_id": None,
+            "last_model_binding_revision_id": None,
+            "model_binding_bound_spec_revision": None,
+            "model_binding_stale_for_spec_revision": False,
             "current_run_id": None,
             "last_run_id": None,
             "run_ids": [],
@@ -394,6 +564,493 @@ class TrainingWorkspace:
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         return self._view(read_json(self._task_path(task_id)))
+
+    def current_training_plan(self, task_id: str) -> dict[str, Any] | None:
+        task = read_json(self._task_path(task_id))
+        plan = self.training_plan_store.current_revision(task_id)
+        if plan is None:
+            return None
+        view = self.training_plan_store.revision_view(
+            task_id, str(plan["training_plan_revision_id"])
+        )
+        binding = self.model_source_store.current_binding(task_id)
+        stale_reasons: list[str] = []
+        if int(plan["base_spec_revision"]) != int(task["current_spec_revision"]):
+            stale_reasons.append("task_spec_changed")
+        if binding is None:
+            stale_reasons.append("model_binding_missing")
+        else:
+            context = self.model_source_store.binding_context(
+                task_id, str(binding["binding_revision_id"])
+            )
+            assert context is not None
+            if plan["source_snapshot_id"] != context["snapshot"]["snapshot_id"]:
+                stale_reasons.append("source_snapshot_changed")
+            if plan["snapshot_digest"] != context["snapshot"]["content_digest"]:
+                stale_reasons.append("source_snapshot_digest_changed")
+            if plan["analysis_id"] != context["analysis"]["analysis_id"]:
+                stale_reasons.append("repository_analysis_changed")
+            if plan["analysis_digest"] != context["analysis"]["content_digest"]:
+                stale_reasons.append("repository_analysis_digest_changed")
+        view["stale"] = bool(stale_reasons)
+        view["stale_reasons"] = stale_reasons
+        return view
+
+    def create_training_plan(
+        self,
+        task_id: str,
+        *,
+        base_spec_revision: int,
+        entrypoint_path: str | None = None,
+        hyperparameters: dict[str, Any] | None = None,
+        resource_budget: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            task = read_json(self._task_path(task_id))
+            current_spec = self._ensure_spec_revision(task)
+            if (
+                isinstance(base_spec_revision, bool)
+                or not isinstance(base_spec_revision, int)
+                or base_spec_revision < 1
+            ):
+                raise ContractError("base_spec_revision 必须是正整数")
+            if base_spec_revision != int(current_spec["revision"]):
+                raise HarnessError("TaskSpec 已更新，请刷新后重新生成训练计划")
+            if self.training_plan_store.current_revision(task_id) is not None:
+                raise ContractError("训练计划已存在；修改必须创建新的不可变 revision")
+            binding = self.model_source_store.current_binding(task_id)
+            if binding is None:
+                raise HarnessError("请先选择并批准模型来源")
+            context = self.model_source_store.binding_context(
+                task_id, str(binding["binding_revision_id"])
+            )
+            assert context is not None
+            snapshot = context["snapshot"]
+            analysis_record = context["analysis"]
+            analysis = analysis_record["analysis"]
+            license_policy = dict(
+                snapshot.get("details", {}).get("license_policy") or {}
+            ) or _license_policy(
+                str(snapshot["license"]), str(snapshot["license_status"])
+            )
+            if license_policy.get("decision") != "allow":
+                raise HarnessError("当前许可证策略未放行，不能生成可批准的训练计划")
+
+            candidates = analysis.get("training_entrypoints") or []
+            selected_path = str(entrypoint_path or "").strip()
+            if not selected_path and candidates:
+                selected_path = str(candidates[0].get("path", "")).strip()
+            files = {
+                str(item.get("path")): item
+                for item in snapshot.get("files", [])
+                if item.get("kind") in {"blob", "executable"}
+            }
+            if not selected_path or selected_path not in files:
+                blocker = self.blocker_store.append(
+                    task_id,
+                    stage="training_plan",
+                    code="blocked_training_entrypoint",
+                    message="仓库静态分析未确认训练入口；请从固定文件清单中人工选择入口。",
+                    retry_action="map_training_entrypoint",
+                    related_object_type="RepositoryAnalysis",
+                    related_object_id=str(analysis_record["analysis_id"]),
+                    related_object_digest=str(analysis_record["content_digest"]),
+                    details={"candidate_paths": [item.get("path") for item in candidates]},
+                )
+                raise HarnessError(str(blocker["message"]))
+
+            budget = dict(resource_budget or {})
+            defaults = {
+                "max_seconds": 3600,
+                "ram_bytes": 4 * 1024**3,
+                "vram_bytes": 0,
+                "disk_bytes": 5 * 1024**3,
+            }
+            defaults.update(budget)
+            capability = deepcopy(current_spec.get("capability_request", {}))
+            plan = self.training_plan_store.create_revision(
+                task_id,
+                base_spec_revision=int(current_spec["revision"]),
+                source_snapshot_id=str(snapshot["snapshot_id"]),
+                snapshot_digest=str(snapshot["content_digest"]),
+                analysis_id=str(analysis_record["analysis_id"]),
+                analysis_digest=str(analysis_record["content_digest"]),
+                entrypoint={
+                    "argv": ["python", selected_path],
+                    "working_dir": "/workspace/source",
+                },
+                dataset_mapping={
+                    "source": "current_task_spec",
+                    "capability": capability,
+                    "requires_user_data_contract": True,
+                },
+                hyperparameters=dict(hyperparameters or {}),
+                evaluation={
+                    "metrics": ["task_primary_metric"],
+                    "gates": {"requires_human_confirmation": True},
+                },
+                artifact_contract={
+                    "output_dir": "/workspace/output",
+                    "required": ["model", "metrics.json"],
+                },
+                resource_budget=defaults,
+                execution_policy={
+                    "backend": "oci",
+                    "network_allowlist": [],
+                    "secret_scopes": [],
+                },
+            )
+            self.blocker_store.resolve_active_stage(
+                task_id,
+                "training_plan",
+                action="training_plan_revision_created",
+                related_object_type="TrainingPlanRevision",
+                related_object_id=str(plan["training_plan_revision_id"]),
+            )
+        return self.current_training_plan(task_id) or {}
+
+    def decide_training_plan(
+        self,
+        task_id: str,
+        revision_id: str,
+        *,
+        expected_plan_sha256: str,
+        decision: str,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        read_json(self._task_path(task_id))
+        if decision == "approve":
+            self.training_plan_store.approve(
+                task_id,
+                revision_id,
+                expected_plan_sha256=expected_plan_sha256,
+                actor="local_user",
+                reason=reason,
+            )
+        elif decision == "reject":
+            self.training_plan_store.reject(
+                task_id,
+                revision_id,
+                expected_plan_sha256=expected_plan_sha256,
+                actor="local_user",
+                reason=reason or "用户拒绝当前计划",
+            )
+        elif decision == "cancel":
+            self.training_plan_store.cancel(
+                task_id,
+                revision_id,
+                expected_plan_sha256=expected_plan_sha256,
+                actor="local_user",
+                reason=reason or "用户取消当前计划",
+            )
+        else:
+            raise ContractError("decision 必须是 approve、reject 或 cancel")
+        return self.current_training_plan(task_id) or {}
+
+    def revise_training_plan(
+        self,
+        task_id: str,
+        revision_id: str,
+        *,
+        expected_parent_sha256: str,
+        base_spec_revision: int,
+        entrypoint_path: str | None = None,
+        hyperparameters: dict[str, Any] | None = None,
+        resource_budget: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create a new immutable plan from the current exact parent digest.
+
+        A model-source, TaskSpec, entrypoint, hyperparameter, or resource change
+        must never mutate an approved plan in place.  This method rebuilds the
+        lineage fields from the current persisted task and source snapshot, then
+        delegates the append-only child creation to ``TrainingPlanStore``.
+        """
+
+        with self._lock:
+            task = read_json(self._task_path(task_id))
+            current_spec = self._ensure_spec_revision(task)
+            if (
+                isinstance(base_spec_revision, bool)
+                or not isinstance(base_spec_revision, int)
+                or base_spec_revision < 1
+            ):
+                raise ContractError("base_spec_revision 必须是正整数")
+            if base_spec_revision != int(current_spec["revision"]):
+                raise HarnessError("TaskSpec 已更新，请刷新后重新生成训练计划")
+
+            current = self.training_plan_store.current_revision(task_id)
+            if current is None:
+                raise FileNotFoundError("training plan does not exist")
+            if current["training_plan_revision_id"] != revision_id:
+                raise StaleTrainingPlanError("只能从当前训练计划创建新 revision")
+            if current["plan_sha256"] != expected_parent_sha256:
+                raise StaleTrainingPlanError("父训练计划 digest 已变化")
+
+            binding = self.model_source_store.current_binding(task_id)
+            if binding is None:
+                raise HarnessError("请先选择并批准模型来源")
+            context = self.model_source_store.binding_context(
+                task_id, str(binding["binding_revision_id"])
+            )
+            assert context is not None
+            snapshot = context["snapshot"]
+            analysis_record = context["analysis"]
+            analysis = analysis_record["analysis"]
+            license_policy = dict(
+                snapshot.get("details", {}).get("license_policy") or {}
+            ) or _license_policy(
+                str(snapshot["license"]), str(snapshot["license_status"])
+            )
+            if license_policy.get("decision") != "allow":
+                raise HarnessError("当前许可证策略未放行，不能修订训练计划")
+
+            candidates = analysis.get("training_entrypoints") or []
+            selected_path = str(entrypoint_path or "").strip()
+            if not selected_path and candidates:
+                selected_path = str(candidates[0].get("path", "")).strip()
+            if not selected_path:
+                argv = current.get("entrypoint", {}).get("argv") or []
+                selected_path = str(argv[1]).strip() if len(argv) > 1 else ""
+            files = {
+                str(item.get("path")): item
+                for item in snapshot.get("files", [])
+                if item.get("kind") in {"blob", "executable"}
+            }
+            if not selected_path or selected_path not in files:
+                raise HarnessError(
+                    "训练入口不在当前固定来源清单中，请从清单重新选择"
+                )
+
+            next_budget = dict(current["resource_budget"])
+            if resource_budget is not None:
+                next_budget.update(resource_budget)
+            next_hyperparameters = (
+                dict(hyperparameters)
+                if hyperparameters is not None
+                else dict(current["hyperparameters"])
+            )
+            capability = deepcopy(current_spec.get("capability_request", {}))
+            revised = self.training_plan_store.revise_revision(
+                task_id,
+                revision_id,
+                expected_parent_sha256=expected_parent_sha256,
+                changes={
+                    "base_spec_revision": int(current_spec["revision"]),
+                    "source_snapshot_id": str(snapshot["snapshot_id"]),
+                    "snapshot_digest": str(snapshot["content_digest"]),
+                    "analysis_id": str(analysis_record["analysis_id"]),
+                    "analysis_digest": str(analysis_record["content_digest"]),
+                    "entrypoint": {
+                        "argv": ["python", selected_path],
+                        "working_dir": "/workspace/source",
+                    },
+                    "dataset_mapping": {
+                        "source": "current_task_spec",
+                        "capability": capability,
+                        "requires_user_data_contract": True,
+                    },
+                    "hyperparameters": next_hyperparameters,
+                    "evaluation": dict(current["evaluation"]),
+                    "artifact_contract": dict(current["artifact_contract"]),
+                    "resource_budget": next_budget,
+                    "execution_policy": dict(current["execution_policy"]),
+                },
+            )
+            self.blocker_store.resolve_active_stage(
+                task_id,
+                "training_plan",
+                action="training_plan_revision_created",
+                related_object_type="TrainingPlanRevision",
+                related_object_id=str(revised["training_plan_revision_id"]),
+            )
+            for stage in ("resource_probe", "environment_lock", "resource_fit"):
+                self.blocker_store.resolve_active_stage(
+                    task_id,
+                    stage,
+                    action="training_plan_revision_invalidated_resource_evidence",
+                    related_object_type="TrainingPlanRevision",
+                    related_object_id=str(revised["training_plan_revision_id"]),
+                )
+        return self.current_training_plan(task_id) or {}
+
+    def current_resource_feasibility(self, task_id: str) -> dict[str, Any]:
+        read_json(self._task_path(task_id))
+        bundle = self.feasibility_store.current_bundle(task_id)
+        blockers = [
+            item
+            for item in self.blocker_store.list(task_id, active_only=True)
+            if item.get("stage") in {
+                "resource_probe",
+                "environment_lock",
+                "resource_fit",
+            }
+        ]
+        report = bundle.get("resource_fit_report")
+        plan_view = self.current_training_plan(task_id)
+        current_plan = plan_view.get("plan") if isinstance(plan_view, dict) else None
+        if (
+            isinstance(report, dict)
+            and isinstance(current_plan, dict)
+            and (
+                report.get("training_plan_revision_id")
+                != current_plan.get("training_plan_revision_id")
+                or report.get("training_plan_sha256")
+                != current_plan.get("plan_sha256")
+            )
+        ):
+            bundle = {
+                **bundle,
+                "stale_resource_fit_report": report,
+                "resource_fit_report": None,
+            }
+            report = None
+        decision = (
+            str(report["decision"])
+            if isinstance(report, dict)
+            else str(blockers[0]["code"])
+            if blockers
+            else "not_checked"
+        )
+        return {**bundle, "decision": decision, "blockers": blockers}
+
+    def check_resource_feasibility(
+        self,
+        task_id: str,
+        *,
+        training_plan_revision_id: str,
+        expected_plan_sha256: str,
+        base_image_digest: str | None = None,
+        packages: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            task = read_json(self._task_path(task_id))
+            plan_view = self.current_training_plan(task_id)
+            if plan_view is None:
+                raise HarnessError("请先生成并批准训练计划")
+            if plan_view.get("stale") is True:
+                raise HarnessError("训练计划已过期，请为当前任务重新生成 revision")
+            binding = self.model_source_store.current_binding(task_id)
+            if binding is None:
+                raise HarnessError("当前模型来源绑定不存在")
+            context = self.model_source_store.binding_context(
+                task_id, str(binding["binding_revision_id"])
+            )
+            assert context is not None
+            plan = self.training_plan_store.authorize_use(
+                task_id,
+                training_plan_revision_id,
+                expected_plan_sha256=expected_plan_sha256,
+                current_spec_revision=int(task["current_spec_revision"]),
+                source_snapshot_id=str(context["snapshot"]["snapshot_id"]),
+                snapshot_digest=str(context["snapshot"]["content_digest"]),
+                analysis_id=str(context["analysis"]["analysis_id"]),
+                analysis_digest=str(context["analysis"]["content_digest"]),
+            )
+            probe = ResourceProbe.capture(self.root)
+            probe_record = self.feasibility_store.append_resource_probe(task_id, probe)
+            runtime = probe_record["container_runtime"]
+            if runtime.get("available") is not True:
+                message = (
+                    "本机未检测到可用的 Docker/Podman 隔离运行时。当前可以继续审阅来源、分析和计划，"
+                    "但不能构建环境或执行第三方训练代码。"
+                )
+                self.blocker_store.append(
+                    task_id,
+                    stage="environment_lock",
+                    code="blocked_environment",
+                    message=message,
+                    retry_action="install_or_start_oci_runtime_then_retry",
+                    related_object_type="ResourceProbe",
+                    related_object_id=str(probe_record["resource_probe_id"]),
+                    related_object_digest=str(probe_record["probe_sha256"]),
+                    details={
+                        "detector": "container_runtime_probe",
+                        "required": "available Docker or Podman runtime",
+                        "observed": runtime,
+                        "retryable": True,
+                    },
+                )
+                return self.current_resource_feasibility(task_id)
+
+            selected_digest = str(base_image_digest or "").strip().lower()
+            if not selected_digest:
+                self.blocker_store.append(
+                    task_id,
+                    stage="environment_lock",
+                    code="blocked_environment",
+                    message="需要提供已解析的基础镜像 sha256 digest；镜像 tag 会漂移，不能进入不可变环境锁。",
+                    retry_action="provide_base_image_digest",
+                    related_object_type="ResourceProbe",
+                    related_object_id=str(probe_record["resource_probe_id"]),
+                    related_object_digest=str(probe_record["probe_sha256"]),
+                    details={
+                        "detector": "base_image_digest_validator",
+                        "required": "sha256:<64 hex>",
+                        "observed": "missing",
+                        "retryable": True,
+                    },
+                )
+                return self.current_resource_feasibility(task_id)
+
+            accelerator_policy = probe_record["accelerator_policy"]
+            environment = EnvironmentLock.create(
+                source_snapshot_id=str(context["snapshot"]["snapshot_id"]),
+                platform_os="linux",
+                platform_arch=str(probe_record["arch"].get("name") or ""),
+                execution_backend=str(plan["execution_policy"]["backend"]),
+                base_image_digest=selected_digest,
+                packages=list(packages or []),
+                system_dependencies=(),
+                network_allowlist=plan["execution_policy"]["network_allowlist"],
+                detected_accelerators=accelerator_policy.get("detected") or (),
+                unusable_reason=str(accelerator_policy.get("unusable_reason") or ""),
+            )
+            environment_record = self.feasibility_store.append_environment_lock(
+                task_id, environment
+            )
+            report = evaluate_resource_fit(
+                training_plan_revision_id=str(plan["training_plan_revision_id"]),
+                training_plan_sha256=str(plan["plan_sha256"]),
+                resource_budget=plan["resource_budget"],
+                environment_lock=environment_record,
+                resource_probe=probe_record,
+            )
+            report_record = self.feasibility_store.append_resource_fit_report(
+                task_id, report
+            )
+            self.blocker_store.resolve_active_stage(
+                task_id,
+                "environment_lock",
+                action="environment_lock_created",
+                related_object_type="EnvironmentLock",
+                related_object_id=str(environment_record["environment_lock_id"]),
+            )
+            if report_record["decision"] == "fit":
+                self.blocker_store.resolve_active_stage(
+                    task_id,
+                    "resource_fit",
+                    action="resource_fit_confirmed",
+                    related_object_type="ResourceFitReport",
+                    related_object_id=str(report_record["resource_fit_report_id"]),
+                )
+            else:
+                self.blocker_store.append(
+                    task_id,
+                    stage="resource_fit",
+                    code=str(report_record["decision"]),
+                    message="当前训练计划超出这台机器或隔离环境的可用条件；请选择降级建议并创建新的计划 revision。",
+                    retry_action="create_revised_training_plan",
+                    related_object_type="ResourceFitReport",
+                    related_object_id=str(report_record["resource_fit_report_id"]),
+                    related_object_digest=str(report_record["report_sha256"]),
+                    details={
+                        "detector": "resource_fit_estimator",
+                        "reasons": report_record["reasons"],
+                        "alternatives": report_record["alternatives"],
+                        "retryable": True,
+                    },
+                )
+        return self.current_resource_feasibility(task_id)
 
     def archive_task(self, task_id: str) -> dict[str, Any]:
         """Soft-archive a task while preserving its task and run evidence."""
@@ -437,6 +1094,926 @@ class TrainingWorkspace:
             token=token,
         )
 
+    def model_source_provider_capabilities(self) -> list[dict[str, Any]]:
+        """Describe the providers that can resolve immutable model sources."""
+
+        return [
+            {
+                "provider": provider_id,
+                "search": "official_provider_api",
+                "resolution": "immutable_40_character_commit",
+                "analysis": "static_only_never_execute",
+                "token_policy": "ephemeral_request_header_only",
+            }
+            for provider_id in sorted(self.model_source_providers)
+        ]
+
+    def list_blockers(
+        self,
+        task_id: str,
+        *,
+        active_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        read_json(self._task_path(task_id))
+        return self.blocker_store.list(task_id, active_only=active_only)
+
+    def _record_model_source_blocker(
+        self,
+        task_id: str,
+        *,
+        stage: str,
+        error: Exception,
+        retry_action: str,
+        related_object_type: str | None = None,
+        related_object_id: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        code = str(error).strip() or error.__class__.__name__
+        code = re.sub(r"[^a-zA-Z0-9._:-]+", "_", code)[:120] or "unknown_error"
+        return self.blocker_store.append(
+            task_id,
+            stage=stage,
+            code=code,
+            message=_model_source_error_message(code),
+            retry_action=retry_action,
+            related_object_type=related_object_type,
+            related_object_id=related_object_id,
+            details=details,
+        )
+
+    def search_model_sources(
+        self,
+        task_id: str,
+        *,
+        query: str | None,
+        providers: list[str] | tuple[str, ...] | None,
+        limit_per_provider: int,
+        base_spec_revision: int,
+        tokens: dict[str, str | None] | None = None,
+    ) -> dict[str, Any]:
+        """Search official provider catalogs without downloading or executing code."""
+
+        if (
+            isinstance(limit_per_provider, bool)
+            or not isinstance(limit_per_provider, int)
+            or not 1 <= limit_per_provider <= 10
+        ):
+            raise ContractError("limit_per_provider必须在1到10之间")
+        requested_providers = tuple(
+            dict.fromkeys(
+                str(item).strip().lower()
+                for item in (providers or tuple(sorted(self.model_source_providers)))
+            )
+        )
+        if not requested_providers or any(
+            provider not in self.model_source_providers
+            for provider in requested_providers
+        ):
+            raise ContractError("搜索Provider必须是huggingface或github")
+        if (
+            isinstance(base_spec_revision, bool)
+            or not isinstance(base_spec_revision, int)
+            or base_spec_revision < 1
+        ):
+            raise ContractError("base_spec_revision必须是正整数")
+        with self._lock:
+            task = read_json(self._task_path(task_id))
+            if task.get("archived_at_utc"):
+                raise HarnessError("归档任务不能搜索新的模型来源")
+            if task.get("status") == "running":
+                raise HarnessError("运行中不能搜索新的模型来源")
+            spec = self._ensure_spec_revision(task)
+            if int(spec["revision"]) != base_spec_revision:
+                raise HarnessError(
+                    f"TaskSpec已更新到 revision {spec['revision']}，请刷新后重试"
+                )
+            if spec.get("capability_decision", {}).get("status") != "resolved":
+                raise HarnessError("请先确认任务理解，再搜索模型来源")
+            plan = _model_search_plan(task, query)
+
+        token_map = tokens or {}
+
+        def invoke(provider_id: str) -> tuple[str, tuple[dict[str, Any], ...]]:
+            provider = self.model_source_providers[provider_id]
+            search = getattr(provider, "search", None)
+            if not callable(search):
+                raise HarnessError(f"{provider_id}未提供官方目录搜索")
+            kwargs: dict[str, Any] = {
+                "limit": limit_per_provider,
+                "token": token_map.get(provider_id),
+            }
+            if provider_id == "huggingface":
+                kwargs["pipeline_tag"] = plan["pipeline_tag"]
+            return provider_id, tuple(search(plan["effective_query"], **kwargs))
+
+        candidates: list[dict[str, Any]] = []
+        provider_errors: list[dict[str, str]] = []
+        with ThreadPoolExecutor(max_workers=len(requested_providers)) as executor:
+            futures = {
+                executor.submit(invoke, provider_id): provider_id
+                for provider_id in requested_providers
+            }
+            for future in as_completed(futures):
+                provider_id = futures[future]
+                try:
+                    returned_provider, returned = future.result()
+                    if returned_provider != provider_id:
+                        raise HarnessError("模型搜索Provider返回不匹配")
+                    candidates.extend(
+                        _decorate_model_source_candidate(item) for item in returned
+                    )
+                except Exception as exc:
+                    if isinstance(exc, (ContractError, HarnessError)):
+                        reason = str(exc)
+                    else:
+                        reason = "provider_search_failed"
+                    provider_errors.append(
+                        {"provider": provider_id, "reason": reason, "retry": "retry_search"}
+                    )
+        candidates.sort(key=_rank_model_source_candidate)
+        search_record = self.model_source_store.create_search_record(
+            task_id,
+            base_spec_revision=base_spec_revision,
+            query_plan=plan,
+            providers=requested_providers,
+            candidates=candidates,
+            provider_errors=provider_errors,
+            auth_tokens=tuple(token_map.values()),
+        )
+        all_providers_failed = (
+            not candidates and len(provider_errors) == len(requested_providers)
+        )
+        if all_providers_failed:
+            reasons = ",".join(
+                f"{item['provider']}:{item['reason']}" for item in provider_errors
+            )
+            error = ModelSourceUpstreamError(
+                f"model_source_search_failed:{reasons}"
+            )
+            self._record_model_source_blocker(
+                task_id,
+                stage="source_discovery",
+                error=error,
+                retry_action="retry_model_source_search",
+                details={
+                    "providers": list(requested_providers),
+                    "search_id": search_record["search_id"],
+                },
+            )
+            raise error
+        self.blocker_store.resolve_active_stage(
+            task_id,
+            "source_discovery",
+            action="official_catalog_search_succeeded",
+            related_object_type="SourceSearchRecord",
+            related_object_id=str(search_record["search_id"]),
+        )
+        return {
+            "search_id": search_record["search_id"],
+            "task_id": task_id,
+            "base_spec_revision": base_spec_revision,
+            "query_plan": deepcopy(search_record["query_plan"]),
+            "providers": list(requested_providers),
+            "candidates": deepcopy(search_record["candidates"]),
+            "provider_errors": deepcopy(search_record["provider_errors"]),
+            "execution_policy": "catalog_metadata_only_no_download_no_execution",
+        }
+
+    def create_model_source_resolution(
+        self,
+        task_id: str,
+        *,
+        provider: str,
+        repository: str,
+        requested_revision: str | None,
+        base_spec_revision: int,
+        token: str | None = None,
+        selection_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve a mutable source reference without reading repository files."""
+
+        selected_provider = str(provider).strip().lower()
+        if selected_provider not in self.model_source_providers:
+            raise ContractError("未知模型来源Provider")
+        if (
+            isinstance(base_spec_revision, bool)
+            or not isinstance(base_spec_revision, int)
+            or base_spec_revision < 1
+        ):
+            raise ContractError("base_spec_revision必须是正整数")
+        with self._lock:
+            task = read_json(self._task_path(task_id))
+            if task.get("archived_at_utc"):
+                raise HarnessError("归档任务不能绑定新的模型来源")
+            if task.get("status") == "running":
+                raise HarnessError("运行中不能解析新的模型来源")
+            spec = self._ensure_spec_revision(task)
+            if int(spec["revision"]) != base_spec_revision:
+                raise HarnessError(
+                    f"TaskSpec已更新到 revision {spec['revision']}，请刷新后重试"
+                )
+            source_provider = self.model_source_providers[selected_provider]
+
+        try:
+            resolved = source_provider.resolve(
+                repository,
+                requested_revision,
+                token=token,
+            )
+        except ModelSourceError as error:
+            self._record_model_source_blocker(
+                task_id,
+                stage="source_resolution",
+                error=error,
+                retry_action="edit_or_retry_model_source",
+                details={
+                    "provider": selected_provider,
+                    "repository": str(repository)[:200],
+                },
+            )
+            raise
+        if resolved.provider != selected_provider:
+            raise HarnessError("模型来源Provider返回了不匹配的来源")
+
+        with self._lock:
+            task = read_json(self._task_path(task_id))
+            current_spec = self._ensure_spec_revision(task)
+            if int(current_spec["revision"]) != base_spec_revision:
+                raise HarnessError(
+                    f"TaskSpec已更新到 revision {current_spec['revision']}，来源未保存"
+                )
+            resolution = self.model_source_store.create_resolution(
+                task_id,
+                provider=resolved.provider,
+                repository=resolved.repository,
+                requested_revision=resolved.requested_revision,
+                resolved_commit=resolved.resolved_commit,
+                source_uri=(
+                    f"https://github.com/{resolved.repository}"
+                    if resolved.provider == "github"
+                    else f"https://huggingface.co/{resolved.repository}"
+                ),
+                details={
+                    "base_spec_revision": base_spec_revision,
+                    "license": resolved.license,
+                    "license_status": resolved.license_status,
+                    "tree_reference": resolved.tree_reference,
+                    "provider_metadata": dict(resolved.metadata),
+                    "selection_context": deepcopy(selection_context or {"origin": "manual"}),
+                },
+                auth_token=token,
+            )
+            self.blocker_store.resolve_active_stage(
+                task_id,
+                "source_resolution",
+                action="source_resolution_succeeded",
+                related_object_type="SourceResolution",
+                related_object_id=str(resolution["resolution_id"]),
+            )
+        return {"resolution": resolution}
+
+    def create_model_source_resolution_from_reference(
+        self,
+        task_id: str,
+        *,
+        source_reference: str,
+        provider_hint: str | None,
+        requested_revision: str | None,
+        base_spec_revision: int,
+        token: str | None = None,
+    ) -> dict[str, Any]:
+        parsed = parse_model_source_reference(
+            source_reference,
+            provider_hint=provider_hint,
+        )
+        selected_revision = requested_revision or parsed["requested_revision"]
+        return self.create_model_source_resolution(
+            task_id,
+            provider=parsed["provider"],
+            repository=parsed["repository"],
+            requested_revision=selected_revision,
+            base_spec_revision=base_spec_revision,
+            token=token,
+            selection_context={
+                "origin": "manual_reference",
+                "source_reference_host": (
+                    "github.com"
+                    if parsed["provider"] == "github"
+                    else "huggingface.co"
+                ),
+            },
+        )
+
+    def confirm_model_source_candidate(
+        self,
+        task_id: str,
+        *,
+        search_id: str,
+        candidate_id: str,
+        approval_confirmed: bool,
+        base_spec_revision: int,
+        tokens: dict[str, str | None] | None = None,
+    ) -> dict[str, Any]:
+        if approval_confirmed is not True:
+            raise HarnessError("选择模型来源需要明确确认")
+        search_record = self.model_source_store.get_search_record(task_id, search_id)
+        if search_record.get("base_spec_revision") != base_spec_revision:
+            raise HarnessError("搜索结果基于过期的TaskSpec，请重新搜索")
+        candidate = next(
+            (
+                item
+                for item in search_record.get("candidates", [])
+                if item.get("candidate_id") == candidate_id
+            ),
+            None,
+        )
+        if not isinstance(candidate, dict):
+            raise ContractError("候选模型不属于该搜索记录")
+        provider = str(candidate.get("provider") or "").strip().lower()
+        repository = str(candidate.get("repository") or "").strip()
+        requested_revision = str(
+            candidate.get("requested_revision") or "main"
+        ).strip()
+        supplied_candidate_id = str(candidate.get("candidate_id") or "").strip()
+        expected_candidate_id = source_candidate_id(
+            provider, repository, requested_revision
+        )
+        if supplied_candidate_id != expected_candidate_id:
+            raise ContractError("候选模型标识已变化，请重新搜索")
+        query_plan = search_record.get("query_plan", {})
+        selected_query = str(
+            query_plan.get("user_query") or query_plan.get("effective_query") or ""
+        ).strip()
+        token = (tokens or {}).get(provider)
+        return self.create_model_source_resolution(
+            task_id,
+            provider=provider,
+            repository=repository,
+            requested_revision=requested_revision,
+            base_spec_revision=base_spec_revision,
+            token=token,
+            selection_context={
+                "origin": "official_catalog_search",
+                "search_id": str(search_record["search_id"]),
+                "search_digest": str(search_record["content_digest"]),
+                "candidate_id": expected_candidate_id,
+                "search_query": selected_query or None,
+                "catalog_evidence": str(
+                    candidate.get("catalog_evidence") or "official_provider_api"
+                )[:120],
+                "approved": True,
+            },
+        )
+
+    def get_model_source_resolution(
+        self,
+        task_id: str,
+        resolution_id: str,
+    ) -> dict[str, Any]:
+        read_json(self._task_path(task_id))
+        return self.model_source_store.get_resolution(task_id, resolution_id)
+
+    def list_model_source_searches(self, task_id: str) -> list[dict[str, Any]]:
+        read_json(self._task_path(task_id))
+        return self.model_source_store.list_search_records(task_id)
+
+    def list_model_source_resolutions(self, task_id: str) -> list[dict[str, Any]]:
+        read_json(self._task_path(task_id))
+        return self.model_source_store.list_resolutions(task_id)
+
+    def queue_model_source_binding(
+        self,
+        task_id: str,
+        resolution_id: str,
+        *,
+        approval_confirmed: bool,
+        expected_resolved_commit: str,
+        base_spec_revision: int,
+        token: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist a binding/analysis attempt before any remote source read."""
+
+        if approval_confirmed is not True:
+            raise HarnessError("绑定模型来源需要明确批准")
+        expected_commit = str(expected_resolved_commit).strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", expected_commit):
+            raise ContractError("expected_resolved_commit必须是40位commit")
+        if (
+            isinstance(base_spec_revision, bool)
+            or not isinstance(base_spec_revision, int)
+            or base_spec_revision < 1
+        ):
+            raise ContractError("base_spec_revision必须是正整数")
+
+        with self._lock:
+            task = read_json(self._task_path(task_id))
+            if task.get("archived_at_utc"):
+                raise HarnessError("归档任务不能绑定新的模型来源")
+            if task.get("status") == "running":
+                raise HarnessError("运行中不能更换模型来源")
+            spec = self._ensure_spec_revision(task)
+            if int(spec["revision"]) != base_spec_revision:
+                raise HarnessError(
+                    f"TaskSpec已更新到 revision {spec['revision']}，请刷新后重试"
+                )
+            resolution = self.model_source_store.get_resolution(
+                task_id, resolution_id
+            )
+            if resolution["resolved_commit"] != expected_commit:
+                raise HarnessError("批准的commit与已解析来源不一致")
+            if resolution.get("details", {}).get(
+                "base_spec_revision"
+            ) != base_spec_revision:
+                raise HarnessError("来源解析基于过期的TaskSpec")
+            if str(resolution["provider"]) not in self.model_source_providers:
+                raise ContractError("模型来源Provider当前不可用")
+            if self._binding_executor_closed:
+                raise HarnessError("模型绑定后台执行器已停止")
+            attempt = self.binding_analysis_attempt_store.create_attempt(
+                task_id,
+                resolution_id=resolution_id,
+                resolution_digest=str(resolution["content_digest"]),
+                expected_resolved_commit=expected_commit,
+                base_spec_revision=base_spec_revision,
+            )
+            attempt_id = str(attempt["attempt"]["attempt_id"])
+            if (
+                attempt["current_state"]["status"] == "queued"
+                and attempt_id not in self._binding_futures
+            ):
+                future = self._binding_executor.submit(
+                    self._execute_model_source_binding_attempt,
+                    task_id,
+                    attempt_id,
+                    resolution_id,
+                    expected_commit,
+                    base_spec_revision,
+                    token,
+                )
+                self._binding_futures[attempt_id] = future
+                future.add_done_callback(
+                    lambda _future, selected_id=attempt_id: self._forget_binding_future(
+                        selected_id, _future
+                    )
+                )
+        return deepcopy(attempt)
+
+    def get_model_binding_attempt(
+        self, task_id: str, attempt_id: str
+    ) -> dict[str, Any]:
+        read_json(self._task_path(task_id))
+        return self.binding_analysis_attempt_store.get_attempt(task_id, attempt_id)
+
+    def current_model_binding_attempt(
+        self, task_id: str
+    ) -> dict[str, Any] | None:
+        read_json(self._task_path(task_id))
+        return self.binding_analysis_attempt_store.current_attempt(task_id)
+
+    def list_model_binding_attempts(self, task_id: str) -> list[dict[str, Any]]:
+        read_json(self._task_path(task_id))
+        return [
+            self.binding_analysis_attempt_store.get_attempt(
+                task_id, str(item["attempt_id"])
+            )
+            for item in self.binding_analysis_attempt_store.list_attempts(task_id)
+        ]
+
+    def _execute_model_source_binding_attempt(
+        self,
+        task_id: str,
+        attempt_id: str,
+        resolution_id: str,
+        expected_commit: str,
+        base_spec_revision: int,
+        token: str | None,
+    ) -> None:
+        try:
+            current = self.binding_analysis_attempt_store.get_attempt(
+                task_id, attempt_id
+            )
+            if current["current_state"]["status"] != "queued":
+                return
+            self.binding_analysis_attempt_store.mark_running(task_id, attempt_id)
+            result = self.bind_model_source(
+                task_id,
+                resolution_id,
+                approval_confirmed=True,
+                expected_resolved_commit=expected_commit,
+                base_spec_revision=base_spec_revision,
+                token=token,
+            )
+            binding = result["binding"]
+            analysis = result["analysis"]
+            self.binding_analysis_attempt_store.complete(
+                task_id,
+                attempt_id,
+                result={
+                    "binding_revision_id": binding["binding_revision_id"],
+                    "resolution_id": binding["resolution_id"],
+                    "snapshot_id": binding["snapshot_id"],
+                    "analysis_id": analysis["analysis_id"],
+                    "binding_status": binding["status"],
+                },
+            )
+        except Exception as error:
+            try:
+                attempt = self.binding_analysis_attempt_store.get_attempt(
+                    task_id, attempt_id
+                )
+                if attempt["current_state"]["status"] in {"queued", "running"}:
+                    raw_message = " ".join(str(error).split()) or error.__class__.__name__
+                    if token:
+                        raw_message = raw_message.replace(token, "[REDACTED]")
+                    safe_code = re.sub(
+                        r"[^a-z0-9._:-]+",
+                        "_",
+                        error.__class__.__name__.lower(),
+                    )[:160]
+                    self.binding_analysis_attempt_store.fail(
+                        task_id,
+                        attempt_id,
+                        stage="binding_and_repository_analysis",
+                        code=safe_code or "binding_analysis_failed",
+                        message=raw_message[:1000],
+                        retryable=isinstance(
+                            error, (ModelSourceError, RepositoryAnalysisError)
+                        ),
+                        details={
+                            "resolution_id": resolution_id,
+                            "expected_resolved_commit": expected_commit,
+                        },
+                    )
+            except Exception:
+                # The original immutable attempt and any already-written state
+                # remain the recovery source even if failure projection itself
+                # cannot be appended because of an integrity violation.
+                return
+
+    def _forget_binding_future(self, attempt_id: str, future: Any) -> None:
+        with self._lock:
+            if self._binding_futures.get(attempt_id) is future:
+                self._binding_futures.pop(attempt_id, None)
+
+    def bind_model_source(
+        self,
+        task_id: str,
+        resolution_id: str,
+        *,
+        approval_confirmed: bool,
+        expected_resolved_commit: str,
+        base_spec_revision: int,
+        token: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a static source snapshot and atomically bind it to a task."""
+
+        if approval_confirmed is not True:
+            raise HarnessError("绑定模型来源需要明确批准")
+        expected_commit = str(expected_resolved_commit).strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", expected_commit):
+            raise ContractError("expected_resolved_commit必须是40位commit")
+        if (
+            isinstance(base_spec_revision, bool)
+            or not isinstance(base_spec_revision, int)
+            or base_spec_revision < 1
+        ):
+            raise ContractError("base_spec_revision必须是正整数")
+
+        with self._lock:
+            task = read_json(self._task_path(task_id))
+            if task.get("archived_at_utc"):
+                raise HarnessError("归档任务不能绑定新的模型来源")
+            if task.get("status") == "running":
+                raise HarnessError("运行中不能更换模型来源")
+            spec = self._ensure_spec_revision(task)
+            if int(spec["revision"]) != base_spec_revision:
+                raise HarnessError(
+                    f"TaskSpec已更新到 revision {spec['revision']}，请刷新后重试"
+                )
+            resolution = self.model_source_store.get_resolution(
+                task_id, resolution_id
+            )
+            if resolution["resolved_commit"] != expected_commit:
+                raise HarnessError("批准的commit与已解析来源不一致")
+            resolution_base = resolution.get("details", {}).get(
+                "base_spec_revision"
+            )
+            if resolution_base != base_spec_revision:
+                raise HarnessError("来源解析基于过期的TaskSpec")
+            provider_id = str(resolution["provider"])
+            source_provider = self.model_source_providers.get(provider_id)
+            if source_provider is None:
+                raise ContractError("模型来源Provider当前不可用")
+            current = self.model_source_store.current_binding(task_id)
+            if (
+                current is not None
+                and current.get("resolution_id") == resolution_id
+                and task.get("current_model_binding_revision_id")
+                == current.get("binding_revision_id")
+                and not task.get("model_binding_stale_for_spec_revision")
+            ):
+                context = self.model_source_store.binding_context(
+                    task_id, str(current["binding_revision_id"])
+                )
+                assert context is not None
+                return {
+                    "task": self.get_task(task_id),
+                    "binding": self._model_binding_projection(
+                        task, current, context, current_binding_id=str(current["binding_revision_id"])
+                    ),
+                    "analysis": deepcopy(context["analysis"]["analysis"]),
+                }
+            details = resolution.get("details", {})
+            resolved_source = ResolvedSource(
+                provider=provider_id,
+                repository=str(resolution["repository"]),
+                requested_revision=str(resolution["requested_revision"]),
+                resolved_commit=str(resolution["resolved_commit"]),
+                license=str(details.get("license") or "unknown"),
+                license_status=str(details.get("license_status") or "unknown"),
+                tree_reference=(
+                    str(details["tree_reference"])
+                    if details.get("tree_reference") is not None
+                    else None
+                ),
+                metadata=(
+                    deepcopy(details["provider_metadata"])
+                    if isinstance(details.get("provider_metadata"), dict)
+                    else {}
+                ),
+            )
+
+        try:
+            files = source_provider.list_tree(resolved_source, token=token)
+            documents = collect_source_documents(
+                source_provider,
+                resolved_source,
+                files,
+                token=token,
+            )
+        except ModelSourceError as error:
+            self._record_model_source_blocker(
+                task_id,
+                stage="source_snapshot",
+                error=error,
+                retry_action="retry_model_source_binding",
+                related_object_type="SourceResolution",
+                related_object_id=resolution_id,
+                details={
+                    "provider": resolved_source.provider,
+                    "repository": resolved_source.repository,
+                    "resolved_commit": resolved_source.resolved_commit,
+                },
+            )
+            raise
+
+        with self._lock:
+            task = read_json(self._task_path(task_id))
+            current_spec = self._ensure_spec_revision(task)
+            if int(current_spec["revision"]) != base_spec_revision:
+                raise HarnessError(
+                    f"TaskSpec已更新到 revision {current_spec['revision']}，来源未绑定"
+                )
+            resolution = self.model_source_store.get_resolution(
+                task_id, resolution_id
+            )
+            if resolution["resolved_commit"] != expected_commit:
+                raise HarnessError("来源commit在绑定前发生变化")
+            snapshot = self.model_source_store.create_snapshot(
+                task_id,
+                resolution_id=resolution_id,
+                files=files,
+                documents=documents,
+                license=resolved_source.license,
+                license_status=resolved_source.license_status,
+                details={"collection_policy": "bounded_static_documents_v1"},
+            )
+            source_snapshot = self.model_source_store.load_source_snapshot(
+                task_id, str(snapshot["snapshot_id"])
+            )
+            current_attempt = self.repository_analysis_store.current_attempt(
+                task_id, str(snapshot["snapshot_id"])
+            )
+            if current_attempt is None:
+                analysis_attempt = self.repository_analysis_store.create_attempt(
+                    task_id,
+                    snapshot_id=str(snapshot["snapshot_id"]),
+                    snapshot_digest=str(snapshot["content_digest"]),
+                    analyzer_version=ANALYZER_VERSION,
+                )
+            elif current_attempt["current_state"]["status"] == "completed":
+                analysis_attempt = current_attempt
+            else:
+                current_status = current_attempt["current_state"]["status"]
+                if current_status in {"queued", "running"}:
+                    if current_status == "queued":
+                        self.repository_analysis_store.mark_running(
+                            task_id,
+                            str(current_attempt["attempt"]["attempt_id"]),
+                        )
+                    self.repository_analysis_store.fail(
+                        task_id,
+                        str(current_attempt["attempt"]["attempt_id"]),
+                        stage="static_repository_analysis",
+                        code="interrupted_analysis_attempt",
+                        message="上一轮静态分析未形成终态，已保留并创建重试 attempt。",
+                        retryable=True,
+                        details={"previous_status": current_status},
+                    )
+                analysis_attempt = self.repository_analysis_store.retry(
+                    task_id, str(current_attempt["attempt"]["attempt_id"])
+                )
+            attempt_status = analysis_attempt["current_state"]["status"]
+            if attempt_status == "queued":
+                self.repository_analysis_store.mark_running(
+                    task_id, str(analysis_attempt["attempt"]["attempt_id"])
+                )
+            try:
+                domain_analysis = self.repository_analyzer.analyze(source_snapshot)
+            except Exception as error:
+                error_code = re.sub(
+                    r"[^a-zA-Z0-9._:-]+", "_", str(error).strip()
+                )[:160] or error.__class__.__name__
+                if analysis_attempt["current_state"]["status"] != "completed":
+                    self.repository_analysis_store.fail(
+                        task_id,
+                        str(analysis_attempt["attempt"]["attempt_id"]),
+                        stage="static_repository_analysis",
+                        code=error_code,
+                        message=str(error)[:1000] or "repository analysis failed",
+                        retryable=isinstance(
+                            error, (RepositoryAnalysisError, ModelSourceError)
+                        ),
+                        details={"snapshot_id": str(snapshot["snapshot_id"])},
+                    )
+                if isinstance(error, (RepositoryAnalysisError, ModelSourceError)):
+                    self._record_model_source_blocker(
+                        task_id,
+                        stage="repository_analysis",
+                        error=error,
+                        retry_action="review_or_retry_repository_analysis",
+                        related_object_type="SourceSnapshot",
+                        related_object_id=str(snapshot["snapshot_id"]),
+                    )
+                raise
+            if analysis_attempt["current_state"]["status"] == "completed":
+                persisted_analysis = (
+                    analysis_attempt["current_state"].get("result") or {}
+                ).get("analysis")
+                if persisted_analysis != domain_analysis.to_dict():
+                    raise HarnessError(
+                        "同一来源快照的静态分析结果发生漂移，请创建新的 analyzer 版本"
+                    )
+            else:
+                self.repository_analysis_store.complete(
+                    task_id,
+                    str(analysis_attempt["attempt"]["attempt_id"]),
+                    analysis=domain_analysis.to_dict(),
+                )
+            analysis_record = self.model_source_store.create_analysis(
+                task_id,
+                snapshot_id=str(snapshot["snapshot_id"]),
+                analysis=domain_analysis,
+            )
+            if domain_analysis.downstream_blockers:
+                policy = dict(source_snapshot.license_policy) or _license_policy(
+                    source_snapshot.license, source_snapshot.license_status
+                )
+                downstream = domain_analysis.downstream_blockers[0]
+                self.blocker_store.append(
+                    task_id,
+                    stage="training_plan",
+                    code="blocked_license",
+                    message=downstream.message,
+                    retry_action="review_model_source_license",
+                    related_object_type="SourceSnapshot",
+                    related_object_id=str(snapshot["snapshot_id"]),
+                    related_object_digest=str(snapshot["content_digest"]),
+                    details={
+                        "policy": policy,
+                        "downstream_code": downstream.code,
+                        "evidence_refs": list(downstream.evidence_refs),
+                    },
+                )
+            current = self.model_source_store.current_binding(task_id)
+            base_binding_revision = int(current["revision"]) if current else 0
+            intent = self.model_source_store.prepare_binding_intent(
+                task_id,
+                snapshot_id=str(snapshot["snapshot_id"]),
+                analysis_id=str(analysis_record["analysis_id"]),
+                idempotency_key=(
+                    f"{task_id}:{base_spec_revision}:{resolution_id}:"
+                    f"{snapshot['content_digest']}:{analysis_record['content_digest']}"
+                ),
+                base_spec_revision=base_spec_revision,
+                base_binding_revision=base_binding_revision,
+            )
+            binding = self.model_source_store.commit_binding_intent(
+                task_id,
+                str(intent["intent_id"]),
+                expected_intent_digest=str(intent["content_digest"]),
+                current_spec_revision=base_spec_revision,
+            )
+            self._activate_model_binding_on_task(
+                task,
+                binding,
+                bound_spec_revision=base_spec_revision,
+            )
+            write_json(self._task_path(task_id), task)
+            context = self.model_source_store.binding_context(
+                task_id, str(binding["binding_revision_id"])
+            )
+            assert context is not None
+            binding_view = self._model_binding_projection(
+                task,
+                binding,
+                context,
+                current_binding_id=str(binding["binding_revision_id"]),
+            )
+            self.blocker_store.resolve_active_stage(
+                task_id,
+                "source_snapshot",
+                action="source_snapshot_created",
+                related_object_type="SourceSnapshot",
+                related_object_id=str(snapshot["snapshot_id"]),
+            )
+            self.blocker_store.resolve_active_stage(
+                task_id,
+                "repository_analysis",
+                action="repository_analysis_completed",
+                related_object_type="RepositoryAnalysis",
+                related_object_id=str(analysis_record["analysis_id"]),
+            )
+        return {
+            "task": self.get_task(task_id),
+            "binding": binding_view,
+            "analysis": deepcopy(analysis_record["analysis"]),
+        }
+
+    def list_model_bindings(self, task_id: str) -> list[dict[str, Any]]:
+        task = read_json(self._task_path(task_id))
+        current = self.model_source_store.current_binding(task_id)
+        current_id = str(current["binding_revision_id"]) if current else None
+        bindings: list[dict[str, Any]] = []
+        for binding in self.model_source_store.list_binding_revisions(task_id):
+            context = self.model_source_store.binding_context(
+                task_id, str(binding["binding_revision_id"])
+            )
+            assert context is not None
+            bindings.append(
+                self._model_binding_projection(
+                    task,
+                    binding,
+                    context,
+                    current_binding_id=current_id,
+                )
+            )
+        return bindings
+
+    def current_model_binding(self, task_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            task = read_json(self._task_path(task_id))
+            binding = self.model_source_store.current_binding(task_id)
+            if binding is None:
+                return None
+            if task.get("current_model_binding_revision_id") != binding.get(
+                "binding_revision_id"
+            ):
+                context = self.model_source_store.binding_context(
+                    task_id, str(binding["binding_revision_id"])
+                )
+                assert context is not None
+                bound_spec_revision = int(
+                    context["resolution"].get("details", {}).get(
+                        "base_spec_revision", 0
+                    )
+                )
+                self._activate_model_binding_on_task(
+                    task,
+                    binding,
+                    bound_spec_revision=bound_spec_revision,
+                )
+                write_json(self._task_path(task_id), task)
+            context = self.model_source_store.binding_context(
+                task_id, str(binding["binding_revision_id"])
+            )
+            assert context is not None
+            return self._model_binding_projection(
+                task,
+                binding,
+                context,
+                current_binding_id=str(binding["binding_revision_id"]),
+            )
+
+    def get_repository_analysis(
+        self,
+        task_id: str,
+        analysis_id: str,
+    ) -> dict[str, Any]:
+        read_json(self._task_path(task_id))
+        record = self.model_source_store.get_analysis(task_id, analysis_id)
+        return deepcopy(record["analysis"])
+
     def attach_huggingface_model(
         self,
         task_id: str,
@@ -453,6 +2030,10 @@ class TrainingWorkspace:
             spec = self._ensure_spec_revision(task)
             if task.get("status") == "running":
                 raise HarnessError("运行中不能更换模型资产")
+            if self.model_source_store.current_binding(task_id) is not None:
+                raise HarnessError(
+                    "任务已有通用模型来源绑定；请通过模型来源换绑流程更新，不能并行维护第二套来源"
+                )
             capability = spec.get("capability_request", {})
             if capability.get("modality") != "image" or capability.get("objective") != "classification":
                 raise HarnessError("当前HF ONNX资产绑定仅支持图片分类任务")
@@ -955,6 +2536,23 @@ class TrainingWorkspace:
             template["dataset"].update(imported.contract_dataset)
             if task.get("model_asset_binding"):
                 template["model_asset"] = deepcopy(task["model_asset_binding"])
+            current_binding = self.model_source_store.current_binding(task_id)
+            if current_binding is not None:
+                binding_context = self.model_source_store.binding_context(
+                    task_id, str(current_binding["binding_revision_id"])
+                )
+                assert binding_context is not None
+                binding_view = self._model_binding_projection(
+                    task,
+                    current_binding,
+                    binding_context,
+                    current_binding_id=str(current_binding["binding_revision_id"]),
+                )
+                if binding_view["status"] != "active":
+                    raise HarnessError("模型来源绑定已失效，不能生成训练合同")
+                template["model_binding"] = self._contract_model_binding(
+                    binding_view
+                )
             task["dataset_id"] = report["dataset_id"]
             task["dataset_history"] = [*task.get("dataset_history", []), report["dataset_id"]]
             task["recipe_id"] = recipe_id
@@ -995,6 +2593,7 @@ class TrainingWorkspace:
                     raise ContractError("recipe_options必须是对象")
                 contract["recipe_options"].update(options)
             validate_contract(contract, registry=self.runs.registry)
+            self._assert_contract_model_binding_current(task, contract)
             task["contract_confirmed"] = False
             task["confirmations"] = {}
             task["confirmed_contract_sha256"] = None
@@ -1021,6 +2620,7 @@ class TrainingWorkspace:
                 raise HarnessError("请先导入数据集")
             contract = read_json(self._contract_path(task_id))
             validate_contract(contract, registry=self.runs.registry)
+            self._assert_contract_model_binding_current(task, contract)
             task["contract_confirmed"] = True
             task["confirmed_contract_sha256"] = sha256_file(self._contract_path(task_id))
             task["confirmations"] = {**{name: True for name in required}, "confirmed_at_utc": _utc_now()}
@@ -1052,6 +2652,7 @@ class TrainingWorkspace:
                 )
             contract = read_json(contract_path)
             validate_contract(contract, registry=self.runs.registry)
+            self._assert_contract_model_binding_current(task, contract)
             run_dir = self.runs.submit(contract)
             task["current_run_id"] = run_dir.name
             task["run_ids"] = [*task.get("run_ids", []), run_dir.name]
@@ -1285,6 +2886,217 @@ class TrainingWorkspace:
             raise FileNotFoundError("recipe scaffold not found")
         return target
 
+    def _restore_model_binding_task_projections(self) -> None:
+        """Finish any explicitly committed binding after a process restart."""
+
+        for task_path in sorted(self.tasks_dir.glob("*/task.json")):
+            task_id = task_path.parent.name
+            pointer_path = task_path.parent / "model_sources" / "current_binding.json"
+            if not pointer_path.is_file():
+                continue
+            task = read_json(task_path)
+            binding = self.model_source_store.current_binding(task_id)
+            if binding is None or task.get(
+                "current_model_binding_revision_id"
+            ) == binding.get("binding_revision_id"):
+                continue
+            context = self.model_source_store.binding_context(
+                task_id, str(binding["binding_revision_id"])
+            )
+            if context is None:
+                continue
+            bound_spec_revision = int(
+                context["resolution"].get("details", {}).get(
+                    "base_spec_revision", 0
+                )
+            )
+            self._activate_model_binding_on_task(
+                task,
+                binding,
+                bound_spec_revision=bound_spec_revision,
+            )
+            write_json(task_path, task)
+
+    def _recover_model_binding_commits(self) -> None:
+        def current_spec_revision(task_id: str) -> int:
+            task = read_json(self._task_path(task_id))
+            return int(self._ensure_spec_revision(task)["revision"])
+
+        self.model_source_store.recover_pending_commits(
+            resolve_spec_revision=current_spec_revision
+        )
+
+    def _activate_model_binding_on_task(
+        self,
+        task: dict[str, Any],
+        binding: dict[str, Any],
+        *,
+        bound_spec_revision: int,
+    ) -> None:
+        """Activate a binding while preserving historical data and Run evidence."""
+
+        binding_id = str(binding["binding_revision_id"])
+        previous_binding = task.get("current_model_binding_revision_id")
+        if previous_binding and previous_binding != binding_id:
+            task["last_model_binding_revision_id"] = previous_binding
+        task["current_model_binding_revision_id"] = binding_id
+        task["model_binding_bound_spec_revision"] = bound_spec_revision
+        task["model_binding_stale_for_spec_revision"] = (
+            bound_spec_revision < 1
+            or int(task.get("current_spec_revision", 0) or 0)
+            != bound_spec_revision
+        )
+
+        task["contract_confirmed"] = False
+        task["confirmations"] = {}
+        task["confirmed_contract_sha256"] = None
+        task["contract_stale"] = True
+        if task.get("current_run_id"):
+            task["last_run_id"] = task["current_run_id"]
+            task["current_run_id"] = None
+
+        previous_recipe = task.get("recipe_id")
+        if previous_recipe:
+            task["last_recipe_id"] = previous_recipe
+        task["recipe_id"] = None
+        task["recipe_source"] = None
+        task["capability_status"] = "needs_recipe"
+        task["status"] = "needs_recipe"
+
+        selected_asset_id = task.get("selected_model_asset_id")
+        if selected_asset_id:
+            task["last_model_asset_id"] = selected_asset_id
+        task["selected_model_asset_id"] = None
+        task["model_asset_binding"] = None
+        task["updated_at_utc"] = _utc_now()
+        write_json(
+            self._recipe_request_path(str(task["task_id"])),
+            self._new_recipe_request(
+                str(task["task_id"]),
+                deepcopy(task.get("capability_request", {})),
+            ),
+        )
+
+    @staticmethod
+    def _model_binding_projection(
+        task: dict[str, Any],
+        binding: dict[str, Any],
+        context: dict[str, Any],
+        *,
+        current_binding_id: str | None,
+    ) -> dict[str, Any]:
+        resolution = context["resolution"]
+        snapshot = context["snapshot"]
+        analysis_record = context["analysis"]
+        analysis = analysis_record["analysis"]
+        bound_spec_revision = int(
+            resolution.get("details", {}).get("base_spec_revision", 0)
+        )
+        current_spec_revision = int(task.get("current_spec_revision", 0) or 0)
+        binding_id = str(binding["binding_revision_id"])
+        if current_binding_id != binding_id:
+            status = "superseded"
+        elif (
+            bound_spec_revision != current_spec_revision
+            or task.get("model_binding_stale_for_spec_revision") is True
+        ):
+            status = "stale"
+        else:
+            status = "active"
+        files = sorted(
+            (deepcopy(item) for item in snapshot.get("files", [])),
+            key=lambda item: str(item.get("path") or ""),
+        )
+        known_sizes = [
+            int(item["size_bytes"])
+            for item in files
+            if isinstance(item.get("size_bytes"), int)
+            and not isinstance(item.get("size_bytes"), bool)
+            and int(item["size_bytes"]) >= 0
+        ]
+        remote_code_files = [
+            str(item.get("path"))
+            for item in files
+            if item.get("kind") == "executable"
+            or str(item.get("path", "")).lower().endswith(
+                (".py", ".sh", ".bash", ".zsh", ".ps1")
+            )
+        ]
+        snapshot_summary = {
+            "file_count": len(files),
+            "known_size_bytes": sum(known_sizes),
+            "unknown_size_count": len(files) - len(known_sizes),
+            "size_semantics": (
+                "git_tree_blob_bytes_lfs_may_be_additional"
+                if resolution["provider"] == "github"
+                else "provider_declared_file_bytes"
+            ),
+            "manifest_sha256": snapshot["tree_manifest_sha256"],
+            "file_preview": files[:20],
+            "file_preview_truncated": len(files) > 20,
+            "remote_code": {
+                "declared": bool(remote_code_files),
+                "file_count": len(remote_code_files),
+                "file_preview": remote_code_files[:12],
+                "execution_policy": "static_only_never_execute",
+            },
+        }
+        return {
+            **deepcopy(binding),
+            "status": status,
+            "bound_spec_revision": bound_spec_revision,
+            "current_spec_revision": current_spec_revision,
+            "provider": resolution["provider"],
+            "repository": resolution["repository"],
+            "requested_revision": resolution["requested_revision"],
+            "resolved_commit": resolution["resolved_commit"],
+            "license": snapshot["license"],
+            "license_status": snapshot["license_status"],
+            "license_policy": deepcopy(
+                dict(snapshot.get("details", {}).get("license_policy") or {})
+            )
+            or _license_policy(
+                str(snapshot["license"]), str(snapshot["license_status"])
+            ),
+            "tree_manifest_sha256": snapshot["tree_manifest_sha256"],
+            "snapshot_summary": snapshot_summary,
+            "analysis_status": analysis["status"],
+            "analysis_next_action": analysis["next_action"],
+            "execution_policy": snapshot["execution_policy"],
+        }
+
+    @staticmethod
+    def _contract_model_binding(binding: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "model_binding_revision_id": binding["binding_revision_id"],
+            "binding_digest": binding["content_digest"],
+            "source_snapshot_id": binding["snapshot_id"],
+            "source_snapshot_digest": binding["snapshot_digest"],
+            "repository_analysis_id": binding["analysis_id"],
+            "repository_analysis_digest": binding["analysis_digest"],
+            "provider": binding["provider"],
+            "repository": binding["repository"],
+            "resolved_commit": binding["resolved_commit"],
+            "tree_manifest_sha256": binding["tree_manifest_sha256"],
+            "bound_spec_revision": binding["bound_spec_revision"],
+        }
+
+    def _assert_contract_model_binding_current(
+        self,
+        task: dict[str, Any],
+        contract: dict[str, Any],
+    ) -> None:
+        if not task.get("current_model_binding_revision_id"):
+            return
+        binding = self.current_model_binding(str(task["task_id"]))
+        if binding is None:
+            raise HarnessError("当前模型来源绑定不可用")
+        if binding["status"] != "active":
+            raise HarnessError("模型来源绑定已因TaskSpec变化失效，请重新解析并批准")
+        expected = self._contract_model_binding(binding)
+        if contract.get("model_binding") != expected:
+            raise HarnessError("训练合同未冻结当前模型来源绑定，必须重新生成并确认")
+
     def _view(self, task: dict[str, Any]) -> dict[str, Any]:
         task = deepcopy(task)
         with self._lock:
@@ -1363,6 +3175,41 @@ class TrainingWorkspace:
         else:
             task["model_asset"] = None
             task["model_asset_verification"] = None
+        binding_attempt = self.binding_analysis_attempt_store.current_attempt(
+            task["task_id"]
+        )
+        task["model_binding_attempt"] = binding_attempt
+        current_binding = self.model_source_store.current_binding(task["task_id"])
+        if current_binding is not None:
+            binding_context = self.model_source_store.binding_context(
+                task["task_id"], str(current_binding["binding_revision_id"])
+            )
+            assert binding_context is not None
+            task["model_binding"] = self._model_binding_projection(
+                task,
+                current_binding,
+                binding_context,
+                current_binding_id=str(current_binding["binding_revision_id"]),
+            )
+            task["repository_analysis"] = deepcopy(
+                binding_context["analysis"]["analysis"]
+            )
+            task["repository_analysis_attempt"] = (
+                self.repository_analysis_store.current_attempt(
+                    task["task_id"], str(binding_context["snapshot"]["snapshot_id"])
+                )
+            )
+        else:
+            task["model_binding"] = None
+            task["repository_analysis"] = None
+            task["repository_analysis_attempt"] = binding_attempt
+        task["training_plan"] = self.current_training_plan(task["task_id"])
+        task["resource_feasibility"] = self.current_resource_feasibility(
+            task["task_id"]
+        )
+        task["blockers"] = self.blocker_store.list(
+            task["task_id"], active_only=True
+        )
         task["control"] = self._control_projection(
             task,
             current_spec,
@@ -1469,6 +3316,15 @@ class TrainingWorkspace:
                 task["selected_model_asset_id"] = None
                 task["model_asset_binding"] = None
 
+        current_model_binding_id = task.get("current_model_binding_revision_id")
+        if current_model_binding_id:
+            bound_spec_revision = int(
+                task.get("model_binding_bound_spec_revision", 0) or 0
+            )
+            task["model_binding_stale_for_spec_revision"] = (
+                bound_spec_revision != int(spec["revision"])
+            )
+
         decision_status = spec.get("capability_decision", {}).get("status")
         selected_recipe = None
         if decision_status == "resolved":
@@ -1488,6 +3344,7 @@ class TrainingWorkspace:
         )
         task["contract_confirmed"] = False
         task["confirmations"] = {}
+        task["confirmed_contract_sha256"] = None
         if task.get("current_run_id"):
             task["last_run_id"] = task["current_run_id"]
             task["current_run_id"] = None
@@ -1503,11 +3360,14 @@ class TrainingWorkspace:
             task["dataset_id"] = None
             task["data_adapter_id"] = None
         task["contract_stale"] = bool(
-            dataset_id
-            and (
-                not selected_recipe
-                or not compatible_dataset
-                or previous_recipe != selected_recipe
+            task.get("model_binding_stale_for_spec_revision")
+            or (
+                dataset_id
+                and (
+                    not selected_recipe
+                    or not compatible_dataset
+                    or previous_recipe != selected_recipe
+                )
             )
         )
 
@@ -1657,6 +3517,203 @@ class TrainingWorkspace:
                     f"/tasks/{task_id}/spec",
                 ),
             }
+        source_stages = {
+            "source_discovery",
+            "source_resolution",
+            "source_snapshot",
+            "repository_analysis",
+        }
+        source_blocker = next(
+            (
+                item
+                for item in task.get("blockers", [])
+                if item.get("active") is not False
+                and item.get("stage") in source_stages
+            ),
+            None,
+        )
+        if source_blocker is not None:
+            return {
+                "current_stage": str(source_blocker["stage"]),
+                "blocked_by": [
+                    {
+                        "code": str(source_blocker["code"]),
+                        "message": str(source_blocker["message"]),
+                        "blocker_id": str(source_blocker["blocker_id"]),
+                    }
+                ],
+                "next_action": self._next_action(
+                    str(source_blocker["retry_action"]),
+                    "处理模型来源阻断",
+                    "GET",
+                    f"/tasks/{task_id}/blockers?active_only=true",
+                ),
+            }
+        training_blocker = next(
+            (
+                item
+                for item in task.get("blockers", [])
+                if item.get("active") is not False
+                and item.get("stage") == "training_plan"
+            ),
+            None,
+        )
+        if training_blocker is not None:
+            return {
+                "current_stage": "training_plan",
+                "blocked_by": [
+                    {
+                        "code": str(training_blocker["code"]),
+                        "message": str(training_blocker["message"]),
+                        "blocker_id": str(training_blocker["blocker_id"]),
+                    }
+                ],
+                "next_action": self._next_action(
+                    str(training_blocker["retry_action"]),
+                    "处理训练计划阻断",
+                    "GET",
+                    f"/tasks/{task_id}/blockers?active_only=true",
+                ),
+            }
+        resource_blocker = next(
+            (
+                item
+                for item in task.get("blockers", [])
+                if item.get("active") is not False
+                and item.get("stage")
+                in {"resource_probe", "environment_lock", "resource_fit"}
+            ),
+            None,
+        )
+        if resource_blocker is not None:
+            return {
+                "current_stage": str(resource_blocker["stage"]),
+                "blocked_by": [
+                    {
+                        "code": str(resource_blocker["code"]),
+                        "message": str(resource_blocker["message"]),
+                        "blocker_id": str(resource_blocker["blocker_id"]),
+                    }
+                ],
+                "next_action": self._next_action(
+                    str(resource_blocker["retry_action"]),
+                    "查看资源事实并处理阻断",
+                    "GET",
+                    f"/tasks/{task_id}/resource-feasibility",
+                ),
+            }
+        model_binding = task.get("model_binding")
+        if isinstance(model_binding, dict):
+            if model_binding.get("status") == "stale":
+                return {
+                    "current_stage": "source_resolution",
+                    "blocked_by": [
+                        {
+                            "code": "model_binding_stale_for_task_spec",
+                            "message": "TaskSpec 已更新，需要为当前版本重新选择并批准模型来源",
+                        }
+                    ],
+                    "next_action": self._next_action(
+                        "replace_model_source",
+                        "重新选择模型来源",
+                        "POST",
+                        f"/tasks/{task_id}/model-source-searches",
+                    ),
+                }
+            training_plan = task.get("training_plan")
+            if isinstance(training_plan, dict):
+                if training_plan.get("stale") is True:
+                    return {
+                        "current_stage": "training_plan",
+                        "blocked_by": [
+                            {
+                                "code": "training_plan_stale",
+                                "message": "任务规格或模型来源已变化，需要创建并批准新的训练计划 revision",
+                            }
+                        ],
+                        "next_action": self._next_action(
+                            "revise_training_plan",
+                            "重新生成训练计划",
+                            "POST",
+                            f"/tasks/{task_id}/training-plans",
+                        ),
+                    }
+                if training_plan.get("effective_status") != "approved":
+                    return {
+                        "current_stage": "training_plan",
+                        "blocked_by": [
+                            {
+                                "code": "training_plan_approval_required",
+                                "message": "训练计划已经生成，必须批准当前显示的精确 digest 后才能检查资源",
+                            }
+                        ],
+                        "next_action": self._next_action(
+                            "approve_training_plan",
+                            "审阅并批准训练计划",
+                            "POST",
+                            f"/tasks/{task_id}/training-plans/{training_plan['plan']['training_plan_revision_id']}/decisions",
+                        ),
+                    }
+                feasibility = task.get("resource_feasibility") or {}
+                if feasibility.get("resource_fit_report"):
+                    return {
+                        "current_stage": "resource_fit",
+                        "blocked_by": [],
+                        "next_action": self._next_action(
+                            "review_resource_feasibility",
+                            "审阅本机可行性证据",
+                            "GET",
+                            f"/tasks/{task_id}/resource-feasibility",
+                        ),
+                    }
+                return {
+                    "current_stage": "resource_probe",
+                    "blocked_by": [],
+                    "next_action": self._next_action(
+                        "check_resource_feasibility",
+                        "检查这台机器能否训练",
+                        "POST",
+                        f"/tasks/{task_id}/resource-feasibility-checks",
+                    ),
+                }
+            return {
+                "current_stage": "repository_analysis",
+                "blocked_by": [],
+                "next_action": self._next_action(
+                    "create_training_plan",
+                    "审阅分析并生成训练计划",
+                    "POST",
+                    f"/tasks/{task_id}/training-plans",
+                ),
+            }
+        source_store = getattr(self, "model_source_store", None)
+        pending_resolutions = [
+            item
+            for item in (
+                source_store.list_resolutions(task_id)
+                if source_store is not None
+                else []
+            )
+            if item.get("details", {}).get("base_spec_revision")
+            == int(spec["revision"])
+        ]
+        if pending_resolutions:
+            selected = pending_resolutions[-1]
+            return {
+                "current_stage": "source_resolution",
+                "blocked_by": [
+                    {
+                        "code": "model_source_binding_approval_required",
+                        "message": "模型来源已解析为固定 commit，需要用户批准后才能读取仓库清单",
+                    }
+                ],
+                "next_action": self._next_action(
+                    "approve_model_source_binding",
+                    "检查并批准模型来源",
+                    "POST",
+                    f"/tasks/{task_id}/model-source-resolutions/{selected['resolution_id']}/bind",
+                ),
+            }
         if task.get("capability_status") == "needs_recipe":
             blocked_by.append(
                 {
@@ -1718,9 +3775,9 @@ class TrainingWorkspace:
                 "blocked_by": blocked_by,
                 "next_action": self._next_action(
                     "review_capability_gap",
-                    "查看缺失的训练能力",
-                    "GET",
-                    f"/tasks/{task_id}",
+                    "联网查找模型或训练仓库",
+                    "POST",
+                    f"/tasks/{task_id}/model-source-searches",
                 ),
             }
         if not task.get("dataset_id"):

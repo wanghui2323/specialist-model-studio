@@ -4,15 +4,10 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-import joblib
-import numpy as np
-
 from ..errors import ContractError
 from ..io_utils import read_json, sha256_file
 from ..model_assets import ModelAssetError
-from ..onnx_image_features import OnnxImageFeatureExtractor
 from ..plugin_api import RecipeManifest, StrategyProposal
-from . import image_folder_classification
 
 
 IMAGE_FOLDER_TEMPLATE: dict[str, Any] = {
@@ -177,6 +172,9 @@ class ImageFolderClassificationPlugin:
 
         model_asset = contract.get("model_asset")
         if model_asset is not None:
+            from ..onnx_image_features import OnnxImageFeatureExtractor
+            from . import image_folder_classification
+
             if not isinstance(model_asset, dict):
                 raise ContractError("model_asset must be an object")
             if model_asset.get("binding") != "image_classification_onnx_feature_v1":
@@ -191,12 +189,18 @@ class ImageFolderClassificationPlugin:
                 raise ContractError(f"model_asset verification failed: {exc}") from exc
 
     def train(self, contract: dict[str, Any]) -> Any:
+        from . import image_folder_classification
+
         return image_folder_classification.train(contract)
 
     def evaluate(self, training: Any, contract: dict[str, Any]) -> Any:
+        from . import image_folder_classification
+
         return image_folder_classification.evaluate(training, contract)
 
     def package(self, training: Any, evaluation: Any, contract: dict[str, Any], artifact_dir: Path) -> dict[str, Any]:
+        from . import image_folder_classification
+
         return image_folder_classification.package(training, evaluation, contract, artifact_dir)
 
     def propose_strategies(self, metrics: dict[str, Any], contract: dict[str, Any]) -> list[StrategyProposal]:
@@ -263,9 +267,14 @@ class ImageFolderClassificationPlugin:
         raise ContractError(f"strategy is not automatically actionable: {strategy_id}")
 
     def learning_report(self, contract: dict[str, Any], metrics: dict[str, Any], strategies: list[StrategyProposal]) -> str:
+        from . import image_folder_classification
+
         return image_folder_classification.learning_report(contract, metrics, strategies)
 
     def deep_verify(self, artifact_dir: Path) -> list[str]:
+        import joblib
+        import numpy as np
+
         errors: list[str] = []
         bundle = joblib.load(artifact_dir / "model.joblib")
         reference = np.load(artifact_dir / "test_reference.npz")

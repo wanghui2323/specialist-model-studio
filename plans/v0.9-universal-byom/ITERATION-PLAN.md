@@ -1,4 +1,4 @@
-# v0.9 Universal BYOM 迭代方案（纵向切片版）
+# Specialist Model Studio v0.9 Universal BYOM 迭代方案（纵向切片版）
 
 本文件是给**执行型 AI 编码代理**的施工单。设计已完成，代理只实现，不决定范围、门槛或架构。
 

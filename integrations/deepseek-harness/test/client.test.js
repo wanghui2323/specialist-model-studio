@@ -134,6 +134,141 @@ test("task lifecycle methods preserve canonical task routes and confirmations", 
   assert.equal(requests.at(-1).url, "/tasks/real-task-123/runs/parent-run/cancel");
 });
 
+test("conversation-native BYOM methods preserve revision, digest, and approval seams", async () => {
+  const client = new ModelHarnessClient(baseUrl);
+
+  await client.clarifyTaskSpec("voice-task", {
+    baseRevision: 1,
+    businessGoal: "我想把一段语音转成文字",
+    userNote: "用户补充了唯一输出",
+  });
+  assert.equal(requests.at(-1).url, "/tasks/voice-task/spec");
+  assert.deepEqual(JSON.parse(requests.at(-1).body), {
+    base_revision: 1,
+    business_goal: "我想把一段语音转成文字",
+    user_note: "用户补充了唯一输出",
+  });
+
+  await client.modelSourceProviders();
+  assert.equal(requests.at(-1).url, "/model-sources/providers");
+  await client.searchModelSources("voice-task", {
+    query: "wav2vec2 asr training",
+    providers: ["huggingface", "github"],
+    limitPerProvider: 3,
+    baseSpecRevision: 2,
+  });
+  assert.equal(requests.at(-1).url, "/tasks/voice-task/model-source-searches");
+  assert.deepEqual(JSON.parse(requests.at(-1).body), {
+    query: "wav2vec2 asr training",
+    providers: ["huggingface", "github"],
+    limit_per_provider: 3,
+    base_spec_revision: 2,
+  });
+  await client.listModelSourceSearches("voice-task");
+  assert.equal(requests.at(-1).url, "/tasks/voice-task/model-source-searches");
+
+  assert.throws(
+    () => client.selectModelSourceCandidate("voice-task", {
+      searchId: "search-1",
+      candidateId: "candidate-1",
+      baseSpecRevision: 2,
+      approvalConfirmed: false,
+    }),
+    /Explicit user approval/,
+  );
+  await client.selectModelSourceCandidate("voice-task", {
+    searchId: "search-1",
+    candidateId: "candidate-1",
+    baseSpecRevision: 2,
+    approvalConfirmed: true,
+  });
+  assert.equal(requests.at(-1).url, "/tasks/voice-task/model-source-selections");
+
+  await client.resolveModelSource("voice-task", {
+    sourceReference: "https://github.com/owner/trainer",
+    requestedRevision: "main",
+    baseSpecRevision: 2,
+  });
+  assert.equal(requests.at(-1).url, "/tasks/voice-task/model-source-resolutions");
+  await client.listModelSourceResolutions("voice-task");
+  assert.equal(requests.at(-1).url, "/tasks/voice-task/model-source-resolutions");
+
+  assert.throws(
+    () => client.bindModelSource("voice-task", "resolution-1", {
+      expectedResolvedCommit: "a".repeat(40),
+      baseSpecRevision: 2,
+      approvalConfirmed: false,
+    }),
+    /Explicit user approval/,
+  );
+  await client.bindModelSource("voice-task", "resolution-1", {
+    expectedResolvedCommit: "a".repeat(40),
+    baseSpecRevision: 2,
+    approvalConfirmed: true,
+  });
+  assert.equal(
+    requests.at(-1).url,
+    "/tasks/voice-task/model-source-resolutions/resolution-1/bind",
+  );
+  await client.listModelBindings("voice-task");
+  assert.equal(requests.at(-1).url, "/tasks/voice-task/model-bindings");
+  await client.repositoryAnalysis("voice-task", "analysis-1");
+  assert.equal(
+    requests.at(-1).url,
+    "/tasks/voice-task/repository-analyses/analysis-1",
+  );
+
+  await client.createTrainingPlan("voice-task", {
+    baseSpecRevision: 2,
+    entrypointPath: "train.py",
+    hyperparameters: { epochs: 3 },
+    resourceBudget: { max_ram_bytes: 1024 },
+  });
+  assert.equal(requests.at(-1).url, "/tasks/voice-task/training-plans");
+  await client.currentTrainingPlan("voice-task");
+  assert.equal(requests.at(-1).url, "/tasks/voice-task/training-plans/current");
+  await client.reviseTrainingPlan("voice-task", "plan-1", {
+    expectedParentSha256: "b".repeat(64),
+    baseSpecRevision: 2,
+    hyperparameters: { epochs: 5 },
+  });
+  assert.equal(
+    requests.at(-1).url,
+    "/tasks/voice-task/training-plans/plan-1/revisions",
+  );
+
+  assert.throws(
+    () => client.decideTrainingPlan("voice-task", "plan-2", {
+      expectedPlanSha256: "c".repeat(64),
+      decision: "approve",
+      approvalConfirmed: false,
+    }),
+    /Explicit user approval/,
+  );
+  await client.decideTrainingPlan("voice-task", "plan-2", {
+    expectedPlanSha256: "c".repeat(64),
+    decision: "approve",
+    reason: "用户核对了计划摘要",
+    approvalConfirmed: true,
+  });
+  assert.equal(
+    requests.at(-1).url,
+    "/tasks/voice-task/training-plans/plan-2/decisions",
+  );
+
+  await client.currentResourceFeasibility("voice-task");
+  assert.equal(requests.at(-1).url, "/tasks/voice-task/resource-feasibility");
+  await client.checkResourceFeasibility("voice-task", {
+    trainingPlanRevisionId: "plan-2",
+    expectedPlanSha256: "c".repeat(64),
+    packages: [{ name: "torch", version: "2.5.1" }],
+  });
+  assert.equal(
+    requests.at(-1).url,
+    "/tasks/voice-task/resource-feasibility-checks",
+  );
+});
+
 test("public projection strips host paths but preserves public API routes", () => {
   const localRoot = "/Users/local-user/private/runtime/task-one";
   const source = {
@@ -147,6 +282,7 @@ test("public projection strips host paths but preserves public API routes", () =
       },
       contract: { dataset: { root: localRoot } },
       control: { next_action: { href: "/tasks/task-one/confirm" } },
+      provider_capabilities: { href: "/model-sources/providers" },
       note: `stored at ${localRoot}/dataset_report.json`,
       other_host_path: "runtime resolved /Applications/Local Tool/cache.bin",
     },
@@ -160,6 +296,10 @@ test("public projection strips host paths but preserves public API routes", () =
   assert.equal("manifest_path" in projected.task.dataset_report, false);
   assert.equal("report_path" in projected.task.dataset_report, false);
   assert.equal(projected.task.control.next_action.href, "/tasks/task-one/confirm");
+  assert.equal(
+    projected.task.provider_capabilities.href,
+    "/model-sources/providers",
+  );
   assert.equal(projected.task.dataset_report.files[0].relative_path, "class-a/one.png");
   assert.equal(source.task.dataset_report.root, localRoot, "projection must not mutate local data");
 });

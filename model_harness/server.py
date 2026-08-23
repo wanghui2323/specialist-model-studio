@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
+from . import __version__
+
 try:  # optional server dependency
     from fastapi import Body, FastAPI, Header, HTTPException, Query
     from fastapi.responses import (
@@ -38,12 +40,35 @@ from .data_adapters import DataAdapterRegistry
 from .errors import ContractError, HarnessError
 from .huggingface_catalog import HuggingFaceCatalogError
 from .model_assets import ModelAssetError
+from .model_source_store import ModelSourceIntegrityError, StaleBindingIntentError
+from .model_sources import (
+    ModelSourceIncompleteError,
+    ModelSourceUpstreamError,
+    ModelSourceValidationError,
+    parse_model_source_reference,
+)
 from .plugins import PluginRegistry
+from .feasibility_store import (
+    FeasibilityStoreIntegrityError,
+    StaleFeasibilityReferenceError,
+)
+from .resource_feasibility import ResourceFeasibilityError
 from .service import RunService
 from .sample_inference import SampleInferenceBlocked
 from .staged_assets import StagedAssetRejected
 from .state import TERMINAL_STATUSES
+from .training_plans import (
+    StaleTrainingPlanError,
+    TrainingPlanApprovalRequired,
+    TrainingPlanIntegrityError,
+)
+from .task_specs import FAMILY_DETAILS
 from .workspace import TrainingWorkspace
+
+
+API_VERSION = "0.9.0-rc.1"
+FEATURE_TRACK = "v0.9-universal-byom"
+RELEASE_STATUS = "unreleased_rc"
 
 
 def create_app(
@@ -54,7 +79,7 @@ def create_app(
 ) -> Any:
     if _SERVER_IMPORT_ERROR is not None:  # pragma: no cover - optional extra
         raise RuntimeError(
-            "HTTP server dependencies are missing; install ai-pm-model-harness[server]"
+            "HTTP server dependencies are missing; install specialist-model-studio[server]"
         ) from _SERVER_IMPORT_ERROR
 
     resolved_runs_dir = Path(runs_dir).expanduser().resolve()
@@ -97,11 +122,12 @@ def create_app(
             yield
         finally:
             agent_events.stop()
+            workspace.close()
             service.close()
 
     app = FastAPI(
-        title="AI PM Model Harness",
-        version="0.7.0-beta.1",
+        title="Specialist Model Studio",
+        version=API_VERSION,
         description="Conversation-first product runtime for auditable specialist-model training.",
         lifespan=lifespan,
     )
@@ -214,23 +240,510 @@ def create_app(
         except ModelAssetError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.get("/model-sources/providers")
+    def model_source_providers() -> dict[str, Any]:
+        return {"providers": workspace.model_source_provider_capabilities()}
+
+    @app.post("/tasks/{task_id}/model-source-searches")
+    async def search_model_sources(
+        task_id: str,
+        body: dict[str, Any] = Body(...),
+        x_hf_token: str | None = Header(default=None),
+        x_github_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        raw_providers = body.get("providers")
+        providers = (
+            [str(item) for item in raw_providers]
+            if isinstance(raw_providers, list)
+            else None
+        )
+        try:
+            return await asyncio.to_thread(
+                workspace.search_model_sources,
+                task_id,
+                query=(str(body["query"]) if body.get("query") is not None else None),
+                providers=providers,
+                limit_per_provider=body.get("limit_per_provider", 4),
+                base_spec_revision=body.get("base_spec_revision"),
+                tokens={"huggingface": x_hf_token, "github": x_github_token},
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ModelSourceValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except ModelSourceUpstreamError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/tasks/{task_id}/model-source-searches")
+    def list_model_source_searches(task_id: str) -> dict[str, Any]:
+        try:
+            return {
+                "searches": workspace.list_model_source_searches(task_id)
+            }
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ContractError, ModelSourceIntegrityError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/model-source-selections")
+    async def confirm_model_source_selection(
+        task_id: str,
+        body: dict[str, Any] = Body(...),
+        x_hf_token: str | None = Header(default=None),
+        x_github_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        try:
+            result = await asyncio.to_thread(
+                workspace.confirm_model_source_candidate,
+                task_id,
+                search_id=str(body.get("search_id", "")),
+                candidate_id=str(body.get("candidate_id", "")),
+                approval_confirmed=body.get("approval_confirmed") is True,
+                base_spec_revision=body.get("base_spec_revision"),
+                tokens={"huggingface": x_hf_token, "github": x_github_token},
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ModelSourceIncompleteError, ModelSourceUpstreamError) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ModelSourceValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse(status_code=201, content=result)
+
+    @app.post("/tasks/{task_id}/model-source-resolutions")
+    async def create_model_source_resolution(
+        task_id: str,
+        body: dict[str, Any] = Body(...),
+        x_hf_token: str | None = Header(default=None),
+        x_github_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        provider = str(body.get("provider", "")).strip().lower()
+        source_reference = body.get("source_reference")
+        if source_reference is not None:
+            try:
+                parsed_reference = parse_model_source_reference(
+                    str(source_reference), provider_hint=provider or None
+                )
+                provider = parsed_reference["provider"]
+            except ModelSourceValidationError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        token = x_github_token if provider == "github" else x_hf_token
+        try:
+            if source_reference is not None:
+                result = workspace.create_model_source_resolution_from_reference(
+                    task_id,
+                    source_reference=str(source_reference),
+                    provider_hint=provider,
+                    requested_revision=(
+                        str(body["requested_revision"])
+                        if body.get("requested_revision") is not None
+                        else None
+                    ),
+                    base_spec_revision=body.get("base_spec_revision"),
+                    token=token,
+                )
+            else:
+                result = workspace.create_model_source_resolution(
+                    task_id,
+                    provider=provider,
+                    repository=str(body.get("repository", "")),
+                    requested_revision=(
+                        str(body["requested_revision"])
+                        if body.get("requested_revision") is not None
+                        else None
+                    ),
+                    base_spec_revision=body.get("base_spec_revision"),
+                    token=token,
+                )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ModelSourceIncompleteError, ModelSourceUpstreamError) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ModelSourceValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse(status_code=201, content=result)
+
+    @app.get("/tasks/{task_id}/model-source-resolutions")
+    def list_model_source_resolutions(task_id: str) -> dict[str, Any]:
+        try:
+            return {
+                "resolutions": workspace.list_model_source_resolutions(task_id)
+            }
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ContractError, ModelSourceIntegrityError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/tasks/{task_id}/model-source-resolutions/{resolution_id}/bind"
+    )
+    async def bind_model_source(
+        task_id: str,
+        resolution_id: str,
+        body: dict[str, Any] = Body(...),
+        x_hf_token: str | None = Header(default=None),
+        x_github_token: str | None = Header(default=None),
+    ) -> JSONResponse:
+        try:
+            resolution = workspace.get_model_source_resolution(
+                task_id, resolution_id
+            )
+            token = (
+                x_github_token
+                if resolution.get("provider") == "github"
+                else x_hf_token
+            )
+            result = workspace.queue_model_source_binding(
+                task_id,
+                resolution_id,
+                approval_confirmed=body.get("approval_confirmed") is True,
+                expected_resolved_commit=str(
+                    body.get("expected_resolved_commit", "")
+                ),
+                base_spec_revision=body.get("base_spec_revision"),
+                token=token,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ModelSourceValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (ModelSourceIntegrityError, StaleBindingIntentError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        attempt_id = str(result["attempt"]["attempt_id"])
+        return JSONResponse(
+            status_code=202,
+            content={
+                "binding_attempt": result,
+                "poll_url": (
+                    f"/tasks/{task_id}/model-binding-attempts/{attempt_id}"
+                ),
+            },
+        )
+
+    @app.get("/tasks/{task_id}/model-binding-attempts")
+    def list_model_binding_attempts(task_id: str) -> dict[str, Any]:
+        try:
+            return {
+                "binding_attempts": workspace.list_model_binding_attempts(task_id)
+            }
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/tasks/{task_id}/model-binding-attempts/current")
+    def current_model_binding_attempt(task_id: str) -> dict[str, Any]:
+        try:
+            attempt = workspace.current_model_binding_attempt(task_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if attempt is None:
+            raise HTTPException(status_code=404, detail="model binding attempt not found")
+        return {"binding_attempt": attempt}
+
+    @app.get("/tasks/{task_id}/model-binding-attempts/{attempt_id}")
+    def get_model_binding_attempt(
+        task_id: str,
+        attempt_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return {
+                "binding_attempt": workspace.get_model_binding_attempt(
+                    task_id, attempt_id
+                )
+            }
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/tasks/{task_id}/model-bindings")
+    def list_model_bindings(task_id: str) -> dict[str, Any]:
+        try:
+            return {"bindings": workspace.list_model_bindings(task_id)}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ContractError, ModelSourceIntegrityError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/tasks/{task_id}/blockers")
+    def list_task_blockers(
+        task_id: str,
+        active_only: bool = Query(default=False),
+    ) -> dict[str, Any]:
+        try:
+            return {
+                "blockers": workspace.list_blockers(
+                    task_id, active_only=active_only
+                )
+            }
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/tasks/{task_id}/model-bindings/current")
+    def current_model_binding(task_id: str) -> dict[str, Any]:
+        try:
+            binding = workspace.current_model_binding(task_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ContractError, ModelSourceIntegrityError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if binding is None:
+            raise HTTPException(status_code=404, detail="current model binding not found")
+        return {"binding": binding}
+
+    @app.get("/tasks/{task_id}/repository-analyses/{analysis_id}")
+    def get_repository_analysis(
+        task_id: str,
+        analysis_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return {
+                "analysis": workspace.get_repository_analysis(
+                    task_id, analysis_id
+                )
+            }
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ContractError, ModelSourceIntegrityError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/training-plans")
+    def create_training_plan(
+        task_id: str,
+        body: dict[str, Any] = Body(...),
+    ) -> JSONResponse:
+        try:
+            result = workspace.create_training_plan(
+                task_id,
+                base_spec_revision=body.get("base_spec_revision"),
+                entrypoint_path=(
+                    str(body["entrypoint_path"])
+                    if body.get("entrypoint_path") is not None
+                    else None
+                ),
+                hyperparameters=(
+                    dict(body["hyperparameters"])
+                    if isinstance(body.get("hyperparameters"), dict)
+                    else None
+                ),
+                resource_budget=(
+                    dict(body["resource_budget"])
+                    if isinstance(body.get("resource_budget"), dict)
+                    else None
+                ),
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except TrainingPlanIntegrityError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse(status_code=201, content={"training_plan": result})
+
+    @app.get("/tasks/{task_id}/training-plans/current")
+    def current_training_plan(task_id: str) -> dict[str, Any]:
+        try:
+            result = workspace.current_training_plan(task_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ContractError, TrainingPlanIntegrityError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if result is None:
+            raise HTTPException(status_code=404, detail="current training plan not found")
+        return {"training_plan": result}
+
+    @app.post("/tasks/{task_id}/training-plans/{revision_id}/revisions")
+    def revise_training_plan(
+        task_id: str,
+        revision_id: str,
+        body: dict[str, Any] = Body(...),
+    ) -> JSONResponse:
+        raw_hyperparameters = body.get("hyperparameters")
+        raw_budget = body.get("resource_budget")
+        if raw_hyperparameters is not None and not isinstance(raw_hyperparameters, dict):
+            raise HTTPException(status_code=422, detail="hyperparameters must be an object")
+        if raw_budget is not None and not isinstance(raw_budget, dict):
+            raise HTTPException(status_code=422, detail="resource_budget must be an object")
+        try:
+            result = workspace.revise_training_plan(
+                task_id,
+                revision_id,
+                expected_parent_sha256=str(
+                    body.get("expected_parent_sha256", "")
+                ),
+                base_spec_revision=body.get("base_spec_revision"),
+                entrypoint_path=(
+                    str(body["entrypoint_path"])
+                    if body.get("entrypoint_path") is not None
+                    else None
+                ),
+                hyperparameters=(
+                    dict(raw_hyperparameters)
+                    if isinstance(raw_hyperparameters, dict)
+                    else None
+                ),
+                resource_budget=(
+                    dict(raw_budget) if isinstance(raw_budget, dict) else None
+                ),
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (
+            StaleTrainingPlanError,
+            TrainingPlanIntegrityError,
+            HarnessError,
+        ) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return JSONResponse(status_code=201, content={"training_plan": result})
+
+    @app.post("/tasks/{task_id}/training-plans/{revision_id}/decisions")
+    def decide_training_plan(
+        task_id: str,
+        revision_id: str,
+        body: dict[str, Any] = Body(...),
+    ) -> dict[str, Any]:
+        try:
+            result = workspace.decide_training_plan(
+                task_id,
+                revision_id,
+                expected_plan_sha256=str(body.get("expected_plan_sha256", "")),
+                decision=str(body.get("decision", "")),
+                reason=str(body.get("reason", "")),
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (
+            StaleTrainingPlanError,
+            TrainingPlanApprovalRequired,
+            TrainingPlanIntegrityError,
+            HarnessError,
+        ) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"training_plan": result}
+
+    @app.get("/tasks/{task_id}/resource-feasibility")
+    def current_resource_feasibility(task_id: str) -> dict[str, Any]:
+        try:
+            return {
+                "resource_feasibility": workspace.current_resource_feasibility(
+                    task_id
+                )
+            }
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (FeasibilityStoreIntegrityError, ResourceFeasibilityError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/resource-feasibility-checks")
+    def check_resource_feasibility(
+        task_id: str,
+        body: dict[str, Any] = Body(...),
+    ) -> JSONResponse:
+        raw_packages = body.get("packages")
+        if raw_packages is not None and not isinstance(raw_packages, list):
+            raise HTTPException(status_code=422, detail="packages must be an array")
+        if isinstance(raw_packages, list) and not all(
+            isinstance(item, dict) for item in raw_packages
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="packages entries must be objects",
+            )
+        try:
+            result = workspace.check_resource_feasibility(
+                task_id,
+                training_plan_revision_id=str(
+                    body.get("training_plan_revision_id", "")
+                ),
+                expected_plan_sha256=str(body.get("expected_plan_sha256", "")),
+                base_image_digest=(
+                    str(body["base_image_digest"])
+                    if body.get("base_image_digest") is not None
+                    else None
+                ),
+                packages=(
+                    [dict(item) for item in raw_packages]
+                    if isinstance(raw_packages, list)
+                    else None
+                ),
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (
+            FeasibilityStoreIntegrityError,
+            StaleFeasibilityReferenceError,
+            ResourceFeasibilityError,
+            StaleTrainingPlanError,
+            TrainingPlanApprovalRequired,
+            TrainingPlanIntegrityError,
+            HarnessError,
+        ) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return JSONResponse(
+            status_code=201, content={"resource_feasibility": result}
+        )
+
     @app.get("/health")
     def health() -> dict[str, Any]:
         return {
             "ok": True,
-            "version": "0.7.0-beta.1",
+            "version": API_VERSION,
+            "package_version": __version__,
+            "feature_track": FEATURE_TRACK,
+            "release_status": RELEASE_STATUS,
+            "scope": "backend",
             "recovered_runs": service.recovered_runs,
             "primary_experience": "conversation",
             "conversation_url": "/app",
             "workbench_url": "/app",
+            "runtime_url": "/runtime",
+            "agent_required": False,
         }
 
     @app.get("/runtime")
     def runtime() -> dict[str, Any]:
         return {
+            "package_version": __version__,
+            "feature_track": FEATURE_TRACK,
+            "release_status": RELEASE_STATUS,
             "primary_experience": "conversation",
             "conversation_url": "/app",
             "workbench_url": "/app",
+            "source_execution_policy": (
+                "static_analysis_only_without_verified_isolation"
+            ),
+            "byom_execution_available": False,
+            "supported_protocol_end": "resource_feasibility",
+            "registered_recipe_training_available": True,
             "agent": conversations.runtime_status(),
         }
 
@@ -318,6 +831,15 @@ def create_app(
     @app.get("/data-adapters")
     def data_adapters() -> dict[str, Any]:
         return {"data_adapters": workspace.data_adapters.manifests()}
+
+    @app.get("/task-spec/families")
+    def task_spec_families() -> dict[str, Any]:
+        return {
+            "families": [
+                {"family": family, **details}
+                for family, details in FAMILY_DETAILS.items()
+            ]
+        }
 
     @app.post("/capabilities/match")
     async def match_capabilities(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
@@ -1029,6 +1551,6 @@ def serve(
         import uvicorn
     except ImportError as exc:  # pragma: no cover - depends on optional extra
         raise RuntimeError(
-            "HTTP server dependencies are missing; install ai-pm-model-harness[server]"
+            "HTTP server dependencies are missing; install specialist-model-studio[server]"
         ) from exc
     uvicorn.run(create_app(runs_dir, max_workers=max_workers), host=host, port=port)

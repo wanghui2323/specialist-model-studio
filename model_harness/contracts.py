@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,8 @@ from .errors import ContractError, PluginError
 from .plugins import PluginRegistry, default_registry
 
 SUPPORTED_MODES = {"delegate", "guided"}
+_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -90,6 +93,42 @@ def validate_contract(
         if isinstance(value, bool) or not isinstance(value, int) or value < 20:
             raise ContractError(
                 "diagnostics.minimum_test_samples must be an integer >= 20"
+            )
+
+    model_binding = data.get("model_binding")
+    if model_binding is not None:
+        if not isinstance(model_binding, dict):
+            raise ContractError("model_binding must be an object")
+        for key in (
+            "model_binding_revision_id",
+            "source_snapshot_id",
+            "repository_analysis_id",
+            "provider",
+            "repository",
+        ):
+            _require_nonempty_text(model_binding, key)
+        if model_binding["provider"] not in {"github", "huggingface"}:
+            raise ContractError("model_binding.provider is unsupported")
+        commit = _require_nonempty_text(model_binding, "resolved_commit")
+        if not _COMMIT_PATTERN.fullmatch(commit):
+            raise ContractError("model_binding.resolved_commit must be a full commit")
+        for key in (
+            "binding_digest",
+            "source_snapshot_digest",
+            "repository_analysis_digest",
+            "tree_manifest_sha256",
+        ):
+            digest = _require_nonempty_text(model_binding, key)
+            if not _SHA256_PATTERN.fullmatch(digest):
+                raise ContractError(f"model_binding.{key} must be sha256")
+        bound_revision = model_binding.get("bound_spec_revision")
+        if (
+            isinstance(bound_revision, bool)
+            or not isinstance(bound_revision, int)
+            or bound_revision < 1
+        ):
+            raise ContractError(
+                "model_binding.bound_spec_revision must be a positive integer"
             )
 
     plugin.validate_contract(data)

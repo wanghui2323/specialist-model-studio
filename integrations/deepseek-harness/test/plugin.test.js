@@ -22,7 +22,7 @@ test("plugin registers the complete task-first conversational toolchain", () => 
   const mounted = mountPlugin();
   assert.deepEqual(inject, ["tools", "systemPrompt"]);
   const names = new Set(mounted.tools.map((tool) => tool.name));
-  assert.equal(names.size, 37);
+  assert.equal(names.size, 53);
   for (const required of [
     "model_harness_list_tasks",
     "model_harness_list_data_adapters",
@@ -30,6 +30,22 @@ test("plugin registers the complete task-first conversational toolchain", () => 
     "model_harness_create_task",
     "model_harness_update_task_spec",
     "model_harness_get_task",
+    "model_harness_clarify_task_spec",
+    "model_harness_list_model_source_providers",
+    "model_harness_search_model_sources",
+    "model_harness_list_model_source_searches",
+    "model_harness_select_model_source_candidate",
+    "model_harness_resolve_model_source",
+    "model_harness_list_model_source_resolutions",
+    "model_harness_bind_model_source",
+    "model_harness_list_model_bindings",
+    "model_harness_get_repository_analysis",
+    "model_harness_create_training_plan",
+    "model_harness_get_training_plan",
+    "model_harness_revise_training_plan",
+    "model_harness_decide_training_plan",
+    "model_harness_get_resource_feasibility",
+    "model_harness_check_resource_feasibility",
     "model_harness_hf_capability",
     "model_harness_hf_search",
     "model_harness_hf_card",
@@ -67,6 +83,9 @@ test("plugin registers the complete task-first conversational toolchain", () => 
   assert.match(mounted.sections[0].text, /workbench_url/);
   assert.match(mounted.sections[0].text, /EvaluationReport/);
   assert.match(mounted.sections[0].text, /40-character commit/);
+  assert.match(mounted.sections[0].text, /ask exactly one high-impact clarification question/);
+  assert.match(mounted.sections[0].text, /Universal BYOM/);
+  assert.match(mounted.sections[0].text, /BlockerEvidence/);
 });
 
 
@@ -114,6 +133,21 @@ test("mutating training tools use the native DSH approval seam", async () => {
   );
   assert.deepEqual(readDecision, { kind: "allow" });
 
+  for (const conversationalTool of [
+    "model_harness_clarify_task_spec",
+    "model_harness_update_task_spec",
+  ]) {
+    const conversationDecision = await listener(
+      { name: conversationalTool },
+      async () => ({ kind: "allow" }),
+    );
+    assert.deepEqual(
+      conversationDecision,
+      { kind: "allow" },
+      `${conversationalTool} follows the user's explicit chat answer without a duplicate native approval`,
+    );
+  }
+
   const mutationDecision = await listener(
     { name: "model_harness_start_task_run" },
     async () => ({ kind: "allow" }),
@@ -129,6 +163,9 @@ test("mutating training tools use the native DSH approval seam", async () => {
 
   for (const toolName of [
     "model_harness_hf_attach",
+    "model_harness_select_model_source_candidate",
+    "model_harness_bind_model_source",
+    "model_harness_decide_training_plan",
     "model_harness_run_sample_inference",
     "model_harness_build_artifact_bundle",
     "model_harness_download_artifact_bundle",

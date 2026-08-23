@@ -4,13 +4,9 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-import joblib
-import numpy as np
-
 from ..errors import ContractError
 from ..io_utils import read_json
 from ..plugin_api import RecipeManifest, StrategyProposal
-from . import tabular_regression
 
 
 TABULAR_REGRESSION_TEMPLATE: dict[str, Any] = {
@@ -166,12 +162,18 @@ class TabularRegressionPlugin:
             raise ContractError("dataset row count exceeds compute budget")
 
     def train(self, contract: dict[str, Any]) -> Any:
+        from . import tabular_regression
+
         return tabular_regression.train(contract)
 
     def evaluate(self, training: Any, contract: dict[str, Any]) -> Any:
+        from . import tabular_regression
+
         return tabular_regression.evaluate(training, contract)
 
     def package(self, training: Any, evaluation: Any, contract: dict[str, Any], artifact_dir: Path) -> dict[str, Any]:
+        from . import tabular_regression
+
         return tabular_regression.package(training, evaluation, contract, artifact_dir)
 
     def propose_strategies(self, metrics: dict[str, Any], contract: dict[str, Any]) -> list[StrategyProposal]:
@@ -216,9 +218,14 @@ class TabularRegressionPlugin:
         return updated
 
     def learning_report(self, contract: dict[str, Any], metrics: dict[str, Any], strategies: list[StrategyProposal]) -> str:
+        from . import tabular_regression
+
         return tabular_regression.learning_report(contract, metrics, strategies)
 
     def deep_verify(self, artifact_dir: Path) -> list[str]:
+        import joblib
+        import numpy as np
+
         bundle = joblib.load(artifact_dir / "model.joblib")
         reference = joblib.load(artifact_dir / "test_reference.joblib")
         actual = bundle["estimator"].predict(reference["X"])

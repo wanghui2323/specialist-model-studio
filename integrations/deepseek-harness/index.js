@@ -2,7 +2,7 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 
 import { ModelHarnessClient } from "./client.js";
 
-export const name = "ai-pm-model-harness-tools";
+export const name = "specialist-model-studio-tools";
 export const inject = ["tools", "systemPrompt"];
 export const TASK_FAMILIES = Object.freeze([
   "image_classification",
@@ -25,7 +25,9 @@ export const TASK_FAMILIES = Object.freeze([
 
 const APPROVAL_REQUIRED_TOOLS = new Set([
   "model_harness_import_dataset",
-  "model_harness_update_task_spec",
+  "model_harness_select_model_source_candidate",
+  "model_harness_bind_model_source",
+  "model_harness_decide_training_plan",
   "model_harness_stage_recipe_samples",
   "model_harness_build_recipe",
   "model_harness_register_recipe",
@@ -59,7 +61,9 @@ export function apply(ctx) {
     order: 118,
     text: `You are the Model Training Agent: a conversation-first operator for people who do not train models professionally. Turn a concrete business goal into an auditable specialist-model training task while keeping the user in control of data authorization, label meaning, acceptance gates, compute, and optimization.
 For specialist-model training requests, use the model_harness_* tools as the only source of task, dataset, run, metric, artifact, lineage, and approval facts. Do not use shell commands or generic coding tools to bypass the domain lifecycle.
-The user-data workflow is: create one persistent task from the user's raw business goal; read task.control and task.capability_decision; ask the user to clarify or confirm the TaskSpec before selecting a capability. Never invent modality, objective or output shape in model_harness_create_task. Use model_harness_update_task_spec only after the user chooses the output family. For matched capabilities, import and explain the inspection report, review labels or target fields and acceptance gates, collect the three explicit confirmations, start the task run, poll canonical events/results, and explain failures or strategies. For an audio-classification task in needs_recipe, ask for a representative class-folder WAV ZIP, stage it, run the trusted declarative Recipe build, show the candidate_digest and validation_digest, and register it only after explicit human approval. The factory never executes generated Python. Other unmatched capabilities remain buildable requests, not runnable training support.
+The user-data workflow is: create one persistent task from the user's raw business goal; read task.control and task.capability_decision; ask exactly one high-impact clarification question at a time and offer the backend candidates as concise choices. Never invent modality, objective or output shape in model_harness_create_task. Use model_harness_clarify_task_spec when the user answers in their own words, and model_harness_update_task_spec only after the user chooses an exact output family. Do not expose a full field checklist unless the user asks to edit advanced details.
+After the TaskSpec is resolved, the Universal BYOM workflow is: read official source-provider capabilities; search Hugging Face and GitHub metadata; show candidates with provider, repository, revision, license and risk facts; require the user to select one exact candidate; resolve and bind one immutable commit only with explicit approval; read the static repository analysis; propose an immutable training plan; require approval of the exact plan digest; and run the local resource-feasibility check. Candidate families and search results are not proof of runnable support. Arbitrary repositories may honestly terminate with typed BlockerEvidence when this machine, v0.9 CPU-only policy, dependency metadata, or verified OCI isolation is insufficient. Never execute third-party repository code on the host and never claim every repository can train successfully.
+For the three validated built-in capabilities, import and explain the inspection report, review labels or target fields and acceptance gates, collect the three explicit confirmations, start the task run, poll canonical events/results, and explain failures or strategies. For an audio-classification task in needs_recipe, ask for a representative class-folder WAV ZIP, stage it, run the trusted declarative Recipe build, show the candidate_digest and validation_digest, and register it only after explicit human approval. The factory never executes generated Python. Other unmatched capabilities remain buildable requests, not runnable training support.
 For an image-classification task, Hugging Face is an optional fixed feature extractor, not arbitrary fine-tuning: inspect capability, search and the model card; require an exact 40-character commit; attach only after native approval and approval_confirmed=true; then verify the local asset before training. Never ask for or transmit a Hugging Face token through chat tools.
 After a completed task-owned Run, read the EvaluationReport dimensions before making a release claim. A user-authorized raw image, WAV or one-row JSON/CSV may be tried through model_harness_run_sample_inference; never substitute training or test data. Build an Artifact Bundle only from trusted evidence, and download it only to a user-selected new .zip path after native approval. Treat integrity, metric gates, evidence sufficiency and release conclusion as separate facts.
 Work like an execution agent, not a form wizard: ask only for information that the tools cannot discover, say what is happening before a meaningful tool call, and after each phase summarize the evidence, the unresolved decision, and the next action. When a tool returns workbench_url, include it as the evidence view for that same task_id.
@@ -179,6 +183,326 @@ Never use the teaching digit run as a substitute for a user's OCR, speech, forec
 
   ctx.tools.register(
     defineTool({
+      name: "model_harness_clarify_task_spec",
+      description: "Persist the user's free-form clarification as a new immutable TaskSpec revision, then let the backend re-evaluate the one remaining question. This does not confirm a capability or start training.",
+      parameters: {
+        task_id: { type: "string", required: true },
+        base_revision: { type: "integer", required: true },
+        business_goal: { type: "string", required: true, description: "Complete revised business goal in the user's words, including their latest clarification." },
+        user_note: { type: "string", description: "Short audit note describing the user's clarification." },
+      },
+      output: jsonOutput,
+      presentCall: (args) => ({ card: "generic", title: `Clarify task ${args.task_id}`, rawInput: args.user_note || args.business_goal }),
+      async execute(args, exec) {
+        const result = await client.clarifyTaskSpec(args.task_id, {
+          baseRevision: args.base_revision,
+          businessGoal: args.business_goal,
+          userNote: args.user_note,
+        }, exec.signal);
+        return { ...result, workbench_url: client.workbenchUrl(args.task_id) };
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_list_model_source_providers",
+      description: "List current Hugging Face and GitHub source-discovery capabilities and limitations before searching.",
+      parameters: {},
+      output: jsonOutput,
+      isConcurrencySafe: () => true,
+      async execute(_args, exec) {
+        return client.modelSourceProviders(exec.signal);
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_search_model_sources",
+      description: "Search official Hugging Face and GitHub metadata for candidates tied to the current TaskSpec revision. Results are suggestions, not compatibility approval.",
+      parameters: {
+        task_id: { type: "string", required: true },
+        base_spec_revision: { type: "integer", required: true },
+        query: { type: "string", description: "Optional search query; omit to let the backend derive it from the confirmed TaskSpec." },
+        providers: { type: "array", items: { type: "string", enum: ["huggingface", "github"] } },
+        limit_per_provider: { type: "integer", description: "1 to 10 candidates per provider; defaults to 4." },
+      },
+      output: jsonOutput,
+      presentCall: (args) => ({ card: "generic", title: `Search model sources for ${args.task_id}`, rawInput: args.query || "TaskSpec-derived query" }),
+      async execute(args, exec) {
+        const result = await client.searchModelSources(args.task_id, {
+          query: args.query,
+          providers: args.providers,
+          limitPerProvider: args.limit_per_provider === undefined ? 4 : args.limit_per_provider,
+          baseSpecRevision: args.base_spec_revision,
+        }, exec.signal);
+        return { ...result, workbench_url: client.workbenchUrl(args.task_id) };
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_list_model_source_searches",
+      description: "List persisted source searches for one task so the agent can recover after reload without repeating network search.",
+      parameters: { task_id: { type: "string", required: true } },
+      output: jsonOutput,
+      isConcurrencySafe: () => true,
+      async execute(args, exec) {
+        return client.listModelSourceSearches(args.task_id, exec.signal);
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_select_model_source_candidate",
+      description: "Record the user's explicit selection of one exact search candidate and resolve its immutable upstream commit. Selection is approval-gated and does not execute repository code.",
+      parameters: {
+        task_id: { type: "string", required: true },
+        search_id: { type: "string", required: true },
+        candidate_id: { type: "string", required: true },
+        base_spec_revision: { type: "integer", required: true },
+        approval_confirmed: { type: "boolean", const: true, required: true },
+      },
+      output: jsonOutput,
+      presentCall: (args) => ({ card: "generic", title: `Select model source for ${args.task_id}`, rawInput: args.candidate_id }),
+      async execute(args, exec) {
+        const result = await client.selectModelSourceCandidate(args.task_id, {
+          searchId: args.search_id,
+          candidateId: args.candidate_id,
+          baseSpecRevision: args.base_spec_revision,
+          approvalConfirmed: args.approval_confirmed,
+        }, exec.signal);
+        return { ...result, workbench_url: client.workbenchUrl(args.task_id) };
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_resolve_model_source",
+      description: "Resolve a user-provided public Hugging Face or GitHub reference to immutable upstream metadata without executing its code.",
+      parameters: {
+        task_id: { type: "string", required: true },
+        source_reference: { type: "string", required: true },
+        provider: { type: "string", enum: ["huggingface", "github"] },
+        requested_revision: { type: "string" },
+        base_spec_revision: { type: "integer", required: true },
+      },
+      output: jsonOutput,
+      presentCall: (args) => ({ card: "generic", title: `Resolve model source for ${args.task_id}`, rawInput: args.source_reference }),
+      async execute(args, exec) {
+        const result = await client.resolveModelSource(args.task_id, {
+          sourceReference: args.source_reference,
+          provider: args.provider,
+          requestedRevision: args.requested_revision,
+          baseSpecRevision: args.base_spec_revision,
+        }, exec.signal);
+        return { ...result, workbench_url: client.workbenchUrl(args.task_id) };
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_list_model_source_resolutions",
+      description: "List persisted fixed-revision resolution records for one task.",
+      parameters: { task_id: { type: "string", required: true } },
+      output: jsonOutput,
+      isConcurrencySafe: () => true,
+      async execute(args, exec) {
+        return client.listModelSourceResolutions(args.task_id, exec.signal);
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_bind_model_source",
+      description: "Bind one resolved repository at the exact displayed commit and run bounded static analysis. Requires explicit user approval and never executes third-party code.",
+      parameters: {
+        task_id: { type: "string", required: true },
+        resolution_id: { type: "string", required: true },
+        expected_resolved_commit: { type: "string", required: true },
+        base_spec_revision: { type: "integer", required: true },
+        approval_confirmed: { type: "boolean", const: true, required: true },
+      },
+      output: jsonOutput,
+      presentCall: (args) => ({ card: "generic", title: `Bind fixed source for ${args.task_id}`, rawInput: args.expected_resolved_commit }),
+      async execute(args, exec) {
+        const result = await client.bindModelSource(args.task_id, args.resolution_id, {
+          expectedResolvedCommit: args.expected_resolved_commit,
+          baseSpecRevision: args.base_spec_revision,
+          approvalConfirmed: args.approval_confirmed,
+        }, exec.signal);
+        return { ...result, workbench_url: client.workbenchUrl(args.task_id) };
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_list_model_bindings",
+      description: "List current, stale and historical model-source bindings for one task.",
+      parameters: { task_id: { type: "string", required: true } },
+      output: jsonOutput,
+      isConcurrencySafe: () => true,
+      async execute(args, exec) {
+        return client.listModelBindings(args.task_id, exec.signal);
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_get_repository_analysis",
+      description: "Read one immutable static repository analysis, including evidence-backed entrypoint, metric, artifact and dependency candidates.",
+      parameters: {
+        task_id: { type: "string", required: true },
+        analysis_id: { type: "string", required: true },
+      },
+      output: jsonOutput,
+      isConcurrencySafe: () => true,
+      async execute(args, exec) {
+        return client.repositoryAnalysis(args.task_id, args.analysis_id, exec.signal);
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_create_training_plan",
+      description: "Create an immutable training-plan proposal bound to the current TaskSpec, fixed source and analysis evidence. This proposes work but does not approve or execute it.",
+      parameters: {
+        task_id: { type: "string", required: true },
+        base_spec_revision: { type: "integer", required: true },
+        entrypoint_path: { type: "string" },
+        hyperparameters: { type: "object", additionalProperties: true },
+        resource_budget: { type: "object", additionalProperties: true },
+      },
+      output: jsonOutput,
+      presentCall: (args) => ({ card: "generic", title: `Propose training plan for ${args.task_id}`, rawInput: args.entrypoint_path || "analysis-selected entrypoint" }),
+      async execute(args, exec) {
+        const result = await client.createTrainingPlan(args.task_id, {
+          baseSpecRevision: args.base_spec_revision,
+          entrypointPath: args.entrypoint_path,
+          hyperparameters: args.hyperparameters,
+          resourceBudget: args.resource_budget,
+        }, exec.signal);
+        return { ...result, workbench_url: client.workbenchUrl(args.task_id) };
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_get_training_plan",
+      description: "Read the current immutable training-plan revision and its exact digest and effective approval status.",
+      parameters: { task_id: { type: "string", required: true } },
+      output: jsonOutput,
+      isConcurrencySafe: () => true,
+      async execute(args, exec) {
+        return client.currentTrainingPlan(args.task_id, exec.signal);
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_revise_training_plan",
+      description: "Create a child training-plan revision from the exact current parent digest. Earlier approval never carries to the child revision.",
+      parameters: {
+        task_id: { type: "string", required: true },
+        revision_id: { type: "string", required: true },
+        expected_parent_sha256: { type: "string", required: true },
+        base_spec_revision: { type: "integer", required: true },
+        entrypoint_path: { type: "string" },
+        hyperparameters: { type: "object", additionalProperties: true },
+        resource_budget: { type: "object", additionalProperties: true },
+      },
+      output: jsonOutput,
+      presentCall: (args) => ({ card: "generic", title: `Revise training plan ${args.revision_id}`, rawInput: args.expected_parent_sha256 }),
+      async execute(args, exec) {
+        const result = await client.reviseTrainingPlan(args.task_id, args.revision_id, {
+          expectedParentSha256: args.expected_parent_sha256,
+          baseSpecRevision: args.base_spec_revision,
+          entrypointPath: args.entrypoint_path,
+          hyperparameters: args.hyperparameters,
+          resourceBudget: args.resource_budget,
+        }, exec.signal);
+        return { ...result, workbench_url: client.workbenchUrl(args.task_id) };
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_decide_training_plan",
+      description: "Approve, reject or cancel the exact displayed training-plan digest. Requires explicit user approval and never starts execution by itself.",
+      parameters: {
+        task_id: { type: "string", required: true },
+        revision_id: { type: "string", required: true },
+        expected_plan_sha256: { type: "string", required: true },
+        decision: { type: "string", required: true, enum: ["approve", "reject", "cancel"] },
+        reason: { type: "string", description: "Required for reject and cancel." },
+        approval_confirmed: { type: "boolean", const: true, required: true },
+      },
+      output: jsonOutput,
+      presentCall: (args) => ({ card: "generic", title: `${args.decision} training plan ${args.revision_id}`, rawInput: args.expected_plan_sha256 }),
+      async execute(args, exec) {
+        const result = await client.decideTrainingPlan(args.task_id, args.revision_id, {
+          expectedPlanSha256: args.expected_plan_sha256,
+          decision: args.decision,
+          reason: args.reason,
+          approvalConfirmed: args.approval_confirmed,
+        }, exec.signal);
+        return { ...result, workbench_url: client.workbenchUrl(args.task_id) };
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_get_resource_feasibility",
+      description: "Read the current resource probe, fit report and typed blockers for one task.",
+      parameters: { task_id: { type: "string", required: true } },
+      output: jsonOutput,
+      isConcurrencySafe: () => true,
+      async execute(args, exec) {
+        return client.currentResourceFeasibility(args.task_id, exec.signal);
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_check_resource_feasibility",
+      description: "Probe the local machine and compare it with one exact approved plan under the v0.9 CPU-only isolation policy. This may return typed blockers instead of a fit report.",
+      parameters: {
+        task_id: { type: "string", required: true },
+        training_plan_revision_id: { type: "string", required: true },
+        expected_plan_sha256: { type: "string", required: true },
+        base_image_digest: { type: "string" },
+        packages: { type: "array", items: { type: "object", additionalProperties: true } },
+      },
+      output: jsonOutput,
+      presentCall: (args) => ({ card: "generic", title: `Check local resources for ${args.task_id}`, rawInput: args.training_plan_revision_id }),
+      async execute(args, exec) {
+        const result = await client.checkResourceFeasibility(args.task_id, {
+          trainingPlanRevisionId: args.training_plan_revision_id,
+          expectedPlanSha256: args.expected_plan_sha256,
+          baseImageDigest: args.base_image_digest,
+          packages: args.packages,
+        }, exec.signal);
+        return { ...result, workbench_url: client.workbenchUrl(args.task_id) };
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
       name: "model_harness_hf_capability",
       description: "Read the installed Hugging Face capability boundary and dependency status. This does not search, download, attach, or train a model.",
       parameters: {},
@@ -214,7 +538,7 @@ Never use the teaching digit run as a substitute for a user's OCR, speech, forec
   ctx.tools.register(
     defineTool({
       name: "model_harness_hf_card",
-      description: "Read one official Hugging Face model card at an optional immutable revision and expose Model Harness compatibility checks.",
+      description: "Read one official Hugging Face model card at an optional immutable revision and expose Specialist Model Studio compatibility checks.",
       parameters: {
         repo_id: { type: "string", required: true },
         revision: { type: "string", description: "Prefer an exact 40-character commit SHA." },
@@ -483,7 +807,7 @@ Never use the teaching digit run as a substitute for a user's OCR, speech, forec
   ctx.tools.register(
     defineTool({
       name: "model_harness_list_recipes",
-      description: "List the specialist-model training Recipes currently implemented by the local AI PM Model Harness.",
+      description: "List the specialist-model training Recipes currently implemented by the local Specialist Model Studio engine.",
       parameters: {},
       output: jsonOutput,
       async execute(_args, exec) {

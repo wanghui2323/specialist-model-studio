@@ -16,7 +16,7 @@ const PUBLIC_SENSITIVE_KEYS = new Set([
 ]);
 const PUBLIC_ROUTE_ROOTS = [
   "/agent", "/app", "/capabilities", "/chat", "/data-adapters", "/health",
-  "/model-assets", "/recipes", "/runs", "/runtime", "/tasks",
+  "/model-assets", "/model-sources", "/recipes", "/runs", "/runtime", "/tasks",
 ];
 
 function isPublicRoute(value) {
@@ -97,7 +97,7 @@ export class ModelHarnessClient {
       const detail = typeof projected === "object"
         ? projected.detail || JSON.stringify(projected)
         : projected;
-      throw new Error(`Model Harness ${response.status}: ${detail}`);
+      throw new Error(`Specialist Model Studio ${response.status}: ${detail}`);
     }
     return publicProjection(value);
   }
@@ -196,6 +196,251 @@ export class ModelHarnessClient {
         ...(userNote ? { user_note: userNote } : {}),
       },
     });
+  }
+
+  clarifyTaskSpec(taskId, { baseRevision, businessGoal, userNote }, signal) {
+    const selectedGoal = String(businessGoal || "").trim();
+    if (!selectedGoal) {
+      throw new Error("A clarified business goal is required");
+    }
+    return this.request(`/tasks/${encodeURIComponent(taskId)}/spec`, {
+      method: "PATCH",
+      signal,
+      body: {
+        base_revision: baseRevision,
+        business_goal: selectedGoal,
+        ...(userNote ? { user_note: userNote } : {}),
+      },
+    });
+  }
+
+  modelSourceProviders(signal) {
+    return this.request("/model-sources/providers", { signal });
+  }
+
+  listModelSourceSearches(taskId, signal) {
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/model-source-searches`,
+      { signal },
+    );
+  }
+
+  searchModelSources(taskId, {
+    query,
+    providers,
+    limitPerProvider = 4,
+    baseSpecRevision,
+  } = {}, signal) {
+    if (!Number.isInteger(limitPerProvider) || limitPerProvider < 1 || limitPerProvider > 10) {
+      throw new Error("Model-source search limit must be an integer from 1 to 10");
+    }
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/model-source-searches`,
+      {
+        method: "POST",
+        signal,
+        body: {
+          ...(query ? { query } : {}),
+          ...(Array.isArray(providers) && providers.length ? { providers } : {}),
+          limit_per_provider: limitPerProvider,
+          base_spec_revision: baseSpecRevision,
+        },
+      },
+    );
+  }
+
+  selectModelSourceCandidate(taskId, {
+    searchId,
+    candidateId,
+    baseSpecRevision,
+    approvalConfirmed,
+  }, signal) {
+    if (approvalConfirmed !== true) {
+      throw new Error("Explicit user approval is required before selecting a model source");
+    }
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/model-source-selections`,
+      {
+        method: "POST",
+        signal,
+        body: {
+          search_id: searchId,
+          candidate_id: candidateId,
+          base_spec_revision: baseSpecRevision,
+          approval_confirmed: true,
+        },
+      },
+    );
+  }
+
+  resolveModelSource(taskId, {
+    sourceReference,
+    provider,
+    requestedRevision,
+    baseSpecRevision,
+  }, signal) {
+    const selectedReference = String(sourceReference || "").trim();
+    if (!selectedReference) throw new Error("A public model-source reference is required");
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/model-source-resolutions`,
+      {
+        method: "POST",
+        signal,
+        body: {
+          source_reference: selectedReference,
+          ...(provider ? { provider } : {}),
+          ...(requestedRevision ? { requested_revision: requestedRevision } : {}),
+          base_spec_revision: baseSpecRevision,
+        },
+      },
+    );
+  }
+
+  listModelSourceResolutions(taskId, signal) {
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/model-source-resolutions`,
+      { signal },
+    );
+  }
+
+  bindModelSource(taskId, resolutionId, {
+    expectedResolvedCommit,
+    baseSpecRevision,
+    approvalConfirmed,
+  }, signal) {
+    if (approvalConfirmed !== true) {
+      throw new Error("Explicit user approval is required before binding a fixed model source");
+    }
+    const commit = String(expectedResolvedCommit || "").trim();
+    if (!commit) throw new Error("The expected resolved commit is required");
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/model-source-resolutions/${encodeURIComponent(resolutionId)}/bind`,
+      {
+        method: "POST",
+        signal,
+        body: {
+          expected_resolved_commit: commit,
+          base_spec_revision: baseSpecRevision,
+          approval_confirmed: true,
+        },
+      },
+    );
+  }
+
+  listModelBindings(taskId, signal) {
+    return this.request(`/tasks/${encodeURIComponent(taskId)}/model-bindings`, {
+      signal,
+    });
+  }
+
+  repositoryAnalysis(taskId, analysisId, signal) {
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/repository-analyses/${encodeURIComponent(analysisId)}`,
+      { signal },
+    );
+  }
+
+  createTrainingPlan(taskId, {
+    baseSpecRevision,
+    entrypointPath,
+    hyperparameters,
+    resourceBudget,
+  } = {}, signal) {
+    return this.request(`/tasks/${encodeURIComponent(taskId)}/training-plans`, {
+      method: "POST",
+      signal,
+      body: {
+        base_spec_revision: baseSpecRevision,
+        ...(entrypointPath ? { entrypoint_path: entrypointPath } : {}),
+        ...(hyperparameters ? { hyperparameters } : {}),
+        ...(resourceBudget ? { resource_budget: resourceBudget } : {}),
+      },
+    });
+  }
+
+  currentTrainingPlan(taskId, signal) {
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/training-plans/current`,
+      { signal },
+    );
+  }
+
+  reviseTrainingPlan(taskId, revisionId, {
+    expectedParentSha256,
+    baseSpecRevision,
+    entrypointPath,
+    hyperparameters,
+    resourceBudget,
+  }, signal) {
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/training-plans/${encodeURIComponent(revisionId)}/revisions`,
+      {
+        method: "POST",
+        signal,
+        body: {
+          expected_parent_sha256: expectedParentSha256,
+          base_spec_revision: baseSpecRevision,
+          ...(entrypointPath ? { entrypoint_path: entrypointPath } : {}),
+          ...(hyperparameters ? { hyperparameters } : {}),
+          ...(resourceBudget ? { resource_budget: resourceBudget } : {}),
+        },
+      },
+    );
+  }
+
+  decideTrainingPlan(taskId, revisionId, {
+    expectedPlanSha256,
+    decision,
+    reason,
+    approvalConfirmed,
+  }, signal) {
+    const selectedDecision = String(decision || "").trim().toLowerCase();
+    if (!["approve", "reject", "cancel"].includes(selectedDecision)) {
+      throw new Error("Training-plan decision must be approve, reject, or cancel");
+    }
+    if (approvalConfirmed !== true) {
+      throw new Error("Explicit user approval is required before deciding a training plan");
+    }
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/training-plans/${encodeURIComponent(revisionId)}/decisions`,
+      {
+        method: "POST",
+        signal,
+        body: {
+          expected_plan_sha256: expectedPlanSha256,
+          decision: selectedDecision,
+          reason: String(reason || "").trim(),
+        },
+      },
+    );
+  }
+
+  currentResourceFeasibility(taskId, signal) {
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/resource-feasibility`,
+      { signal },
+    );
+  }
+
+  checkResourceFeasibility(taskId, {
+    trainingPlanRevisionId,
+    expectedPlanSha256,
+    baseImageDigest,
+    packages,
+  }, signal) {
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/resource-feasibility-checks`,
+      {
+        method: "POST",
+        signal,
+        body: {
+          training_plan_revision_id: trainingPlanRevisionId,
+          expected_plan_sha256: expectedPlanSha256,
+          ...(baseImageDigest ? { base_image_digest: baseImageDigest } : {}),
+          ...(packages ? { packages } : {}),
+        },
+      },
+    );
   }
 
   scaffoldRecipe(taskId, signal) {
@@ -452,7 +697,7 @@ export class ModelHarnessClient {
       },
     );
     if (!response.ok) {
-      throw new Error(`Model Harness ${response.status}: Artifact Bundle download failed`);
+      throw new Error(`Specialist Model Studio ${response.status}: Artifact Bundle download failed`);
     }
     const declaredSize = Number(response.headers.get("content-length") || 0);
     if (declaredSize > MAX_ARTIFACT_BUNDLE_BYTES) {

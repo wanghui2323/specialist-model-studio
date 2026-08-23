@@ -72,7 +72,7 @@ class RecipeScaffoldBuilder:
     def _readme(plugin_id: str, capability: dict[str, Any]) -> str:
         return f"""# Recipe Build Packet: {plugin_id}
 
-This packet was generated from a persistent Model Harness Recipe Build Request.
+This packet was generated from a persistent Specialist Model Studio Recipe Build Request.
 
 Capability request:
 
@@ -88,7 +88,7 @@ Capability request:
 4. Install the two declared entry points in an isolated environment.
 5. Run one successful scenario, one invalid-data scenario, and deep artifact verification.
 
-Model Harness never executes this generated scaffold automatically. A human or Code Agent must finish it, and the plugin must pass registration and runtime validation first.
+Specialist Model Studio never executes this generated scaffold automatically. A human or Code Agent must finish it, and the plugin must pass registration and runtime validation first.
 """
 
     @staticmethod

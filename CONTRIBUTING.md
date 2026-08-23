@@ -1,6 +1,6 @@
 # Contributing
 
-AI PM Model Harness is in alpha. Small, reviewable contributions that preserve its audit and safety boundaries are preferred.
+Specialist Model Studio is in alpha. Small, reviewable contributions that preserve its audit and safety boundaries are preferred.
 
 ## Local setup
 

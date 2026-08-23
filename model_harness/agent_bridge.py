@@ -559,7 +559,7 @@ class ConversationBridge:
     def prompt(self, task_id: str, title: str, message: str) -> str:
         session_id = self.ensure_session(task_id, title)
         instruction = (
-            f"你正在 Model Harness 产品中推进训练任务 `{task_id}`。"
+            f"你正在 Specialist Model Studio 中推进训练任务 `{task_id}`。"
             "训练任务本身是唯一事实源；先用 model_harness_get_task 读取状态，"
             "再根据用户这条消息决定下一步，不要创建第二个任务。\n\n"
             f"用户消息：{message.strip()}"
@@ -651,7 +651,7 @@ class ConversationBridge:
             if event_type == "user/message" and data.get("source", {}).get("kind") == "user":
                 text = _text_content(data.get("content"))
                 marker = "用户消息："
-                if marker in text and "你正在 Model Harness 产品中" in text:
+                if marker in text and "你正在 Specialist Model Studio 中" in text:
                     text = text.split(marker, 1)[1]
                 if text:
                     items.append({**base, "kind": "message", "role": "user", "text": text})

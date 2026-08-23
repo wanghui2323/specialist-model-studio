@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible Harness defect.
+description: Report a reproducible Specialist Model Studio defect.
 title: "[Bug]: "
 labels: [bug]
 body:
@@ -20,8 +20,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: Harness version
-      placeholder: 0.2.0a1
+      label: Studio version
+      placeholder: 0.9.0rc1
     validations:
       required: true
   - type: input

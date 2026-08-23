@@ -1,15 +1,15 @@
 # DeepSeek Harness Adapter
 
-This package is an optional conversation and approval adapter for AI PM Model Harness. It registers **37** `model_harness_*` tools against the local Python server. It was authored against `dsh` `0.1.0-rc.6` and `@deepseek-ai/dsh-tools` `0.1.0-rc.8`.
+This package is an optional conversation and approval adapter for Specialist Model Studio. It registers **37** `model_harness_*` compatibility tools against the local Python server. It was authored against `dsh` `0.1.0-rc.6` and `@deepseek-ai/dsh-tools` `0.1.0-rc.8`.
 
-DeepSeek Harness is not forked, copied, or used as the training state store. Task, dataset, contract, Run, event, metric, artifact, lineage, and evidence facts remain in Model Harness.
+DeepSeek Harness is not forked, copied, or used as the training state store. Task, dataset, contract, Run, event, metric, artifact, lineage, and evidence facts remain in Specialist Model Studio's `model_harness` engine.
 
 ## Install into the Web profile
 
 Start the Python service first:
 
 ```bash
-small-model-harness serve --host 127.0.0.1 --port 8765
+specialist-model-studio serve --host 127.0.0.1 --port 8765
 ```
 
 Install the local package and repository-managed preset:
@@ -38,7 +38,7 @@ After one-time installation, both local services can be started with:
 ./scripts/start_conversation_harness.sh
 ```
 
-Open `http://127.0.0.1:3080` for the optional conversation host. Tool results link to the task-specific Model Harness workbench backed by the same `task_id`.
+Open `http://127.0.0.1:3080` for the optional conversation host. Tool results link to the task-specific Specialist Model Studio workbench backed by the same `task_id`.
 
 ## The 37 tools
 
@@ -76,7 +76,7 @@ HF attachment, raw-sample upload, Bundle construction and Bundle download requir
 - The Python server has no multi-user authentication and must remain on a trusted local interface.
 - DSH is optional. The Python training and evidence runtime continues without it.
 - DSH is a developer preview; re-test the adapter after any upgrade.
-- `v0.7.0-beta.1` is a local Beta statement. This README does not claim that the current local commit has been pushed, tagged, or released on GitHub.
+- `0.9.0-rc.1` is an unreleased review-candidate package version. This README does not claim that the current local commit has been pushed, tagged, or released on GitHub.
 
 ## Test
 

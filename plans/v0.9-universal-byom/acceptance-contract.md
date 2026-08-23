@@ -1,9 +1,9 @@
-# Model Harness v0.9 · Universal BYOM 机器验收合同
+# Specialist Model Studio v0.9 · Universal BYOM 机器验收合同
 
-> 当前状态：L0 规划与合同冻结中；本文定义目标门禁，不代表对应实现已经存在或通过
+> 当前状态：L0–L2 已进入本地实现与审查，L3–L5 仍是目标门禁；本文和 Gate 定义的存在不代表对应层级已经通过
 > 主对象：`TrainingTask`
 > 目标聚合器：`scripts/verify_v09_byom.py`（L5 实现后才可作为验收证据）
-> 目标 Gate 定义：`acceptance/v0.9-gates.json`（L5 实现）
+> Gate 定义：`acceptance/v0.9-gates.json`（已区分 reviewable RC、完整本地 BYOM 与 GitHub Release）
 > 目标报告 Schema：`acceptance/v0.9-report.schema.json`（L5 实现）
 
 ## 1. 通用支持的可检验定义

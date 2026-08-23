@@ -32,15 +32,15 @@ if ! DSH_CONFIG="$(dsh --profile web --dump-config 2>&1)"; then
   exit 1
 fi
 
-if ! grep -F "ai-pm-model-harness-dsh-plugin" >/dev/null <<<"${DSH_CONFIG}"; then
-  echo "The Model Harness plugin is not linked to the DSH web profile." >&2
+if ! grep -E "(specialist-model-studio|ai-pm-model-harness)-dsh-plugin" >/dev/null <<<"${DSH_CONFIG}"; then
+  echo "The Specialist Model Studio plugin is not linked to the DSH web profile." >&2
   echo "Run: dsh plugin --profile web add \"${HARNESS_ROOT}/integrations/deepseek-harness\"" >&2
   exit 1
 fi
 
 mkdir -p "${HARNESS_ROOT}/runs"
 
-echo "Checking the Model Harness backend..."
+echo "Checking the Specialist Model Studio backend..."
 
 cleanup() {
   if [[ "${STARTED_BACKEND}" == "1" ]] && kill -0 "${BACKEND_PID}" 2>/dev/null; then
@@ -68,11 +68,11 @@ if ! curl --fail --silent --max-time 2 "${BACKEND_URL}/health" >/dev/null 2>&1; 
 fi
 
 if ! curl --fail --silent --max-time 2 "${BACKEND_URL}/health" >/dev/null 2>&1; then
-  echo "Model Harness backend did not become healthy. See ${BACKEND_LOG}" >&2
+  echo "Specialist Model Studio backend did not become healthy. See ${BACKEND_LOG}" >&2
   exit 1
 fi
 
-echo "Model Harness product: ${BACKEND_URL}/app"
+echo "Specialist Model Studio: ${BACKEND_URL}/app"
 echo "DSH runtime (internal/debug): ${AGENT_URL}"
 echo "Press Ctrl-C to stop services started by this command."
 

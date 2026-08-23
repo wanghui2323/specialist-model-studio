@@ -1,6 +1,6 @@
 - insert:
-    - id: ai-pm-model-harness
-      name: ai-pm-model-harness-dsh-plugin
+    - id: specialist-model-studio
+      name: specialist-model-studio-dsh-plugin
 
 - id: agent-presets
   config:
