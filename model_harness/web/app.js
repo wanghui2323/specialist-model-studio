@@ -241,7 +241,11 @@ function datasetDetail(task) {
   return [`${report.row_count || 0} 行数据`, `${report.feature_count || Math.max((report.column_count || 1) - 1, 0)} 个特征 · 目标 ${report.target_column || "—"}`];
 }
 function deliveryDetail(task) {
-  return task.current_result?.status === "completed" ? "查看评测结论" : "等待评测结果";
+  const result = task.current_result;
+  if (!result || result.status !== "completed") return "等待评测结果";
+  const verdict = releaseVerdict(task);
+  if (verdict.releaseReady) return "证据充分，可生成交付包";
+  return `${statusLabel(verdict.conclusion)}：${verdict.reasons[0] || "查看五维评测结论"}`;
 }
 function renderStages(task) {
   const [dataCount, dataSummary] = datasetDetail(task); const result = task.current_result; const hasData = Boolean(task.dataset_report); const confirmed = task.contract_confirmed === true; const finished = result?.status === "completed"; const blocked = task.status === "needs_recipe"; const current = planState(task);
@@ -252,7 +256,13 @@ function renderStages(task) {
     [LIFECYCLE_STEPS[3], finished ? "真实训练与独立评测完成" : result ? `运行状态：${result.status}` : "尚未启动"],
     [LIFECYCLE_STEPS[4], deliveryDetail(task)],
   ];
-  clear(ui.stageList); stages.forEach(([title, detail], index) => { const stageState = index + 1 < current || (current === 5 && index < 4) ? "done" : index + 1 === current ? "active" : "waiting";
+  const releaseDone = releaseVerdict(task).releaseReady === true;
+  clear(ui.stageList); stages.forEach(([title, detail], index) => {
+    const stageState = index + 1 < current
+      ? "done"
+      : index + 1 === current
+        ? (index === 4 && releaseDone ? "done" : "active")
+        : "waiting";
     const item = document.createElement("li"); item.className = "stage-item"; item.dataset.state = stageState;
     const mark = document.createElement("span"); mark.className = "stage-mark"; mark.textContent = stageState === "done" ? "✓" : String(index + 1);
     const copy = document.createElement("span"); copy.className = "stage-copy"; const b = document.createElement("b"); b.textContent = title; const small = document.createElement("span"); small.textContent = detail; copy.append(b, small);
@@ -371,14 +381,43 @@ function renderContract(task) {
   const retryable = TERMINAL_RETRY_STATUSES.has(task.current_result?.status); ui.startThroughAgentButton.textContent = retryable ? "保留证据并重新训练" : task.current_run_id ? "分析结果或开启下一轮" : state.runtimeReady ? "让 Agent 启动真实训练" : "批准并启动真实训练";
   ui.confirmations.querySelectorAll("input").forEach((input) => { input.disabled = task.status === "running"; input.checked = task.confirmations?.[input.dataset.confirm] === true; });
 }
+function releaseVerdict(task) {
+  const result = task?.current_result;
+  if (!result) return { conclusion: "not_evaluated", releaseReady: false, reasons: [] };
+  const fresh = state.evidenceRunId === result.run_id ? state.evaluationReport : null;
+  const report = fresh || result.evaluation_report || null;
+  return {
+    conclusion: report?.conclusion || result.evaluation_conclusion || "not_evaluated",
+    releaseReady: report?.release_ready === true,
+    reasons: [...(report?.evidence_reasons || []), ...(report?.integrity_errors || [])],
+  };
+}
 function metricEntries(result) { const clean = result?.metrics?.clean_test || {}; return "mae" in clean || "rmse" in clean || "r2" in clean ? [[clean.mae, "MAE"], [clean.rmse, "RMSE"], [clean.r2, "R²"]] : [[clean.accuracy, "Accuracy"], [clean.macro_f1, "Macro-F1"], [clean.worst_class_recall, "最差类 Recall"]]; }
 function renderResult(task) {
   const result = task.current_result; ui.resultCard.hidden = !result; clear(ui.artifactList); const artifacts = result?.artifacts || []; ui.artifactCount.textContent = String(artifacts.length);
   artifacts.forEach((artifact) => { const link = document.createElement("a"); link.href = `/runs/${encodeURIComponent(result.run_id)}/artifacts/${encodeURIComponent(artifact.name)}`; link.download = artifact.name; const name = document.createElement("span"); name.textContent = artifact.name; const action = document.createElement("span"); action.textContent = "下载"; link.append(name, action); ui.artifactList.append(link); });
   [ui.evaluationEvidenceCard, ui.candidateComparisonCard, ui.failureSampleCard, ui.runHistoryCard, ui.sampleTrialCard, ui.artifactBundleCard].forEach((card) => { card.hidden = !result; });
   if (!result) { clear(ui.evidenceDimensions); clear(ui.candidateList); clear(ui.failureSampleList); clear(ui.runHistoryList); clear(ui.sampleInferenceList); clear(ui.artifactBundleList); return; }
-  const running = RUNNING_STATUSES.has(result.status); ui.gateResult.textContent = running ? "运行中" : result.status === "cancelled" ? "已取消" : result.status === "interrupted" ? "已中断" : result.offline_gates_passed === true ? "门槛通过" : result.status === "completed" ? "存在未通过门槛" : "运行异常";
-  ui.runId.textContent = shortId(result.run_id); ui.runId.title = result.run_id; clear(ui.metricGrid); metricEntries(result).forEach(([value, label]) => { const cell = document.createElement("div"); const b = document.createElement("b"); b.textContent = typeof value === "number" ? value.toFixed(3) : "—"; const span = document.createElement("span"); span.textContent = label; cell.append(b, span); ui.metricGrid.append(cell); });
+  const running = RUNNING_STATUSES.has(result.status);
+  const verdict = releaseVerdict(task);
+  const headline = running
+    ? "运行中"
+    : result.status === "cancelled"
+      ? "已取消"
+      : result.status === "interrupted"
+        ? "已中断"
+        : result.status === "completed"
+          ? statusLabel(verdict.conclusion)
+          : "运行异常";
+  ui.gateResult.textContent = headline;
+  ui.gateResult.dataset.state = running ? "neutral" : statusTone(verdict.conclusion);
+  ui.runId.textContent = shortId(result.run_id); ui.runId.title = result.run_id; clear(ui.metricGrid); ui.resultCard.querySelector(".gate-note")?.remove(); metricEntries(result).forEach(([value, label]) => { const cell = document.createElement("div"); const b = document.createElement("b"); b.textContent = typeof value === "number" ? value.toFixed(3) : "—"; const span = document.createElement("span"); span.textContent = label; cell.append(b, span); ui.metricGrid.append(cell); });
+  const gateNote = document.createElement("p");
+  gateNote.className = "gate-note";
+  gateNote.textContent = result.offline_gates_passed === true
+    ? "离线指标门槛已通过；是否可交付另见下方五维结论。"
+    : "离线指标门槛未全部通过。";
+  ui.metricGrid.after(gateNote);
   const evaluationUnavailable = state.evidenceErrors.evaluation === "capability_unavailable"; ui.refreshEvaluationButton.disabled = result.status !== "completed" || evaluationUnavailable; ui.refreshEvaluationButton.textContent = evaluationUnavailable ? "评测 API 不可用" : "刷新可信评测报告";
   renderEvaluationEvidence(result); renderCandidateComparison(result); renderFailureSamples(result); renderRunHistory(task, result); renderSampleTrials(result); renderArtifactBundles(result);
 }

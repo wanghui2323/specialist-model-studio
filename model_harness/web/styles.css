@@ -188,3 +188,10 @@
   .asset-search-form label,.sample-json-field,.capability-note,.inline-status,.candidate-row small,.failure-sample-row small,.run-history-row small,.sample-inference-row small,.artifact-bundle-row small{font-size:8px}
   .candidate-row b,.failure-sample-row b,.run-history-row b,.sample-inference-row b,.artifact-bundle-row b{font-size:9px}
 }
+
+/* v0.8 头条结论徽章：颜色由 conclusion 决定，不再由指标门槛决定 */
+#gateResult[data-state="passed"]{color:var(--green)}
+#gateResult[data-state="failed"]{color:var(--red)}
+#gateResult[data-state="warning"]{color:var(--amber)}
+#gateResult[data-state="neutral"]{color:var(--muted)}
+.gate-note{margin:0 0 9px!important;color:var(--muted);line-height:1.5}
