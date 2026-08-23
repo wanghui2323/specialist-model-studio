@@ -160,6 +160,7 @@ def main() -> None:
         "gate_result": "passed",
         "post_gate": "verified",
         "authority": "ITERATION-PLAN.md#V0",
+        "scope": "L0 loop and tasks MH-900 through MH-902",
     }
     if l0_evidence.get("status_transition") != expected_transition:
         raise AssertionError("L0 status transition evidence mismatch")
