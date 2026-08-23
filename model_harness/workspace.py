@@ -383,12 +383,31 @@ class TrainingWorkspace:
                 )
         return self.get_task(task_id)
 
-    def list_tasks(self) -> list[dict[str, Any]]:
-        tasks = [self._view(read_json(path)) for path in self.tasks_dir.glob("*/task.json")]
+    def list_tasks(self, *, include_archived: bool = False) -> list[dict[str, Any]]:
+        stored_tasks = [read_json(path) for path in self.tasks_dir.glob("*/task.json")]
+        tasks = [
+            self._view(task)
+            for task in stored_tasks
+            if include_archived or not task.get("archived_at_utc")
+        ]
         return sorted(tasks, key=lambda item: item["updated_at_utc"], reverse=True)
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         return self._view(read_json(self._task_path(task_id)))
+
+    def archive_task(self, task_id: str) -> dict[str, Any]:
+        """Soft-archive a task while preserving its task and run evidence."""
+
+        with self._lock:
+            task = read_json(self._task_path(task_id))
+            if task.get("status") == "running":
+                raise HarnessError("真实训练运行中，暂不能归档任务")
+            if not task.get("archived_at_utc"):
+                archived_at = _utc_now()
+                task["archived_at_utc"] = archived_at
+                task["updated_at_utc"] = archived_at
+                write_json(self._task_path(task_id), task)
+        return self.get_task(task_id)
 
     def search_huggingface_models(
         self,
@@ -1010,6 +1029,8 @@ class TrainingWorkspace:
     def start_run(self, task_id: str) -> dict[str, Any]:
         with self._lock:
             task = read_json(self._task_path(task_id))
+            if task.get("archived_at_utc"):
+                raise HarnessError("归档任务不能启动新的训练运行")
             if task["status"] == "running":
                 raise HarnessError("当前任务已有运行正在执行")
             if not task.get("contract_confirmed"):

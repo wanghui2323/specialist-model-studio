@@ -199,3 +199,10 @@
 .task-meta>time{grid-column:2;grid-row:1}
 .task-facts{grid-column:1/-1;overflow:hidden;color:var(--muted);text-overflow:ellipsis;white-space:nowrap}
 .task-id-hint{display:block;overflow:hidden;color:var(--muted);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
+.task-row{min-width:0;display:grid;grid-template-columns:minmax(0,1fr) 32px;gap:2px;align-items:start}
+.task-row .task-item{min-width:0}
+.task-archive-button{margin-top:6px;color:var(--muted)}
+.task-archive-button:hover{color:var(--red);background:var(--red-bg)}
+.task-archive-button:disabled{color:#aeb4c0;background:transparent}
+.task-archive-button svg{width:16px;height:16px}
+@media(max-width:720px){.task-row{grid-template-columns:minmax(0,1fr) 44px}.task-archive-button{margin-top:4px}}

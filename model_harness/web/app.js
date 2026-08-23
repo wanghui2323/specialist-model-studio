@@ -136,7 +136,8 @@ function renderTaskList() {
   clear(ui.taskList);
   if (!state.tasks.length) { const empty = document.createElement("div"); empty.className = "task-empty"; empty.textContent = "还没有训练任务。先描述一个真实问题。"; ui.taskList.append(empty); return; }
   state.tasks.forEach((task) => {
-    const button = document.createElement("button"); button.type = "button"; button.className = "task-item"; button.setAttribute("aria-current", String(task.task_id === state.selectedTaskId));
+    const row = document.createElement("div"); row.className = "task-row"; row.dataset.taskId = task.task_id;
+    const button = document.createElement("button"); button.type = "button"; button.className = "task-item"; button.dataset.action = "select-task"; button.dataset.taskId = task.task_id; button.setAttribute("aria-current", String(task.task_id === state.selectedTaskId));
     const title = document.createElement("b"); title.textContent = task.name;
     const meta = document.createElement("span"); meta.className = "task-meta";
     const status = document.createElement("span"); const dot = document.createElement("i"); dot.dataset.status = task.status; status.append(dot, document.createTextNode(STATUS_LABELS[task.status] || task.status));
@@ -146,7 +147,28 @@ function renderTaskList() {
     const time = document.createElement("time"); time.textContent = formatTime(task.updated_at_utc); meta.append(status, facts, time);
     const idHint = document.createElement("small"); idHint.className = "task-id-hint"; idHint.textContent = shortId(task.task_id); idHint.title = task.task_id;
     button.append(title, meta, idHint);
-    button.addEventListener("click", () => selectTask(task.task_id)); ui.taskList.append(button);
+    const archive = document.createElement("button"); archive.type = "button"; archive.className = "task-archive-button icon-button"; archive.dataset.action = "archive-task"; archive.dataset.taskId = task.task_id;
+    archive.disabled = task.status === "running"; archive.title = archive.disabled ? "任务运行中，不能归档" : `归档任务：${task.name}`; archive.setAttribute("aria-label", archive.title);
+    archive.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16v12H4zM3 4h18v3.5H3zM9 11h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    button.addEventListener("click", () => selectTask(task.task_id)); archive.addEventListener("click", () => confirmTaskArchive(task)); row.append(button, archive); ui.taskList.append(row);
+  });
+}
+function confirmTaskArchive(task) {
+  if (task.status === "running") { showNotice("真实训练运行中，暂不能归档任务。请等待运行结束或先取消训练。"); return; }
+  openSimpleDialog({
+    kicker: "任务归档", title: `归档“${task.name}”？`,
+    body: "任务只会从默认列表隐藏；数据、Run、指标和产物都会保留。归档后不能再启动新的训练运行。",
+    allowLabel: "确认归档",
+    onAllow: async () => {
+      const archivedSelected = task.task_id === state.selectedTaskId;
+      await request(`/tasks/${encodeURIComponent(task.task_id)}/archive`, { method: "POST" });
+      await loadTasks();
+      if (archivedSelected) {
+        const nextTaskId = state.tasks[0]?.task_id;
+        if (nextTaskId) await selectTask(nextTaskId); else openNewTask();
+      }
+      showNotice("任务已归档；训练数据、运行记录和产物仍然保留。", "ok");
+    },
   });
 }
 function openNewTask() {

@@ -334,8 +334,8 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/tasks")
-    def list_tasks() -> dict[str, Any]:
-        return {"tasks": workspace.list_tasks()}
+    def list_tasks(include_archived: bool = Query(False)) -> dict[str, Any]:
+        return {"tasks": workspace.list_tasks(include_archived=include_archived)}
 
     @app.post("/tasks")
     async def create_task(body: dict[str, Any] = Body(...)) -> JSONResponse:
@@ -356,6 +356,15 @@ def create_app(
             return {"task": workspace.get_task(task_id)}
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/archive")
+    def archive_task(task_id: str) -> dict[str, Any]:
+        try:
+            return {"task": workspace.archive_task(task_id)}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/tasks/{task_id}/spec/revisions")
     def list_task_spec_revisions(task_id: str) -> dict[str, Any]:
