@@ -114,10 +114,14 @@ function restoreDraft(taskId = state.selectedTaskId) { ui.messageInput.value = D
 function clearDraft(taskId = state.selectedTaskId) { if (DraftStore) DraftStore.clear(localStorage, draftId(taskId)); }
 
 async function loadRuntime() {
-  ui.runtimePill.dataset.state = "checking"; ui.runtimePill.querySelector("span").textContent = "正在检查 Agent Runtime";
+  const checkingText = "正在检查 Agent Runtime";
+  ui.runtimePill.dataset.state = "checking"; ui.runtimePill.querySelector("span").textContent = checkingText; ui.runtimePill.title = checkingText; ui.runtimePill.setAttribute("aria-label", checkingText);
   try { state.runtimeReady = (await request("/agent/runtime")).available === true; } catch (_error) { state.runtimeReady = false; }
   ui.runtimePill.dataset.state = state.runtimeReady ? "ready" : "error";
-  ui.runtimePill.querySelector("span").textContent = state.runtimeReady ? "Agent Runtime 已连接" : "Agent 未连接 · 任务操作仍可用";
+  const pillText = state.runtimeReady ? "Agent Runtime 已连接" : "Agent 未连接 · 任务操作仍可用";
+  ui.runtimePill.querySelector("span").textContent = pillText;
+  ui.runtimePill.title = pillText;
+  ui.runtimePill.setAttribute("aria-label", pillText);
 }
 async function loadHfCapability() {
   try { state.hfCapability = await request("/model-assets/huggingface/capability"); }
@@ -218,11 +222,12 @@ async function refreshSelected({ force = false, token = state.selectionToken } =
       state.conversation = remoteConversation.session_id ? remoteConversation : null;
       if (state.pendingMessage?.task_id === taskId && remoteConversation.items.some((item) => item.role === "user" && item.text === state.pendingMessage.text)) state.pendingMessage = null;
       if (remoteConversation.session_id) {
-        state.runtimeReady = true; ui.runtimePill.dataset.state = "ready"; ui.runtimePill.querySelector("span").textContent = "Agent Runtime 已连接";
+        const pillText = "Agent Runtime 已连接";
+        state.runtimeReady = true; ui.runtimePill.dataset.state = "ready"; ui.runtimePill.querySelector("span").textContent = pillText; ui.runtimePill.title = pillText; ui.runtimePill.setAttribute("aria-label", pillText);
       }
     } catch (error) {
       if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
-      if (error.status === 503) { state.runtimeReady = false; state.conversation = null; ui.runtimePill.dataset.state = "error"; ui.runtimePill.querySelector("span").textContent = "Agent 未连接 · 任务操作仍可用"; }
+      if (error.status === 503) { const pillText = "Agent 未连接 · 任务操作仍可用"; state.runtimeReady = false; state.conversation = null; ui.runtimePill.dataset.state = "error"; ui.runtimePill.querySelector("span").textContent = pillText; ui.runtimePill.title = pillText; ui.runtimePill.setAttribute("aria-label", pillText); }
       else showNotice(error.message);
     }
     renderConversation(force); if (force) {

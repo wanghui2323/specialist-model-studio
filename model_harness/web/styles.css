@@ -63,14 +63,14 @@
   .next-action-card{grid-template-columns:minmax(0,1fr) auto;gap:9px;padding:9px 10px}
   .next-action-state{grid-column:1/-1;display:flex;align-items:center;gap:7px;padding:0 0 7px;border-right:0;border-bottom:1px solid rgba(98,88,244,.12)}
   .next-action-state span:after{margin-left:6px;color:var(--line-strong);content:"/"}
-  .next-action-copy>span,.next-action-copy p{display:none}.next-action-copy strong{font-size:14px}
+  .next-action-copy>span{display:none}.next-action-copy p{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:normal}.next-action-copy strong{font-size:14px}
   .next-action-button{min-width:0;min-height:44px;padding:0 12px;font-size:13px}
   .task-blocker{grid-template-columns:24px minmax(0,1fr);padding:8px}.task-blocker .text-button{grid-column:2;justify-self:start;min-height:44px}
   .task-plan{overflow:visible}.task-plan-heading{min-width:0;min-height:40px;padding:0 12px}
   .conversation{padding-bottom:16px}
   .task-spec-card{margin-bottom:14px;padding:12px}.task-spec-header h2{font-size:16px}.task-spec-summary{font-size:13px}
   .task-spec-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.task-spec-facts>div{min-height:54px}
-  .task-spec-actions{display:grid;grid-template-columns:1fr 1fr}.task-spec-actions .primary-button,.task-spec-actions .secondary-button{min-height:44px}
+  .task-spec-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr))}.task-spec-actions .primary-button,.task-spec-actions .secondary-button{min-height:44px}
   .agent-working button{min-height:44px;padding:0 12px}
   .composer-wrap{bottom:62px}
   .menu-button,.send-button{width:44px;height:44px}.attachment-button{min-height:44px}.sidebar .icon-button{width:44px;height:44px}.decision-actions button,.dialog-actions button{min-height:44px}.inspector button{min-height:44px}
