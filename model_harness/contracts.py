@@ -82,6 +82,16 @@ def validate_contract(
     ):
         raise ContractError("optimization.max_iterations must be a non-negative integer")
 
+    diagnostics = data.get("diagnostics", {})
+    if not isinstance(diagnostics, dict):
+        raise ContractError("diagnostics must be an object")
+    if "minimum_test_samples" in diagnostics:
+        value = diagnostics["minimum_test_samples"]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 20:
+            raise ContractError(
+                "diagnostics.minimum_test_samples must be an integer >= 20"
+            )
+
     plugin.validate_contract(data)
 
 
