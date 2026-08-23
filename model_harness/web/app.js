@@ -43,6 +43,7 @@ const state = {
   tasks: [], task: null, selectedTaskId: null, conversation: null, runEvents: [], runtimeReady: false, pollTimer: null,
   pendingMessage: null, lastRenderKey: "", selectionToken: 0, hfCapability: null, hfModels: [], hfCard: null,
   modelAssetVerification: null, evidenceRunId: null, evidenceLoaded: false, evaluationReport: null, sampleInferences: [], artifactBundles: [],
+  refreshInFlight: false, refreshSeq: 0,
   evidenceErrors: {},
 };
 const DraftStore = window.ModelHarnessDraftStore;
@@ -158,27 +159,52 @@ async function selectTask(taskId) {
 }
 async function refreshSelected({ force = false, token = state.selectionToken } = {}) {
   const taskId = state.selectedTaskId; if (!taskId || token !== state.selectionToken) return;
+  if (state.refreshInFlight && !force) return;
+  const seq = ++state.refreshSeq; state.refreshInFlight = true;
   try {
-    const response = await request(`/tasks/${encodeURIComponent(taskId)}`); if (state.selectedTaskId !== taskId || token !== state.selectionToken) return; state.task = response.task;
-    const selectedRunId = response.task.current_run_id || null; if (state.evidenceRunId !== selectedRunId) resetRunEvidence(selectedRunId);
-    if (response.task.current_run_id) { try { state.runEvents = (await request(`/runs/${encodeURIComponent(response.task.current_run_id)}/events`)).events || []; } catch (_error) { state.runEvents = []; } }
-    else state.runEvents = [];
-    renderTask(response.task);
-    if (response.task.current_result?.status === "completed" && (force || !state.evidenceLoaded)) await loadRunEvidence(response.task);
-  } catch (error) { showNotice(error.message); return; }
-  try {
-    const remoteConversation = (await request(`/tasks/${encodeURIComponent(taskId)}/conversation`)).conversation;
-    state.conversation = remoteConversation.session_id ? remoteConversation : null;
-    if (state.selectedTaskId !== taskId || token !== state.selectionToken) return;
-    if (state.pendingMessage?.task_id === taskId && remoteConversation.items.some((item) => item.role === "user" && item.text === state.pendingMessage.text)) state.pendingMessage = null;
-    if (remoteConversation.session_id) {
-      state.runtimeReady = true; ui.runtimePill.dataset.state = "ready"; ui.runtimePill.querySelector("span").textContent = "Agent Runtime 已连接";
+    try {
+      const response = await request(`/tasks/${encodeURIComponent(taskId)}`); if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return; state.task = response.task;
+      const selectedRunId = response.task.current_run_id || null; if (state.evidenceRunId !== selectedRunId) resetRunEvidence(selectedRunId);
+      if (response.task.current_run_id) {
+        try {
+          const runEvents = (await request(`/runs/${encodeURIComponent(response.task.current_run_id)}/events`)).events || [];
+          if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
+          state.runEvents = runEvents;
+        } catch (_error) {
+          if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
+          state.runEvents = [];
+        }
+      }
+      else state.runEvents = [];
+      renderTask(response.task);
+      if (response.task.current_result?.status === "completed" && (force || !state.evidenceLoaded)) {
+        await loadRunEvidence(response.task);
+        if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
+      }
+    } catch (error) {
+      if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
+      showNotice(error.message); return;
     }
-  } catch (error) {
-    if (error.status === 503) { state.runtimeReady = false; state.conversation = null; ui.runtimePill.dataset.state = "error"; ui.runtimePill.querySelector("span").textContent = "Agent 未连接 · 任务操作仍可用"; }
-    else showNotice(error.message);
+    try {
+      const remoteConversation = (await request(`/tasks/${encodeURIComponent(taskId)}/conversation`)).conversation;
+      if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
+      state.conversation = remoteConversation.session_id ? remoteConversation : null;
+      if (state.pendingMessage?.task_id === taskId && remoteConversation.items.some((item) => item.role === "user" && item.text === state.pendingMessage.text)) state.pendingMessage = null;
+      if (remoteConversation.session_id) {
+        state.runtimeReady = true; ui.runtimePill.dataset.state = "ready"; ui.runtimePill.querySelector("span").textContent = "Agent Runtime 已连接";
+      }
+    } catch (error) {
+      if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
+      if (error.status === 503) { state.runtimeReady = false; state.conversation = null; ui.runtimePill.dataset.state = "error"; ui.runtimePill.querySelector("span").textContent = "Agent 未连接 · 任务操作仍可用"; }
+      else showNotice(error.message);
+    }
+    renderConversation(force); if (force) {
+      await loadTasks();
+      if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
+    }
+  } finally {
+    if (seq === state.refreshSeq) state.refreshInFlight = false;
   }
-  renderConversation(force); if (force) await loadTasks();
 }
 
 function renderTask(task) {
