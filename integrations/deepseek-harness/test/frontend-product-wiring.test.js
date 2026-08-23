@@ -79,6 +79,6 @@ test("terminal runs expose an Agent-independent task-owned retry path", async ()
   assert.match(app, /request\(`\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/runs`, \{ method: "POST" \}\)/);
   assert.match(app, /旧事件、错误和产物不会被覆盖/);
   assert.match(app, /页面也不会在后端返回前伪造运行状态/);
-  assert.match(app, /TERMINAL_RETRY_STATUSES\.has\(state\.task\?\.current_result\?\.status\)\) retryRunDirect\(\)/);
+  assert.match(app, /TERMINAL_RETRY_STATUSES\.has\(state\.task\?\.current_result\?\.status\)\) \{ retryRunDirect\(\); return; \}/);
   assert.doesNotMatch(app, /state\.task\.status\s*=\s*"running"/);
 });
