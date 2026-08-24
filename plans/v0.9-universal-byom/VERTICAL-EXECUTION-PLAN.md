@@ -38,12 +38,12 @@ L0 current evidence
 | 范围 | 工程状态 | 已有检查 | 未关闭门禁 |
 | --- | --- | --- | --- |
 | L0/V0 | `implemented` | 历史合同与工作台证据存在 | 现有 evidence 缺 `owned_paths` 且文件哈希漂移 |
-| V1 | `implemented` | 来源/分析测试已纳入外部新 wheel 的 Python 388/388 完整 suite | 冻结 commit 的正式联网、刷新/重启与 C01–C04 evidence |
-| V2 | `implemented` | Analyzer/Store/API 定向测试通过 | 真实仓库浏览器、C05 6/6、完整 L1 evidence |
-| V3/L2 | `implemented` | 外部新 wheel Python 388/388、Node 29/29；生产 wheel 的两个仓库外 CLI 通过，源码旧 editable `.venv` 因 macOS hidden `.pth` 仍仅有 3 个 installed-CLI 测试失败；全局 Run/Chat 写入口已 fail-closed，task-owned 启动/恢复/策略会重验 owner、合同根血缘、分析、计划、资源和 blocker；状态检查与 BlockerEvidence v0.2、包外服务和任务重启通过；WorkBuddy 式 dirty candidate 的 1440/1024/390 smoke 通过；provisional budget 不生成 ResourceFitReport/Run，只产生 `retryable=false` 的 `continue_to_l3_qualification` 交接 | 同一冻结 commit 的联网/浏览器复验与 C06/C07/C15 evidence；V3 不包含 L3 资格试跑或训练 |
+| V1 | `implemented` | 来源/分析测试纳入外部新 wheel 的 Python 388/388 完整 suite；冻结候选上 HF/GitHub 公开正例、3 条安全负例与 snapshot 篡改负例通过 | 私有仓库未认证/已认证双态 fixture 缺失，formal L1 保持 `blocked`；尚无 C01–C04 完整 evidence |
+| V2 | `implemented` | Analyzer/Store/API 定向测试通过；真实 GitHub 仓库已经浏览器完成搜索、固定 commit、绑定、分析与刷新重入 | C05 尚未形成 6/6 完整 `l1-evidence.json` |
+| V3/L2 | `implemented` | 外部新 wheel Python 388/388、Node 29/29；两个仓库外 CLI、包外服务、任务重启和 task-owned 授权负例通过；冻结候选的 1440/1024/390 smoke 通过；真实 GitHub V3 旅程完成计划/审批/资源检查，刷新前后血缘一致，并诚实终止于 `blocked_environment`；provisional budget 不生成 ResourceFitReport/Run，只产生 `retryable=false` 的 `continue_to_l3_qualification` 交接 | 尚无 C06/C07/C15 全部 6/6 的 `l2-evidence.json`；V3 不包含 L3 资格试跑或训练 |
 | L3–L5 | `planned` | 无 | 对应隔离、训练、盲测与发布门 |
 
-本轮实现开始前的基线 commit 为 `ce8130d58250c25ee991ca192104de37bf7b2468`；实现候选仍须在提交后以新的冻结 commit 重跑正式证据。该基线只用于定位审计上下文，不是 V1–V3 verified commit。
+本轮实现开始前的基线 commit 为 `ce8130d58250c25ee991ca192104de37bf7b2468`。V1–V3 已进入冻结审核分支和 Draft PR，精确审核 commit 以 Git/PR HEAD 为准；该基线只用于定位实现起点，不是 V1–V3 verified commit。
 
 ## 4. 状态写入规则
 

@@ -67,12 +67,12 @@
 | 版本/Loop | 实现事实 | 当前机器检查 | 允许状态 |
 | --- | --- | --- | --- |
 | L0/V0 | 合同与工作台存在 | 既有 `l0-evidence.json` 缺 `owned_paths`，且多个被哈希文件已变化 | `implemented`，不得保留当前 `verified` 结论 |
-| V1 / L1 第一段 | 双来源、不可变快照、来源界面和 live 脚本已进入工作树 | 来源/分析测试已纳入外部新 wheel 的 388/388 完整 suite；未运行冻结 commit 的正式联网和 L1 evidence 门 | `implemented`，L1 不得 verified |
-| V2 / L1 第二段 | 静态分析、证据查看、手工映射、风险与取消/恢复已进入工作树 | 定向测试通过；无真实仓库浏览器证据，C05 仍无 6/6 证据 | `implemented`，L1 不得 verified |
-| V3 / L2 | 计划、审批、资源探测、环境锁、资源门禁、BlockerEvidence v0.2、状态检查器与 WorkBuddy 式工作区已实现 | 新 wheel 仓库外 Python 388/388、Node 29/29、生产 wheel CLI/服务、任务重启和 task-owned 授权负例通过；全局 create/cancel/resume/strategy/chat 写入口 fail-closed；源码旧 editable `.venv` 因 macOS hidden `.pth` 仍仅有 3 个 installed-CLI 测试失败，生产 wheel CLI 不受影响；provisional budget 不生成 ResourceFitReport/Run，只返回 `retryable=false` 的 `continue_to_l3_qualification`；dirty candidate 的 1440/1024/390 smoke 通过但不是 C06/C07/C15 证据 | `implemented`，analysis-only，L2 不得 verified；资格试跑/训练属于 L3+ |
+| V1 / L1 第一段 | 双来源、不可变快照、来源界面和 live 脚本已进入冻结审核分支 | 来源/分析测试纳入外部新 wheel 的 388/388 完整 suite；HF/GitHub 公开正例、3 条安全负例与 snapshot 篡改负例通过；私有仓库未认证/已认证双态 fixture 缺失，formal L1 保持 `blocked` | `implemented`，L1 不得 verified |
+| V2 / L1 第二段 | 静态分析、证据查看、手工映射、风险与取消/恢复已进入冻结审核分支 | 真实 GitHub 仓库浏览器旅程完成搜索、固定 commit、绑定、分析和刷新重入；C05 仍无 6/6 证据包 | `implemented`，L1 不得 verified |
+| V3 / L2 | 计划、审批、资源探测、环境锁、资源门禁、BlockerEvidence v0.2、状态检查器与 WorkBuddy 式工作区已实现 | 新 wheel 仓库外 Python 388/388、Node 29/29、生产 wheel CLI/服务、任务重启和 task-owned 授权负例通过；冻结候选的 1440/1024/390 smoke 通过；真实 GitHub V3 旅程刷新前后血缘一致，并真实终止于 `blocked_environment`；provisional budget 不生成 ResourceFitReport/Run，只返回 `retryable=false` 的 `continue_to_l3_qualification` | `implemented`，analysis-only，L2 不得 verified；资格试跑/训练属于 L3+ |
 | L3–L5 | 仍是后续范围 | 未执行对应机器门 | `planned` |
 
-补充事实：当前审计基线 HEAD 为 `ce8130d58250c25ee991ca192104de37bf7b2468`，工作树尚未冻结；新 wheel 外部环境已通过完整 Python、CLI、服务和重启检查，但联网、冻结 commit 的 L1/L2 证据与用户验收仍未完成。
+补充事实：`ce8130d58250c25ee991ca192104de37bf7b2468` 是实现前审计基线，不是当前审核 HEAD。当前 V1–V3 已进入冻结审核分支与 Draft PR，精确 commit 由 Git/PR HEAD 给出；新 wheel 外部环境、公开来源联网、真浏览器和冷源码树已有审核证据，但 L1/L2 全量证据包与用户验收仍未完成。
 
 ### 历史施工单的详细程度是刻意递减的
 

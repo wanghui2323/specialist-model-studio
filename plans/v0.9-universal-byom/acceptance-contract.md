@@ -1,6 +1,6 @@
 # Specialist Model Studio v0.9 · Universal BYOM 机器验收合同
 
-> 当前状态（2026-08-24 审计）：L0 合同已实现但既有证据失配；L1 的 V1/V2 实现候选已存在但无完整联网/浏览器证据；L2/V3 已达到 analysis-only 实现完成、可供审阅，fresh wheel 仓库外 Python 388/388、Node 29/29、生产 wheel CLI、task-owned 授权负例与 WorkBuddy 式三视口 smoke 已通过；源码旧 editable `.venv` 因 macOS hidden `.pth` 仍仅有 3 个 installed-CLI 测试失败，生产 wheel CLI 不受影响。当前尚无冻结 commit 的 C06/C07/C15 整层证据；L3–L5 仍是目标门禁。本文和 Gate 定义的存在不代表对应层级已经通过
+> 当前状态（2026-08-24 审计）：L0 合同已实现但既有证据失配；L1 的 V1/V2 和 L2/V3 已进入冻结审核分支，并形成 analysis-only 可审阅候选。fresh wheel 仓库外 Python 388/388、Node 29/29、生产 wheel CLI/服务、task-owned 授权负例与 WorkBuddy 式三视口 smoke 已通过；真实 GitHub 旅程完成搜索、选择、固定 commit、绑定、分析、计划/审批、资源检查与刷新重入，并按安全合同终止于 `blocked_environment`。formal L1 仍因缺少私有仓库未认证/已认证双态 fixture 而 `blocked`；尚无 C01–C07/C15 各自全部 6/6 的 L1/L2 证据包；L3–L5 仍是目标门禁。本文和 Gate 定义的存在不代表对应层级已经通过。
 > 主对象：`TrainingTask`
 > 目标聚合器：`scripts/verify_v09_byom.py`（L5 实现后才可作为验收证据）
 > Gate 定义：`acceptance/v0.9-gates.json`（已区分 reviewable RC、完整本地 BYOM 与 GitHub Release）

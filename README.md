@@ -1,10 +1,10 @@
 # Specialist Model Studio
 
-一个从需求到可交付专业模型的对话优先智能工作台：用户描述目标、提供必要数据并保留关键决定权，Studio 用可审查的模型来源、Recipe、训练、评测和制品组织同一个 `TrainingTask`。既有 v0.7 引擎保留三条真实用户数据切片；v0.9 的来源分析、训练计划和资源判断目前是未冻结的本地实现候选，尚未完成 L1/L2 整层证据。Research Agent 的论文证据链已完成架构设计，尚未作为已实现能力宣传。
+一个从需求到可交付专业模型的对话优先智能工作台：用户描述目标、提供必要数据并保留关键决定权，Studio 用可审查的模型来源、Recipe、训练、评测和制品组织同一个 `TrainingTask`。既有 v0.7 引擎保留三条真实用户数据切片；v0.9 的 V1–V3 已形成冻结分支上的 analysis-only 审核候选，能真实完成来源搜索与绑定、静态分析、计划审批和资源阻断，但尚未完成 L1/L2 整层 `verified` 证据。Research Agent 的论文证据链已完成架构设计，尚未作为已实现能力宣传。
 
-> 当前候选包版本是 `0.9.0rc1`（API 版本 `0.9.0-rc.1`），功能轨道是 `v0.9-universal-byom`，发布状态仍为 `unreleased_rc`。它只表示本地 RC 正在接受审查，不表示生产就绪、已合并 `main`、已打 Tag 或已创建 GitHub Release。
+> 当前候选包版本是 `0.9.0rc1`（API 版本 `0.9.0-rc.1`），功能轨道是 `v0.9-universal-byom`，发布状态仍为 `unreleased_rc`。它只表示已有可供代码审核和受控本地体验的 RC 候选，不表示生产就绪，也不表示 formal RC Gate、L1/L2、`main` 合并、Tag 或 GitHub Release 已通过。
 
-项目远程地址已迁移为 <https://github.com/wanghui2323/specialist-model-studio>；当前本地开发分支是 `codex/v0.9-universal-byom`。远程分支、Tag 和 Release 状态仍必须在 GitHub 上分别核验，不能由仓库名称或本地版本号代替。
+项目远程地址已迁移为 <https://github.com/wanghui2323/specialist-model-studio>；当前审核分支是 `codex/v0.9-universal-byom`，通过 Draft PR 提供代码审核。远程分支、CI、Tag 和 Release 状态仍必须在 GitHub 上分别核验，不能由仓库名称或本地版本号代替。首次审核请从 [v0.9 RC 审核指南](docs/v0.9-review-candidate.md) 开始。
 
 ## 默认体验：从一句话进入同一个训练任务
 
@@ -18,7 +18,7 @@ v0.9 本地界面候选借鉴了 WorkBuddy 的任务型对话机制，而不是�
 - 工作区同步展示模型来源、数据、计划、资源、阻断和证据；刷新或重启后仍以同一个 `task_id` 恢复；
 - `BlockerEvidence` 是一等结果，必须说明事实、规则和恢复动作，不用动画或固定计时器模拟进度。
 
-“WorkBuddy 式”只描述交互设计参考。当前三视口 smoke 属于未冻结工作树上的本地检查，不代表 L1/L2 已 verified、用户已验收或版本已发布。
+“WorkBuddy 式”只描述交互设计参考。当前三视口 smoke 和真实 GitHub V3 旅程已在冻结审核候选上执行；它们证明界面与 analysis-only 路径可体验，但不代表 L1/L2 已 verified、用户已验收或版本已发布。
 
 ## 先说能做什么
 

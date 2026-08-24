@@ -19,12 +19,12 @@
   "current_status_snapshot": {
     "audited_at": "2026-08-24",
     "pre_freeze_base_commit": "ce8130d58250c25ee991ca192104de37bf7b2468",
-    "worktree": "dirty_unfrozen",
+    "worktree": "frozen_review_branch; exact clean state and source commit must be read from Git at review time",
     "current_phase": {
       "loop_id": "L2",
       "vertical_version": "V3",
       "status": "implemented",
-      "basis": "latest implemented vertical slice in the unfrozen review candidate; not a verified or accepted loop"
+      "basis": "latest implemented vertical slice in the frozen review branch and Draft PR; not a verified or accepted loop"
     },
     "vertical_mapping": {
       "V1": {"loop": "L1", "flows": ["C01", "C02", "C03", "C04"], "closes_loop": false},
@@ -36,14 +36,25 @@
       "full_python": "388/388 passed against a freshly built wheel in an external virtual environment; repository editable venv remains locally broken for 3 installed-CLI checks because macOS hides the editable .pth, while both production-wheel CLIs remain unaffected outside the repository",
       "node": "29/29 passed after removing global mutating run tools",
       "node_syntax": "passed",
-      "live_network": "not_run",
-      "browser_desktop_mobile": "WorkBuddy-style current-ui 1440x900, 1024x768 and 390x844 passed on the dirty implementation candidate; clarification, adaptive workspace, focus restoration, zero overflow, console, request and HTTP errors",
-      "restart_and_cold_clone": "fresh wheel install, both outside-cwd CLIs, packaged service, authorization negatives and task restart passed; pushed cold clone not_run",
+      "live_network": "public Hugging Face and GitHub positives, three safe negatives and snapshot-tamper negative passed on the frozen review candidate; formal L1 remains blocked because the private-repository unauthenticated/authenticated fixture was not provided",
+      "browser_desktop_mobile": "WorkBuddy-style current-ui 1440x900, 1024x768 and 390x844 passed on the frozen review candidate; a real public GitHub V3 journey completed search, explicit selection, immutable commit binding, analysis, plan approval, resource check and reload recovery with zero console, request or HTTP errors",
+      "restart_and_cold_clone": "fresh wheel install, both outside-cwd CLIs, packaged service, authorization negatives and task restart passed; a source archive matching the frozen tree reproduced Python 388/388, Node 29/29, browser contracts 4/4 and both CLIs, but this is not the formal Git-history cold-clone gate",
       "task_owned_execution": "global create, cancel, resume, strategy and chat mutation surfaces fail closed; task start/resume/strategy reauthorize contract, owner, lineage, analysis, plan, resource fit and active blockers before Run creation",
       "status_checker": "implemented with evidence-self, committed, staged, unstaged and untracked checks; existing l0 evidence correctly fails owned_paths_missing",
       "v3_resource_endpoint": "analysis-only: a provisional resource budget creates no ResourceFitReport or Run; it returns a non-in-place-retryable blocker whose handoff action is continue_to_l3_qualification, without claiming qualification or training inside V3"
     },
-    "release_readiness": "V3_implementation_complete_reviewable_not_loop_verified_not_release_ready"
+    "review_rc_gate_state": {
+      "status": "not_formally_aggregated",
+      "reason": "review-candidate observations exist, but the five required_for_review_rc gates have not been emitted by one machine aggregator bound to the current exact commit",
+      "observed_evidence": [
+        "version sync and boundary truth tests",
+        "three-viewport conversation browser evidence",
+        "real public GitHub V3 journey evidence",
+        "existing registered Recipe training regressions",
+        "external non-editable wheel and source-tree reproduction"
+      ]
+    },
+    "release_readiness": "V3_implementation_complete_unreleased_review_candidate_not_formal_rc_gate_passed_not_loop_verified_not_release_ready"
   },
   "confirmed_decisions": [
     "首批ModelSource为Hugging Face和GitHub，并固定到不可变commit",
@@ -139,7 +150,7 @@
           "depends_on": ["MH-902"],
           "acceptance": "HF和GitHub输入都解析到40位commit并生成来源特有Manifest；凭据不进入任务、日志、报告或Git",
           "evidence_refs": ["plans/v0.9-universal-byom/ITERATION-PLAN.md#v1--粘贴地址就能看到模型来源58h"],
-          "blocked_by": ["尚无正式联网与双视口/重启证据，不得标记verified"]
+          "blocked_by": ["冻结候选已有 HF/GitHub 公开联网和真浏览器证据；私有仓库未认证/已认证双态 fixture 缺失，且尚无 C01-C04 完整证据包，不得标记verified"]
         },
         {
           "id": "MH-911",
@@ -148,7 +159,7 @@
           "depends_on": ["MH-910", "MH-912"],
           "acceptance": "不import或执行第三方模块即可识别框架、训练入口、数据契约、依赖、许可和未知项",
           "evidence_refs": ["plans/v0.9-universal-byom/ITERATION-PLAN.md#v2--看懂这个仓库46h"],
-          "blocked_by": ["C05尚无真实仓库浏览器、刷新和后端重启六点证据"]
+          "blocked_by": ["冻结候选已有真实 GitHub 仓库浏览器、刷新和血缘恢复证据；仍未形成 C05 六点全量证据与完整 l1-evidence"]
         },
         {
           "id": "MH-912",
@@ -157,7 +168,7 @@
           "depends_on": ["MH-910"],
           "acceptance": "branch/tag漂移只创建新版本；来源404/私库/无效revision/限流/哈希篡改和取消零Recipe零Run；重启保持原task_id",
           "evidence_refs": ["plans/v0.9-universal-byom/ITERATION-PLAN.md#v1-2--真实负例"],
-          "blocked_by": ["真实联网负例和后端重启尚未在冻结commit归档"]
+          "blocked_by": ["公开来源联网负例与 snapshot 篡改负例已通过；私有仓库双态 fixture 与完整 L1 归档仍缺失"]
         },
         {
           "id": "MH-913",
@@ -189,7 +200,7 @@
           "depends_on": ["MH-913"],
           "acceptance": "计划明确框架、入口、模型、数据、参数、评测、推理、导出和预计资源，并绑定SourceSnapshot",
           "evidence_refs": ["plans/v0.9-universal-byom/ITERATION-PLAN.md#v3--这台机器能不能训练它812h"],
-          "blocked_by": ["C06尚无同commit浏览器、篡改和重启证据"]
+          "blocked_by": ["真实 GitHub 旅程已有同 commit 计划/审批和刷新证据；篡改、拒绝、过期与重启尚未聚合为 C06 6/6 证据包"]
         },
         {
           "id": "MH-921",
@@ -207,7 +218,7 @@
           "depends_on": ["MH-921"],
           "acceptance": "实时检测CPU、RAM、磁盘、CUDA/MPS；只有完整资源依据才能形成ResourceFitReport。provisional预算在Run前阻断，不生成Report/Run，并以retryable=false的continue_to_l3_qualification交接到L3；不得在V3原地补齐或声称已训练",
           "evidence_refs": ["plans/v0.9-universal-byom/ITERATION-PLAN.md#v3--这台机器能不能训练它812h"],
-          "blocked_by": ["C07尚无真实fit/降级/阻断浏览器证据"]
+          "blocked_by": ["真实资源探测与 blocked_environment 浏览器证据已存在；fit、降级新计划和完整负例仍未聚合为 C07 6/6 证据包"]
         },
         {
           "id": "MH-923",
@@ -216,7 +227,7 @@
           "depends_on": ["MH-922"],
           "acceptance": "RAM/磁盘/GPU不足、平台不兼容、bool/负数探测值、依赖冲突和超预算均产生真实阻断且零TrainingRun",
           "evidence_refs": ["plans/v0.9-universal-byom/ITERATION-PLAN.md#v3--这台机器能不能训练它812h"],
-          "blocked_by": ["BlockerEvidence v0.2、规范错误映射与不可变supersede链已实现；尚无同一冻结commit的C15 6/6浏览器与重启证据"]
+          "blocked_by": ["BlockerEvidence v0.2、规范错误映射与不可变 supersede 链已实现，真实 blocked_environment 已在浏览器刷新后保留；尚无 C15 6/6 的完整恢复与错误/取消证据包"]
         },
         {
           "id": "MH-924",
