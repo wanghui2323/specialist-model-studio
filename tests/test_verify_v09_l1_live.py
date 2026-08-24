@@ -522,11 +522,9 @@ class VerifyV09L1LiveTests(unittest.TestCase):
                 },
             },
             "analysis": {
-                "analysis": {
-                    "downstream_blockers": [
-                        {"code": "blocked_license_unknown"}
-                    ]
-                }
+                "downstream_blockers": [
+                    {"code": "blocked_license_unknown"}
+                ]
             },
         }
         trace = ScriptedTrace(

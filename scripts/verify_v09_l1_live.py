@@ -979,7 +979,7 @@ def _run_unknown_license_negative(
         policy.get("decision") != "allow",
         "unknown-license fixture was incorrectly allowed",
     )
-    stored_analysis = result["analysis"].get("analysis")
+    stored_analysis = result["analysis"]
     _require(
         isinstance(stored_analysis, Mapping),
         "unknown-license repository analysis is incomplete",
