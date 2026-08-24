@@ -4,37 +4,22 @@ import tempfile
 import unittest
 
 from model_harness.chat import ChatController
+from model_harness.errors import HarnessError
 from model_harness.service import RunService
 
 
 class ChatControllerTests(unittest.TestCase):
-    def test_conversation_starts_run_and_applies_approved_strategy(self) -> None:
+    def test_conversation_run_creation_commands_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             with RunService(temp_dir, recover=False) as service:
                 chat = ChatController(service)
-                started = chat.handle("开始数字识别实验")
-                parent_id = started["run_id"]
-                self.assertEqual(started["kind"], "run_started")
-                service.wait(parent_id, timeout=30)
-
-                status = chat.handle("查看当前进度", run_id=parent_id)
-                self.assertEqual(status["data"]["status"], "completed")
-
-                strategies = chat.handle("给出优化建议", run_id=parent_id)
-                self.assertEqual(strategies["kind"], "strategies")
-                strategy_ids = {
-                    item["strategy_id"] for item in strategies["data"]["strategies"]
-                }
-                self.assertIn("add-shift-augmentation", strategy_ids)
-
-                approved = chat.handle("批准位移增强", run_id=parent_id)
-                child_id = approved["run_id"]
-                service.wait(child_id, timeout=30)
-                child = service.result(child_id)
-
-            self.assertEqual(approved["kind"], "strategy_applied")
-            self.assertEqual(child["parent_run_id"], parent_id)
-            self.assertEqual(child["status"], "completed")
+                with self.assertRaisesRegex(HarnessError, "task-owned"):
+                    chat.handle("开始数字识别实验")
+                with self.assertRaisesRegex(HarnessError, "当前训练任务"):
+                    chat.handle("批准位移增强", run_id="parent")
+                with self.assertRaisesRegex(HarnessError, "task-owned"):
+                    chat.handle("取消当前训练", run_id="parent")
+                self.assertEqual(service.list_runs(), [])
 
     def test_unknown_message_is_transparently_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

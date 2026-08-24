@@ -475,6 +475,26 @@ def create_app(
         except ContractError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.post("/tasks/{task_id}/model-binding-attempts/{attempt_id}/cancel")
+    def cancel_model_binding_attempt(
+        task_id: str,
+        attempt_id: str,
+        body: dict[str, Any] = Body(default={}),
+    ) -> dict[str, Any]:
+        try:
+            return workspace.cancel_model_binding_attempt(
+                task_id,
+                attempt_id,
+                reason=str(
+                    body.get("reason")
+                    or "用户取消模型来源绑定与静态分析"
+                ),
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.get("/tasks/{task_id}/model-bindings")
     def list_model_bindings(task_id: str) -> dict[str, Any]:
         try:
@@ -527,6 +547,63 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except (ContractError, ModelSourceIntegrityError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(
+        "/tasks/{task_id}/repository-analyses/{analysis_id}/evidence"
+    )
+    def get_repository_analysis_evidence(
+        task_id: str,
+        analysis_id: str,
+        path: str = Query(...),
+        line: int = Query(..., ge=1),
+        context_lines: int = Query(default=3, ge=0, le=8),
+    ) -> dict[str, Any]:
+        try:
+            return {
+                "evidence": workspace.get_repository_evidence_excerpt(
+                    task_id,
+                    analysis_id,
+                    path=path,
+                    line=line,
+                    context_lines=context_lines,
+                )
+            }
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ContractError, ModelSourceIntegrityError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/tasks/{task_id}/repository-analyses/{analysis_id}/manual-mappings"
+    )
+    def apply_repository_manual_mapping(
+        task_id: str,
+        analysis_id: str,
+        body: dict[str, Any] = Body(...),
+    ) -> JSONResponse:
+        try:
+            result = workspace.apply_repository_manual_mapping(
+                task_id,
+                analysis_id,
+                training_entrypoint=str(body.get("training_entrypoint") or ""),
+                dataset_argument=(
+                    str(body["dataset_argument"])
+                    if body.get("dataset_argument") is not None
+                    else None
+                ),
+                inference_entrypoint=(
+                    str(body["inference_entrypoint"])
+                    if body.get("inference_entrypoint") is not None
+                    else None
+                ),
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ContractError, ModelSourceIntegrityError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse(status_code=201, content=result)
 
     @app.post("/tasks/{task_id}/training-plans")
     def create_training_plan(
@@ -1183,6 +1260,16 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.post("/tasks/{task_id}/runs/{run_id}/resume")
+    async def resume_task_run(task_id: str, run_id: str) -> JSONResponse:
+        try:
+            task = workspace.resume_run(task_id, run_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse(status_code=202, content={"task": task})
+
     @app.post("/tasks/{task_id}/runs/{run_id}/strategies/{strategy_id}/apply")
     async def apply_task_strategy(
         task_id: str,
@@ -1386,6 +1473,29 @@ def create_app(
         run_id = body.get("run_id")
         if run_id is not None and not isinstance(run_id, str):
             raise HTTPException(status_code=422, detail="run_id must be text")
+        normalized = message.strip().lower()
+        if (
+            normalized.startswith(("/start", "/apply"))
+            or any(
+                marker in message
+                for marker in (
+                    "开始数字",
+                    "开始实验",
+                    "训练数字",
+                    "新建实验",
+                    "批准",
+                    "应用策略",
+                    "执行策略",
+                )
+            )
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "chat run creation is disabled; use the task-owned run "
+                    "or strategy endpoint so current authorization can be verified"
+                ),
+            )
         try:
             return chat.handle(message, run_id=run_id)
         except FileNotFoundError as exc:
@@ -1404,13 +1514,12 @@ def create_app(
         contract = body.get("contract") if isinstance(body, dict) else None
         if not isinstance(contract, dict):
             raise HTTPException(status_code=422, detail="contract must be an object")
-        try:
-            run_dir = service.submit(contract, run_id=body.get("run_id"))
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return JSONResponse(
-            status_code=202,
-            content={"run_id": run_dir.name, "status": "queued"},
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "global run creation is disabled; create and confirm a workspace "
+                "task, then POST /tasks/{task_id}/runs"
+            ),
         )
 
     @app.get("/runs/{run_id}")
@@ -1477,27 +1586,27 @@ def create_app(
 
     @app.post("/runs/{run_id}/cancel")
     def cancel_run(run_id: str) -> dict[str, Any]:
-        try:
-            accepted = service.cancel(run_id)
-            return {"run_id": run_id, "cancel_requested": accepted}
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        del run_id
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "global run cancellation is disabled; use "
+                "/tasks/{task_id}/runs/{run_id}/cancel"
+            ),
+        )
 
     @app.post("/runs/{run_id}/resume")
     async def resume_run(
         run_id: str,
         body: dict[str, Any] | None = Body(default=None),
     ) -> JSONResponse:
-        body = body or {}
-        try:
-            child = service.resume(run_id, child_run_id=body.get("run_id"))
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except Exception as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return JSONResponse(
-            status_code=202,
-            content={"run_id": child.name, "parent_run_id": run_id},
+        del body
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "global run resume is disabled; use "
+                "/tasks/{task_id}/runs/{run_id}/resume"
+            ),
         )
 
     @app.get("/runs/{run_id}/strategies")
@@ -1519,23 +1628,12 @@ def create_app(
                 status_code=409,
                 detail="strategy application requires approval_confirmed=true",
             )
-        try:
-            child = service.apply_strategy(
-                run_id,
-                strategy_id,
-                child_run_id=body.get("run_id"),
-            )
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except Exception as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return JSONResponse(
-            status_code=202,
-            content={
-                "run_id": child.name,
-                "parent_run_id": run_id,
-                "strategy_id": strategy_id,
-            },
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "global strategy application is disabled; use the task-owned "
+                "strategy endpoint"
+            ),
         )
 
     return app

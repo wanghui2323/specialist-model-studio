@@ -82,19 +82,24 @@ class StaticRepositoryAnalyzerTests(unittest.TestCase):
                 "train.py": (
                     "from transformers import Trainer, TrainingArguments\n"
                     "import torch\n"
+                    "model = AutoModel.from_pretrained('org/base-model')\n"
                     "trainer = Trainer(model=model, args=TrainingArguments())\n"
                     "trainer.train()\n"
                     "score = f1_score(labels, predictions, average='macro')\n"
                     "model.save_pretrained('output')\n"
                 ),
             },
-            extra_files=("model.safetensors", "legacy/pytorch_model.bin"),
+            extra_files=(
+                "inference.py",
+                "model.safetensors",
+                "legacy/pytorch_model.bin",
+            ),
         )
 
         analysis = StaticRepositoryAnalyzer().analyze(snapshot)
 
-        self.assertEqual(analysis.status, "complete")
-        self.assertEqual(analysis.next_action, "ready_for_environment_check")
+        self.assertEqual(analysis.status, "blocked")
+        self.assertEqual(analysis.next_action, "review_repository_risks")
         self.assertEqual(analysis.execution_policy, "static_only_never_execute")
         self.assertEqual(
             {item.name for item in analysis.frameworks},
@@ -139,7 +144,7 @@ class StaticRepositoryAnalyzerTests(unittest.TestCase):
         serialized = analysis.to_dict()
         self.assertEqual(
             serialized["dependency_manifests"][0]["evidence"][0]["kind"],
-            "tree_manifest",
+            "manifest_entry",
         )
         entrypoint_evidence_kinds = {
             item["kind"]
@@ -147,7 +152,15 @@ class StaticRepositoryAnalyzerTests(unittest.TestCase):
         }
         self.assertEqual(
             entrypoint_evidence_kinds,
-            {"text_line", "tree_manifest"},
+            {"text_line", "manifest_entry"},
+        )
+        self.assertEqual(
+            serialized["base_model_candidates"][0]["model_id"],
+            "org/base-model",
+        )
+        self.assertEqual(
+            serialized["inference_entrypoints"][0]["path"],
+            "inference.py",
         )
         self.assertTrue(
             {"huggingface-datasets", "split-files", "text-label-columns"}
@@ -198,6 +211,25 @@ class StaticRepositoryAnalyzerTests(unittest.TestCase):
             self.assertEqual(analysis.status, "complete")
             self.assertEqual(analysis.training_entrypoints[0].path, "train.py")
             self.assertFalse(sentinel.exists())
+
+    def test_readme_launch_example_is_evidence_not_the_training_entrypoint(self) -> None:
+        snapshot = _snapshot(
+            {
+                "README.md": "Run: torchrun scripts/train_custom.py --epochs 2\n",
+                "scripts/train_custom.py": "loss.backward()\noptimizer.step()\n",
+            }
+        )
+
+        analysis = StaticRepositoryAnalyzer().analyze(snapshot)
+
+        self.assertEqual(
+            [item.path for item in analysis.training_entrypoints],
+            ["scripts/train_custom.py"],
+        )
+        self.assertNotIn(
+            "README.md",
+            {item.path for item in analysis.training_entrypoints},
+        )
 
     def test_manifest_only_signals_are_typed_and_do_not_fake_line_numbers(self) -> None:
         snapshot = _snapshot(
@@ -252,9 +284,9 @@ class StaticRepositoryAnalyzerTests(unittest.TestCase):
             for item in result["evidence"]
         ]
         self.assertTrue(evidence)
-        self.assertTrue(all(item["kind"] == "tree_manifest" for item in evidence))
+        self.assertTrue(all(item["kind"] == "manifest_entry" for item in evidence))
 
-    def test_missing_training_entrypoint_requires_manual_mapping(self) -> None:
+    def test_missing_training_entrypoint_requires_input(self) -> None:
         snapshot = _snapshot(
             {
                 "README.md": "Weights and configuration for inference only.",
@@ -265,7 +297,7 @@ class StaticRepositoryAnalyzerTests(unittest.TestCase):
 
         analysis = StaticRepositoryAnalyzer().analyze(snapshot)
 
-        self.assertEqual(analysis.status, "needs_manual_mapping")
+        self.assertEqual(analysis.status, "needs_input")
         self.assertEqual(analysis.next_action, "map_training_entrypoint")
         self.assertEqual(analysis.training_entrypoints, ())
 
@@ -313,11 +345,124 @@ class StaticRepositoryAnalyzerTests(unittest.TestCase):
 
         analysis = StaticRepositoryAnalyzer().analyze(snapshot)
 
+        self.assertEqual(analysis.status, "blocked")
+        self.assertEqual(analysis.next_action, "resolve_license")
         self.assertEqual(
             [item.code for item in analysis.downstream_blockers],
             ["blocked_license_denied"],
         )
         self.assertIn("restricted", analysis.downstream_blockers[0].message)
+
+    def test_contract_projection_and_structured_evidence_are_commit_bound(self) -> None:
+        snapshot = _snapshot(
+            {
+                "README.md": "Expected columns are text and label.",
+                "requirements.txt": "torch==2.7\n",
+                "train.py": (
+                    "model = AutoModel.from_pretrained('org/base-model')\n"
+                    "loss.backward()\n"
+                ),
+            },
+            extra_files=("predict.py",),
+        )
+
+        serialized = StaticRepositoryAnalyzer().analyze(snapshot).to_dict()
+
+        for field in (
+            "entrypoints",
+            "data_contract_candidates",
+            "dependency_files",
+            "risk_findings",
+            "inference_entrypoints",
+            "base_model_candidates",
+        ):
+            self.assertIn(field, serialized)
+        self.assertEqual(
+            serialized["entrypoints"][0]["kind"],
+            "train",
+        )
+        self.assertEqual(
+            {item["kind"] for item in serialized["entrypoints"]},
+            {"train", "inference"},
+        )
+        self.assertEqual(
+            serialized["training_entrypoints"][0]["path"],
+            serialized["entrypoints"][0]["path"],
+        )
+        evidence = [
+            evidence_item
+            for collection_name in (
+                "entrypoints",
+                "data_contract_candidates",
+                "dependency_files",
+                "base_model_candidates",
+            )
+            for finding in serialized[collection_name]
+            for evidence_item in finding["evidence"]
+        ]
+        self.assertTrue(evidence)
+        self.assertTrue(
+            all(item["snapshot_id"] == snapshot.snapshot_id for item in evidence)
+        )
+        self.assertTrue(
+            all(item["resolved_commit"] == COMMIT for item in evidence)
+        )
+        for item in evidence:
+            if item["kind"] == "text_line":
+                self.assertIn("path", item)
+                self.assertIsInstance(item["line"], int)
+                self.assertEqual(len(item["document_sha256"]), 64)
+            elif item["kind"] == "manifest_entry":
+                self.assertIn("path", item["manifest_entry"])
+                self.assertEqual(
+                    len(item["manifest_entry"]["tree_manifest_sha256"]),
+                    64,
+                )
+            else:
+                self.fail(f"unexpected evidence kind: {item['kind']}")
+
+    def test_high_execution_risk_cannot_complete(self) -> None:
+        snapshot = _snapshot(
+            {
+                "train.py": (
+                    "loss.backward()\n"
+                    "subprocess.run(['echo', 'unsafe'])\n"
+                )
+            }
+        )
+
+        analysis = StaticRepositoryAnalyzer().analyze(snapshot)
+
+        self.assertEqual(analysis.status, "blocked")
+        self.assertEqual(analysis.next_action, "review_repository_risks")
+        self.assertIn(
+            "direct_code_execution",
+            {item.code for item in analysis.risks},
+        )
+
+    def test_framework_eval_and_documented_download_are_not_execution_risks(
+        self,
+    ) -> None:
+        snapshot = _snapshot(
+            {
+                "README.md": "Download the public dataset with wget https://example.test/data.zip\n",
+                "train.py": (
+                    "import torch\n"
+                    "model.eval()\n"
+                    "loss.backward()\n"
+                    "optimizer.step()\n"
+                ),
+            }
+        )
+
+        analysis = StaticRepositoryAnalyzer().analyze(snapshot)
+        risks = {(item.code, item.severity) for item in analysis.risks}
+
+        self.assertEqual(analysis.status, "complete")
+        self.assertEqual(analysis.next_action, "ready_for_environment_check")
+        self.assertNotIn(("direct_code_execution", "high"), risks)
+        self.assertNotIn(("network_download_during_run", "high"), risks)
+        self.assertIn(("network_download_documentation", "medium"), risks)
 
     def test_snapshot_manifest_and_selected_text_tampering_fail_closed(self) -> None:
         snapshot = _snapshot({"train.py": "import torch\nloss.backward()\n"})

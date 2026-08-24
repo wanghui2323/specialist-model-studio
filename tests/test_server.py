@@ -105,6 +105,46 @@ class ServerTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 409)
                 self.assertIn("approval_confirmed=true", response.json()["detail"])
 
+    def test_global_and_chat_run_creation_surfaces_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = create_app(temp_dir)
+            with TestClient(app) as client:  # type: ignore[misc]
+                task = client.post(
+                    "/tasks",
+                    json={"name": "guarded", "business_goal": "still ambiguous"},
+                ).json()["task"]
+                template = client.get(
+                    "/recipes/digit-classification/template"
+                ).json()["contract"]
+                template["task_id"] = task["task_id"]
+
+                responses = (
+                    client.post("/runs", json={"contract": template}),
+                    client.post("/runs/missing/cancel", json={}),
+                    client.post("/runs/missing/resume", json={}),
+                    client.post(
+                        "/runs/missing/strategies/add-shift-augmentation/apply",
+                        json={"approval_confirmed": True},
+                    ),
+                    client.post("/chat", json={"message": "/start"}),
+                    client.post(
+                        "/chat",
+                        json={"message": "/cancel", "run_id": "missing"},
+                    ),
+                    client.post(
+                        "/chat",
+                        json={
+                            "message": "/apply add-shift-augmentation",
+                            "run_id": "missing",
+                        },
+                    ),
+                )
+                self.assertTrue(
+                    all(response.status_code == 409 for response in responses),
+                    [response.text for response in responses],
+                )
+                self.assertEqual(app.state.run_service.list_runs(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

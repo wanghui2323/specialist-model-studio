@@ -29,6 +29,12 @@ _GPU_MARKERS = ("cuda", "cudnn", "rocm", "tensorflow-gpu", "nvidia-")
 _PLATFORMS = {"darwin", "linux"}
 _ARCHITECTURES = {"arm64", "x86_64"}
 _EXECUTION_BACKENDS = {"oci", "os_sandbox_worker"}
+_PLAN_PATCH_FIELDS = {"resource_budget", "hyperparameters"}
+_RESOURCE_BUDGET_FIELDS = {"max_seconds", "ram_bytes", "vram_bytes", "disk_bytes"}
+# Automatic tuning is only presented as a viable plan revision when the
+# observed host has enough of the constrained resource to make a bounded
+# reduction credible.  Larger gaps remain an external/manual remediation.
+_MIN_AUTOMATIC_REVISION_RATIO = 0.25
 
 
 class ResourceFeasibilityError(ContractError):
@@ -789,6 +795,122 @@ def _reason(
     }
 
 
+def _validate_plan_revision_patch(value: Any) -> dict[str, Any]:
+    """Validate the subset accepted by ``revise_training_plan`` directly."""
+
+    if not isinstance(value, Mapping) or not value:
+        raise ResourceFeasibilityError(
+            "plan revision alternative requires a non-empty typed patch"
+        )
+    selected = _copy_json(dict(value))
+    unknown = set(selected) - _PLAN_PATCH_FIELDS
+    if unknown:
+        raise ResourceFeasibilityError(
+            f"plan revision alternative contains unsupported fields: {sorted(unknown)}"
+        )
+
+    budget = selected.get("resource_budget")
+    if budget is not None:
+        if not isinstance(budget, Mapping) or not budget:
+            raise ResourceFeasibilityError(
+                "plan revision resource_budget must be a non-empty object"
+            )
+        unknown_budget = set(budget) - _RESOURCE_BUDGET_FIELDS
+        if unknown_budget:
+            raise ResourceFeasibilityError(
+                "plan revision resource_budget contains unsupported fields: "
+                f"{sorted(unknown_budget)}"
+            )
+        for field, amount in budget.items():
+            if isinstance(amount, bool) or not isinstance(amount, int) or amount < 0:
+                raise ResourceFeasibilityError(
+                    f"plan revision resource_budget.{field} must be a non-negative integer"
+                )
+            if field == "max_seconds" and amount == 0:
+                raise ResourceFeasibilityError(
+                    "plan revision resource_budget.max_seconds must be positive"
+                )
+
+    hyperparameters = selected.get("hyperparameters")
+    if hyperparameters is not None and (
+        not isinstance(hyperparameters, Mapping) or not hyperparameters
+    ):
+        raise ResourceFeasibilityError(
+            "plan revision hyperparameters must be a non-empty object"
+        )
+    return selected
+
+
+def _validate_external_remediation(value: Any) -> dict[str, Any]:
+    """Validate a host/operator action that must not create a plan revision."""
+
+    if not isinstance(value, Mapping) or set(value) != {"external_remediation"}:
+        raise ResourceFeasibilityError(
+            "external remediation alternative requires external_remediation details"
+        )
+    selected = _copy_json(dict(value))
+    remediation = selected["external_remediation"]
+    expected = {"action", "required", "observed", "evidence_ref"}
+    if not isinstance(remediation, Mapping) or set(remediation) != expected:
+        raise ResourceFeasibilityError(
+            "external remediation schema requires action, required, observed, and evidence_ref"
+        )
+    if not str(remediation.get("action") or "").strip() or not str(
+        remediation.get("evidence_ref") or ""
+    ).strip():
+        raise ResourceFeasibilityError(
+            "external remediation requires an action and evidence_ref"
+        )
+    return selected
+
+
+def _plan_revision_alternative(
+    changes: Mapping[str, Any], *, expected_effect: str
+) -> dict[str, Any]:
+    return {
+        "changes": _validate_plan_revision_patch(changes),
+        "expected_effect": str(expected_effect).strip(),
+        "creates_new_plan": True,
+    }
+
+
+def _external_remediation_alternative(
+    *,
+    action: str,
+    required: Any,
+    observed: Any,
+    evidence_ref: str,
+    expected_effect: str,
+) -> dict[str, Any]:
+    changes = {
+        "external_remediation": {
+            "action": str(action).strip(),
+            "required": _copy_json(required),
+            "observed": _copy_json(observed),
+            "evidence_ref": str(evidence_ref).strip(),
+        }
+    }
+    return {
+        "changes": _validate_external_remediation(changes),
+        "expected_effect": str(expected_effect).strip(),
+        "creates_new_plan": False,
+    }
+
+
+def _automatic_budget_target(required: int, observed: int) -> int:
+    """Return a concrete budget below the current observation with headroom."""
+
+    return min(required, max(0, int(observed * 0.8)))
+
+
+def _can_automatically_reduce(required: int, observed: int) -> bool:
+    return (
+        required > 0
+        and observed >= 0
+        and observed / required >= _MIN_AUTOMATIC_REVISION_RATIO
+    )
+
+
 def _validate_fit_payload(record: Mapping[str, Any]) -> None:
     if record.get("object_type") != "ResourceFitReport":
         raise ResourceFeasibilityError("invalid ResourceFitReport object type")
@@ -828,6 +950,7 @@ def _validate_fit_payload(record: Mapping[str, Any]) -> None:
         _digest(record.get(field), field)
     if record.get("decision") not in {
         "fit",
+        "fit_with_revision",
         "blocked_resources",
         "blocked_platform",
         "blocked_environment",
@@ -888,22 +1011,36 @@ def _validate_fit_payload(record: Mapping[str, Any]) -> None:
     alternatives = record.get("alternatives")
     if not isinstance(alternatives, list):
         raise ResourceFeasibilityError("invalid ResourceFitReport alternatives")
+    plan_revision_alternatives = 0
     for alternative in alternatives:
-        if (
-            not isinstance(alternative, Mapping)
-            or set(alternative)
-            != {"changes", "expected_effect", "creates_new_plan"}
-            or alternative.get("creates_new_plan") is not True
-        ):
-            raise ResourceFeasibilityError("resource alternative must create a new plan")
-        if not isinstance(alternative.get("changes"), Mapping) or not str(
-            alternative.get("expected_effect") or ""
-        ).strip():
+        if not isinstance(alternative, Mapping) or set(alternative) != {
+            "changes",
+            "expected_effect",
+            "creates_new_plan",
+        }:
+            raise ResourceFeasibilityError("resource alternative schema changed")
+        if not str(alternative.get("expected_effect") or "").strip():
             raise ResourceFeasibilityError("invalid resource alternative")
+        if alternative.get("creates_new_plan") is True:
+            _validate_plan_revision_patch(alternative.get("changes"))
+            plan_revision_alternatives += 1
+        elif alternative.get("creates_new_plan") is False:
+            _validate_external_remediation(alternative.get("changes"))
+        else:
+            raise ResourceFeasibilityError(
+                "resource alternative creates_new_plan must be boolean"
+            )
     if record.get("decision") != "fit" and not alternatives:
         raise ResourceFeasibilityError("blocked ResourceFitReport requires an alternative")
     if record.get("decision") == "fit" and alternatives:
         raise ResourceFeasibilityError("fit ResourceFitReport cannot contain alternatives")
+    if (
+        record.get("decision") == "fit_with_revision"
+        and plan_revision_alternatives == 0
+    ):
+        raise ResourceFeasibilityError(
+            "fit_with_revision requires a typed plan revision alternative"
+        )
     semantic = {
         key: value
         for key, value in record.items()
@@ -1135,34 +1272,58 @@ def evaluate_resource_fit(
                 estimator_version=estimator,
             )
         )
-        platform_blocked = True
+
+    automatic_resource_revision = resources_blocked and all(
+        (
+            (
+                not ram_blocked
+                or (
+                    isinstance(observed_ram, int)
+                    and _can_automatically_reduce(required_ram, observed_ram)
+                )
+            ),
+            (
+                not disk_blocked
+                or (
+                    isinstance(observed_disk, int)
+                    and _can_automatically_reduce(required_disk, observed_disk)
+                )
+            ),
+        )
+    )
+    plan_revision_needed = resources_blocked or required_vram > 0
+    can_create_plan_revision = plan_revision_needed and (
+        not resources_blocked or automatic_resource_revision
+    )
 
     if platform_blocked:
         decision = "blocked_platform"
     elif environment_blocked:
         decision = "blocked_environment"
+    elif can_create_plan_revision:
+        decision = "fit_with_revision"
     elif resources_blocked:
         decision = "blocked_resources"
     else:
         decision = "fit"
 
-    if decision != "fit":
+    if can_create_plan_revision:
         changes: dict[str, Any] = {}
         expected: list[str] = []
         if resources_blocked:
             changes["resource_budget"] = {}
             changes["hyperparameters"] = {
-                "batch_size": "reduce",
-                "gradient_accumulation_steps": "increase",
+                "batch_size": 1,
+                "gradient_accumulation_steps": 8,
                 "parameter_efficient_tuning": "lora",
             }
-            if ram_blocked:
-                changes["resource_budget"]["ram_bytes"] = (
-                    "re-estimate for a smaller model or batch"
+            if ram_blocked and isinstance(observed_ram, int):
+                changes["resource_budget"]["ram_bytes"] = _automatic_budget_target(
+                    required_ram, observed_ram
                 )
-            if disk_blocked:
-                changes["resource_budget"]["disk_bytes"] = (
-                    "re-estimate for a smaller model or artifact set"
+            if disk_blocked and isinstance(observed_disk, int):
+                changes["resource_budget"]["disk_bytes"] = _automatic_budget_target(
+                    required_disk, observed_disk
                 )
             expected.append("lower peak RAM and disk demand")
         if required_vram > 0:
@@ -1170,30 +1331,89 @@ def evaluate_resource_fit(
             changes.setdefault("hyperparameters", {}).update(
                 {
                     "parameter_efficient_tuning": "lora",
-                    "model_size": "reduce",
+                    "model_size": "smaller_cpu_compatible",
                 }
             )
             expected.append("replace GPU assumptions with a CPU-sized plan")
-        if platform_blocked and required_vram == 0:
-            changes.setdefault("execution_policy", {})["platform"] = (
-                f"{observed_os}/{observed_arch}"
-            )
-            expected.append("create a plan whose isolated platform matches this host")
-        if environment_blocked:
-            changes.setdefault("execution_policy", {}).update(
-                {
-                    "backend": "oci",
-                    "runtime_prerequisite": "install or start an approved OCI runtime",
-                }
-            )
-            expected.append("make the required isolation runtime available")
         alternatives.append(
-            {
-                "changes": changes,
-                "expected_effect": "; ".join(expected)
+            _plan_revision_alternative(
+                changes,
+                expected_effect="; ".join(expected)
                 or "reduce the plan to fit observed resources",
-                "creates_new_plan": True,
-            }
+            )
+        )
+
+    if platform_blocked:
+        alternatives.append(
+            _external_remediation_alternative(
+                action="use_compatible_host_or_isolation_platform",
+                required={"os": required_os, "arch": required_arch},
+                observed={"os": observed_os, "arch": observed_arch},
+                evidence_ref=f"{probe_prefix}#/os",
+                expected_effect=(
+                    "move the task to a host or verified isolation worker matching "
+                    f"{required_os}/{required_arch}"
+                ),
+            )
+        )
+
+    if env_record["execution_backend"] == "oci" and (
+        probe_record["container_runtime"].get("available") is not True
+    ):
+        alternatives.append(
+            _external_remediation_alternative(
+                action="install_or_start_approved_oci_runtime",
+                required=True,
+                observed=False,
+                evidence_ref=f"{probe_prefix}#/container_runtime/available",
+                expected_effect="make the approved OCI isolation runtime available",
+            )
+        )
+    elif env_record["execution_backend"] == "os_sandbox_worker" and (
+        probe_record["sandbox_worker"].get("available") is not True
+    ):
+        alternatives.append(
+            _external_remediation_alternative(
+                action="configure_verified_os_sandbox_worker",
+                required=True,
+                observed=False,
+                evidence_ref=f"{probe_prefix}#/sandbox_worker/available",
+                expected_effect="provide a verified equivalent OS sandbox worker",
+            )
+        )
+
+    if observed_ram is None:
+        alternatives.append(
+            _external_remediation_alternative(
+                action="repair_ram_probe",
+                required=required_ram,
+                observed="unavailable",
+                evidence_ref=f"{probe_prefix}#/ram/available_bytes",
+                expected_effect="restore a trustworthy available-RAM measurement",
+            )
+        )
+    if observed_disk is None:
+        alternatives.append(
+            _external_remediation_alternative(
+                action="repair_disk_probe",
+                required=required_disk,
+                observed="unavailable",
+                evidence_ref=f"{probe_prefix}#/disk/free_bytes",
+                expected_effect="restore a trustworthy free-disk measurement",
+            )
+        )
+    if resources_blocked and not automatic_resource_revision:
+        alternatives.append(
+            _external_remediation_alternative(
+                action="use_larger_host_or_manually_reduce_training_scope",
+                required={"ram_bytes": required_ram, "disk_bytes": required_disk},
+                observed={"ram_bytes": observed_ram, "disk_bytes": observed_disk},
+                evidence_ref=f"{probe_prefix}#/ram/available_bytes",
+                expected_effect=(
+                    "provide materially more resources or create a manually reviewed "
+                    "smaller-model plan"
+                ),
+            )
         )
 
     semantic = {

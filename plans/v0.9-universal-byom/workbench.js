@@ -8,17 +8,10 @@ const STATUS_LABELS = {
   failed: "失败",
 };
 
-const DECISION_LABELS = [
-  "首批接入 Hugging Face 与 GitHub，并固定不可变 Commit。",
-  "不可信代码只能进入独立 Worker / OCI；没有隔离环境则只分析不执行。",
-  "只做本机资源检测、适配与阻断，不建设云 GPU 调度。",
-  "通用支持以统一闭环和证据结论定义，不以 Recipe 数量定义。",
-];
-
 const ui = Object.fromEntries([
   "headerState", "loopNav", "loopTitle", "loopOutcome", "progressValue", "progressBar",
   "progressDetail", "loopStatus", "taskList", "decisionList", "baselineHead", "baselineFacts",
-  "gateCopy", "copyGate", "copyFeedback",
+  "decisionCount", "gateTarget", "gateCopy", "copyGate", "copyFeedback",
 ].map((id) => [id, document.getElementById(id)]));
 
 const state = { ledger: null, baseline: null, selectedLoopId: null };
@@ -37,11 +30,18 @@ function selectedLoop() {
 
 function renderDecisions() {
   clear(ui.decisionList);
-  DECISION_LABELS.forEach((decision) => {
+  const decisions = state.ledger?.confirmed_decisions || [];
+  ui.decisionCount.textContent = `${decisions.length} / ${decisions.length}`;
+  decisions.forEach((decision) => {
     const item = document.createElement("li");
     item.textContent = decision;
     ui.decisionList.append(item);
   });
+  if (!decisions.length) {
+    const item = document.createElement("li");
+    item.textContent = "任务账本未登记已确认决策。";
+    ui.decisionList.append(item);
+  }
 }
 
 function addFact(label, value) {
@@ -56,13 +56,39 @@ function addFact(label, value) {
 
 function renderBaseline() {
   const baseline = state.baseline;
-  ui.baselineHead.textContent = baseline.source.baseline_commit;
+  ui.baselineHead.textContent = `${baseline.source.baseline_commit} · ${baseline.captured_at}`;
   clear(ui.baselineFacts);
-  addFact("Python 回归", `${baseline.verified_baseline.python_tests.passed} / ${baseline.verified_baseline.python_tests.passed}`);
-  addFact("Node 回归", `${baseline.verified_baseline.node_tests.passed} / ${baseline.verified_baseline.node_tests.passed}`);
-  addFact("GitHub 模型源", baseline.current_capability_boundary.github_model_source === "missing" ? "尚未实现" : "已接入");
-  addFact("可执行 Recipe Build", baseline.current_capability_boundary.executable_recipe_build === "blocked_environment" ? "当前阻断" : "可执行");
-  addFact("隔离执行", baseline.current_capability_boundary.execution_isolation === "missing" ? "尚未实现" : "已可用");
+  const python = baseline.verified_baseline.python_tests;
+  const node = baseline.verified_baseline.node_tests;
+  addFact("历史 Python 回归", `${python.passed} / ${python.passed + python.failed}`);
+  addFact("历史 Node 回归", `${node.passed} / ${node.passed + node.failed}`);
+  addFact("历史 GitHub 模型源", baseline.current_capability_boundary.github_model_source === "missing" ? "当时尚未实现" : "当时已接入");
+  addFact("历史 Recipe Build", baseline.current_capability_boundary.executable_recipe_build === "blocked_environment" ? "当时阻断" : "当时可执行");
+  addFact("历史隔离执行", baseline.current_capability_boundary.execution_isolation === "missing" ? "当时尚未实现" : "当时已可用");
+}
+
+function currentPhase() {
+  const snapshot = state.ledger?.current_status_snapshot || {};
+  const explicit = snapshot.current_phase || {};
+  const fallbackLoopId = state.ledger?.loops.some((loop) => loop.loop_id === "L2") ? "L2" : state.ledger?.loops[0]?.loop_id;
+  const loopId = explicit.loop_id || fallbackLoopId;
+  const mappedVersion = Object.entries(snapshot.vertical_mapping || {})
+    .find(([, mapping]) => mapping.loop === loopId)?.[0];
+  const verticalVersion = explicit.vertical_version || mappedVersion || (loopId === "L2" ? "V3" : null);
+  const loop = state.ledger?.loops.find((candidate) => candidate.loop_id === loopId);
+  return {
+    loopId,
+    verticalVersion,
+    status: explicit.status || loop?.status || "planned",
+  };
+}
+
+function renderCurrentPhase() {
+  const phase = currentPhase();
+  ui.headerState.dataset.state = phase.status;
+  ui.headerState.querySelector("b").textContent = [phase.loopId, phase.verticalVersion]
+    .filter(Boolean)
+    .join(" / ") + ` · ${statusLabel(phase.status)}`;
 }
 
 function renderNavigation() {
@@ -111,9 +137,21 @@ function renderTasks(loop) {
     const dependency = document.createElement("small");
     dependency.textContent = task.depends_on?.length ? `依赖 ${task.depends_on.join("、")}` : "无前置依赖";
     copy.append(title, dependency);
-    const acceptance = document.createElement("span");
+    const acceptance = document.createElement("div");
     acceptance.className = "task-acceptance";
-    acceptance.textContent = task.acceptance || "等待验收定义";
+    const acceptanceCopy = document.createElement("span");
+    acceptanceCopy.textContent = task.acceptance || "等待验收定义";
+    const evidence = document.createElement("small");
+    evidence.className = "task-evidence";
+    evidence.textContent = task.evidence_refs?.length
+      ? `证据登记（不等于已通过）：${task.evidence_refs.join("；")}`
+      : "证据登记：暂无";
+    const blockers = document.createElement("small");
+    blockers.className = "task-blockers";
+    blockers.textContent = task.blocked_by?.length
+      ? `当前阻断：${task.blocked_by.join("；")}`
+      : "当前阻断：无登记项";
+    acceptance.append(acceptanceCopy, evidence, blockers);
     const status = document.createElement("span");
     status.className = "task-status";
     status.dataset.state = task.status;
@@ -135,14 +173,16 @@ function renderLoop() {
   const percent = loop.tasks.length ? Math.round(completed / loop.tasks.length * 100) : 0;
   ui.progressValue.textContent = `${completed} / ${loop.tasks.length}`;
   ui.progressBar.style.width = `${percent}%`;
-  ui.progressDetail.textContent = completed === loop.tasks.length ? "本层机器证据已经齐全" : `仍有 ${loop.tasks.length - completed} 项未达到 verified`;
+  ui.progressDetail.textContent = completed === loop.tasks.length && loop.tasks.length
+    ? "本层任务均有 verified / accepted 证据"
+    : `仍有 ${loop.tasks.length - completed} 项未达到 verified`;
   ui.gateCopy.textContent = loop.machine_exit_gate?.acceptance || "本层尚未定义机器退出门。";
-  ui.headerState.dataset.state = loop.status;
-  ui.headerState.querySelector("b").textContent = `${loop.loop_id} ${statusLabel(loop.status)}`;
+  ui.gateTarget.textContent = completeStates.has(loop.status) ? "已证实 6/6" : "目标 6/6 · 未证实";
   renderTasks(loop);
 }
 
 function render() {
+  renderCurrentPhase();
   renderNavigation();
   renderLoop();
 }
@@ -154,7 +194,11 @@ async function copyCurrentGate() {
     `${loop.loop_id} · ${loop.name}`,
     `目标：${loop.outcome}`,
     `退出门：${loop.machine_exit_gate?.acceptance || "未定义"}`,
-    ...loop.tasks.map((task) => `- [${statusLabel(task.status)}] ${task.id} ${task.title}：${task.acceptance}`),
+    ...loop.tasks.flatMap((task) => [
+      `- [${statusLabel(task.status)}] ${task.id} ${task.title}：${task.acceptance}`,
+      `  证据登记：${task.evidence_refs?.length ? task.evidence_refs.join("；") : "暂无"}`,
+      `  当前阻断：${task.blocked_by?.length ? task.blocked_by.join("；") : "无登记项"}`,
+    ]),
   ];
   try {
     await navigator.clipboard.writeText(lines.join("\n"));
@@ -165,7 +209,6 @@ async function copyCurrentGate() {
 }
 
 async function boot() {
-  renderDecisions();
   try {
     const [ledgerResponse, baselineResponse] = await Promise.all([
       fetch("./loop-tasks.json", { cache: "no-store" }),
@@ -176,8 +219,9 @@ async function boot() {
     }
     state.ledger = await ledgerResponse.json();
     state.baseline = await baselineResponse.json();
-    state.selectedLoopId = state.ledger.loops.find((loop) => loop.status === "implementing")?.loop_id || state.ledger.loops[0]?.loop_id;
+    state.selectedLoopId = currentPhase().loopId;
     renderBaseline();
+    renderDecisions();
     render();
   } catch (error) {
     clear(ui.taskList);

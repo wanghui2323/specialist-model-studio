@@ -39,34 +39,13 @@ after(() => {
   globalThis.fetch = originalFetch;
 });
 
-test("startRun freezes caller overrides into submitted contract", async () => {
+test("client exposes no global run-creation or strategy-write methods", () => {
   const client = new ModelHarnessClient(baseUrl);
-  const result = await client.startRun({
-    recipe: "digit-classification",
-    businessGoal: "teaching goal",
-    taskId: "dsh-lab",
-  });
-  assert.equal(result.ok, true);
-  const submitted = requests.at(-1);
-  assert.equal(submitted.url, "/runs");
-  assert.equal(JSON.parse(submitted.body).contract.business_goal, "teaching goal");
-  assert.equal(JSON.parse(submitted.body).contract.task_id, "dsh-lab");
-});
-
-test("applyStrategy requires and forwards explicit approval", async () => {
-  const client = new ModelHarnessClient(baseUrl);
-  assert.throws(
-    () => client.applyStrategy("parent", "strategy", false),
-    /Explicit user approval/,
-  );
-  const result = await client.applyStrategy("parent", "strategy", true);
-  assert.equal(result.ok, true);
-  const submitted = requests.at(-1);
-  assert.equal(
-    submitted.url,
-    "/runs/parent/strategies/strategy/apply",
-  );
-  assert.deepEqual(JSON.parse(submitted.body), { approval_confirmed: true });
+  assert.equal(client.startRun, undefined);
+  assert.equal(client.applyStrategy, undefined);
+  assert.equal(typeof client.startTaskRun, "function");
+  assert.equal(typeof client.applyTaskStrategy, "function");
+  assert.equal(requests.length, 0);
 });
 
 test("task lifecycle methods preserve canonical task routes and confirmations", async () => {

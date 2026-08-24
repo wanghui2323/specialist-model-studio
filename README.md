@@ -1,10 +1,24 @@
 # Specialist Model Studio
 
-一个从需求到可交付专业模型的对话式智能工作台：用户描述目标、提供必要数据并保留关键决定权，Studio 用可审查的研究证据、模型来源、Recipe、训练、评测和制品组织完整任务。当前 RC 已实现模型来源分析与注册 Recipe 的真实训练闭环；Research Agent 的论文证据链已完成架构设计，尚未作为已实现能力宣传。
+一个从需求到可交付专业模型的对话优先智能工作台：用户描述目标、提供必要数据并保留关键决定权，Studio 用可审查的模型来源、Recipe、训练、评测和制品组织同一个 `TrainingTask`。既有 v0.7 引擎保留三条真实用户数据切片；v0.9 的来源分析、训练计划和资源判断目前是未冻结的本地实现候选，尚未完成 L1/L2 整层证据。Research Agent 的论文证据链已完成架构设计，尚未作为已实现能力宣传。
 
 > 当前候选包版本是 `0.9.0rc1`（API 版本 `0.9.0-rc.1`），功能轨道是 `v0.9-universal-byom`，发布状态仍为 `unreleased_rc`。它只表示本地 RC 正在接受审查，不表示生产就绪、已合并 `main`、已打 Tag 或已创建 GitHub Release。
 
 项目远程地址已迁移为 <https://github.com/wanghui2323/specialist-model-studio>；当前本地开发分支是 `codex/v0.9-universal-byom`。远程分支、Tag 和 Release 状态仍必须在 GitHub 上分别核验，不能由仓库名称或本地版本号代替。
+
+## 默认体验：从一句话进入同一个训练任务
+
+默认产品入口是 Specialist Model Studio 工作台，而不是一组需要用户手工拼接的训练命令。用户先说清想得到什么模型；系统把澄清、计划、工具动作、审批、运行和证据组织在同一个可恢复的 `TrainingTask` 下。
+
+v0.9 本地界面候选借鉴了 WorkBuddy 的任务型对话机制，而不是依赖、嵌入或复制 WorkBuddy：
+
+- 对话先形成可确认的任务规格；信息不足时给出具体澄清选项，不猜测训练类型；
+- Agent 默认推进可逆的分析步骤，只在缺数据、授权、不可变验收门、安全执行或发布决定处暂停；
+- 计划阶段、工具调用和结果留在同一时间线，长工具历史可折叠，关键结论不藏在日志里；
+- 工作区同步展示模型来源、数据、计划、资源、阻断和证据；刷新或重启后仍以同一个 `task_id` 恢复；
+- `BlockerEvidence` 是一等结果，必须说明事实、规则和恢复动作，不用动画或固定计时器模拟进度。
+
+“WorkBuddy 式”只描述交互设计参考。当前三视口 smoke 属于未冻结工作树上的本地检查，不代表 L1/L2 已 verified、用户已验收或版本已发布。
 
 ## 先说能做什么
 
@@ -85,10 +99,13 @@ v0.7 已实现：
 - 显式绑定来源后，绑定、snapshot、仓库静态分析、训练计划和本机资源适配结论可被审计与重启恢复；
 - 私有仓库只有在调用者显式提供凭据 fixture 时才可验证；没有凭据不会声称已验证；
 - v0.9 的隔离执行策略是 CPU-only。宿主机即使探测到 MPS/CUDA，也不能被标成容器内可用加速器。
+- V3/L2 只做 analysis-only 的计划与资源门禁。若预算依据仍是 `provisional`，系统不会生成 `ResourceFitReport` 或 Run，而是返回不可原地重试的 `blocked_resources`，以 `continue_to_l3_qualification` 指向 L3 后续资格验证；这不表示 V3 内可以补齐或已经训练。
 
 这里的“通用”是指任意公开 Hugging Face/GitHub 训练仓库都可以进入 `discover → analyze → plan → resource check` 协议，并得到可训练方案或有类型的阻断证据；不等于任意仓库都一定能在当前机器完成训练。**没有经过验证的 OCI 或等价隔离运行时，只允许静态分析，绝不执行第三方源码、安装脚本或模型 remote code。** 当前 RC 还不能把“来源已绑定”写成“模型已训练”。
 
-## 快速开始
+## CLI 与自动化入口（可选）
+
+如果你需要直接操作兼容训练引擎、编写脚本或复核已有 Run，可使用 CLI：
 
 ```bash
 uv sync --extra server --extra test
@@ -118,7 +135,7 @@ uv run specialist-model-studio verify runs/<run-id> --deep
 
 旧的 `small-model-harness` 命令在兼容期内保持可用，并调用同一个 `model_harness` 引擎。
 
-## 启动本地 Studio
+## 默认入口：启动本地 Studio
 
 首选方式只启动 Specialist Model Studio 后端和它自带的工作台：
 

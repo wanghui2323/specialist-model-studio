@@ -727,18 +727,6 @@ export class ModelHarnessClient {
     };
   }
 
-  async startRun({ recipe = "digit-classification", businessGoal, taskId, runId, signal } = {}) {
-    const template = await this.request(`/recipes/${encodeURIComponent(recipe)}/template`, { signal });
-    const contract = template.contract;
-    if (businessGoal) contract.business_goal = businessGoal;
-    if (taskId) contract.task_id = taskId;
-    return this.request("/runs", {
-      method: "POST",
-      signal,
-      body: { contract, run_id: runId },
-    });
-  }
-
   status(runId, signal) {
     return this.request(`/runs/${encodeURIComponent(runId)}/result`, { signal });
   }
@@ -752,20 +740,6 @@ export class ModelHarnessClient {
 
   strategies(runId, signal) {
     return this.request(`/runs/${encodeURIComponent(runId)}/strategies`, { signal });
-  }
-
-  applyStrategy(runId, strategyId, approvalConfirmed, signal) {
-    if (approvalConfirmed !== true) {
-      throw new Error("Explicit user approval is required before applying a strategy");
-    }
-    return this.request(
-      `/runs/${encodeURIComponent(runId)}/strategies/${encodeURIComponent(strategyId)}/apply`,
-      {
-        method: "POST",
-        signal,
-        body: { approval_confirmed: true },
-      },
-    );
   }
 
   applyTaskStrategy(taskId, runId, strategyId, approvalConfirmed, signal) {

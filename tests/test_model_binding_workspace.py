@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from unittest.mock import patch
 
 from model_harness.errors import ContractError, HarnessError
@@ -45,6 +47,7 @@ class FakeProvider:
             "train.py": (
                 b"import torch\nfrom transformers import Trainer\n"
                 b"trainer = Trainer(model=model)\ntrainer.train()\n"
+                b"score = accuracy_score(labels, predictions)\n"
             ),
         }
 
@@ -162,6 +165,62 @@ def disk_bytes(root: Path) -> bytes:
 
 
 class ModelBindingWorkspaceTests(unittest.TestCase):
+    def test_archive_wins_remote_resolution_without_persisting_resolution(self) -> None:
+        started = Event()
+        release = Event()
+        original = self.github.resolve
+
+        def blocking_resolve(*args, **kwargs):
+            started.set()
+            self.assertTrue(release.wait(timeout=5))
+            return original(*args, **kwargs)
+
+        with patch.object(self.github, "resolve", side_effect=blocking_resolve):
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.resolve, "r1")
+                self.assertTrue(started.wait(timeout=5))
+                archived = self.workspace.archive_task(self.task_id)
+                self.assertTrue(archived["archived_at_utc"])
+                release.set()
+                with self.assertRaisesRegex(HarnessError, "归档任务"):
+                    future.result(timeout=5)
+
+        self.assertEqual(
+            self.workspace.model_source_store.list_resolutions(self.task_id),
+            [],
+        )
+
+    def test_archive_wins_remote_snapshot_read_without_persisting_binding(self) -> None:
+        resolution = self.resolve("r1")["resolution"]
+        started = Event()
+        release = Event()
+        original = self.github.list_tree
+
+        def blocking_list_tree(*args, **kwargs):
+            started.set()
+            self.assertTrue(release.wait(timeout=5))
+            return original(*args, **kwargs)
+
+        with patch.object(self.github, "list_tree", side_effect=blocking_list_tree):
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    self.bind,
+                    resolution["resolution_id"],
+                    COMMIT_A,
+                )
+                self.assertTrue(started.wait(timeout=5))
+                archived = self.workspace.archive_task(self.task_id)
+                self.assertTrue(archived["archived_at_utc"])
+                release.set()
+                with self.assertRaisesRegex(HarnessError, "归档任务"):
+                    future.result(timeout=5)
+
+        self.assertEqual(
+            self.workspace.model_source_store.list_snapshots(self.task_id),
+            [],
+        )
+        self.assertIsNone(self.workspace.current_model_binding(self.task_id))
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.runs_dir = Path(self.temporary.name) / "runs"

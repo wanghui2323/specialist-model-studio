@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import base64
+import binascii
 import io
 import os
 import re
@@ -19,6 +21,7 @@ from PIL import Image, UnidentifiedImageError
 
 from .blockers import BlockerStore
 from .feasibility_store import FeasibilityStore
+from .environment_resolver import resolve_environment_dependencies
 from .contracts import validate_contract
 from .data_adapters import DataAdapterRegistry, default_data_adapter_registry
 from .errors import ContractError, HarnessError
@@ -59,14 +62,18 @@ from .resource_feasibility import (
     ResourceProbe,
     evaluate_resource_fit,
 )
+from .runner import new_run_id
 from .service import RunService
+from .state import ACTIVE_STATUSES
 from .staged_assets import StagedAssetNotFound, StagedAssetStore
 from .task_specs import (
     build_task_spec_revision,
     capability_for_family,
+    modality_from_candidate_families,
     normalize_family,
 )
 from .training_plans import StaleTrainingPlanError, TrainingPlanStore
+from .training_plan_compiler import compile_training_plan
 
 
 TASK_SCHEMA_VERSION = "0.2"
@@ -181,6 +188,15 @@ def _model_source_error_message(code: str) -> str:
     if "digest" in lowered or "mismatch" in lowered:
         return "来源内容与固定版本证据不一致；系统已停止绑定。"
     return "官方模型来源请求失败；失败事实已保存，可在同一任务中重试。"
+
+
+def _canonical_model_source_blocker_code(reason_code: str) -> str:
+    lowered = reason_code.lower()
+    if "license" in lowered:
+        return "blocked_license"
+    if any(marker in lowered for marker in ("digest", "mismatch", "tamper")):
+        return "blocked_security"
+    return "blocked_repository"
 
 
 def _license_policy(license_name: str, license_status: str) -> dict[str, Any]:
@@ -416,6 +432,7 @@ class TrainingWorkspace:
         self.tasks_dir = self.root / "tasks"
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
         self.runs = runs
+        self.runs.attach_workspace(self.root)
         self.data_adapters = data_adapters or default_data_adapter_registry()
         self.recipe_builder = RecipeScaffoldBuilder()
         self.recipe_factory = RecipeFactory(self.root / "recipe_factory")
@@ -444,6 +461,7 @@ class TrainingWorkspace:
         self._recover_model_binding_commits()
         self._restore_model_binding_task_projections()
         self._restore_registered_recipe_versions()
+        self._recover_pending_runs()
 
     def close(self) -> None:
         with self._lock:
@@ -540,6 +558,7 @@ class TrainingWorkspace:
             "current_run_id": None,
             "last_run_id": None,
             "run_ids": [],
+            "pending_run": None,
             "created_at_utc": now,
             "updated_at_utc": now,
         }
@@ -554,7 +573,11 @@ class TrainingWorkspace:
         return self.get_task(task_id)
 
     def list_tasks(self, *, include_archived: bool = False) -> list[dict[str, Any]]:
-        stored_tasks = [read_json(path) for path in self.tasks_dir.glob("*/task.json")]
+        with self._lock:
+            stored_tasks = [
+                self._reconcile_pending_run(read_json(path))[0]
+                for path in self.tasks_dir.glob("*/task.json")
+            ]
         tasks = [
             self._view(task)
             for task in stored_tasks
@@ -563,7 +586,11 @@ class TrainingWorkspace:
         return sorted(tasks, key=lambda item: item["updated_at_utc"], reverse=True)
 
     def get_task(self, task_id: str) -> dict[str, Any]:
-        return self._view(read_json(self._task_path(task_id)))
+        with self._lock:
+            task, _recovered = self._reconcile_pending_run(
+                read_json(self._task_path(task_id))
+            )
+        return self._view(task)
 
     def current_training_plan(self, task_id: str) -> dict[str, Any] | None:
         task = read_json(self._task_path(task_id))
@@ -607,6 +634,7 @@ class TrainingWorkspace:
     ) -> dict[str, Any]:
         with self._lock:
             task = read_json(self._task_path(task_id))
+            self._require_task_mutable(task, "生成训练计划")
             current_spec = self._ensure_spec_revision(task)
             if (
                 isinstance(base_spec_revision, bool)
@@ -628,6 +656,15 @@ class TrainingWorkspace:
             snapshot = context["snapshot"]
             analysis_record = context["analysis"]
             analysis = analysis_record["analysis"]
+            analysis_status = str(analysis.get("status") or "")
+            if analysis_status != "complete":
+                if analysis_status in {"needs_input", "needs_manual_mapping"}:
+                    raise HarnessError(
+                        "仓库静态分析还需要入口或数据映射；请先创建新的分析 revision"
+                    )
+                raise HarnessError(
+                    "仓库静态分析存在未解决的风险或阻断；不能生成可批准的训练计划"
+                )
             license_policy = dict(
                 snapshot.get("details", {}).get("license_policy") or {}
             ) or _license_policy(
@@ -649,25 +686,27 @@ class TrainingWorkspace:
                 blocker = self.blocker_store.append(
                     task_id,
                     stage="training_plan",
-                    code="blocked_training_entrypoint",
+                    code="blocked_repository",
                     message="仓库静态分析未确认训练入口；请从固定文件清单中人工选择入口。",
                     retry_action="map_training_entrypoint",
                     related_object_type="RepositoryAnalysis",
                     related_object_id=str(analysis_record["analysis_id"]),
                     related_object_digest=str(analysis_record["content_digest"]),
-                    details={"candidate_paths": [item.get("path") for item in candidates]},
+                    details={
+                        "reason_code": "blocked_training_entrypoint",
+                        "candidate_paths": [item.get("path") for item in candidates],
+                    },
                 )
                 raise HarnessError(str(blocker["message"]))
 
-            budget = dict(resource_budget or {})
-            defaults = {
-                "max_seconds": 3600,
-                "ram_bytes": 4 * 1024**3,
-                "vram_bytes": 0,
-                "disk_bytes": 5 * 1024**3,
-            }
-            defaults.update(budget)
-            capability = deepcopy(current_spec.get("capability_request", {}))
+            compiled = compile_training_plan(
+                task_spec=current_spec,
+                snapshot=snapshot,
+                analysis=analysis,
+                selected_entrypoint=selected_path,
+                hyperparameters=hyperparameters,
+                resource_budget=resource_budget,
+            )
             plan = self.training_plan_store.create_revision(
                 task_id,
                 base_spec_revision=int(current_spec["revision"]),
@@ -675,30 +714,7 @@ class TrainingWorkspace:
                 snapshot_digest=str(snapshot["content_digest"]),
                 analysis_id=str(analysis_record["analysis_id"]),
                 analysis_digest=str(analysis_record["content_digest"]),
-                entrypoint={
-                    "argv": ["python", selected_path],
-                    "working_dir": "/workspace/source",
-                },
-                dataset_mapping={
-                    "source": "current_task_spec",
-                    "capability": capability,
-                    "requires_user_data_contract": True,
-                },
-                hyperparameters=dict(hyperparameters or {}),
-                evaluation={
-                    "metrics": ["task_primary_metric"],
-                    "gates": {"requires_human_confirmation": True},
-                },
-                artifact_contract={
-                    "output_dir": "/workspace/output",
-                    "required": ["model", "metrics.json"],
-                },
-                resource_budget=defaults,
-                execution_policy={
-                    "backend": "oci",
-                    "network_allowlist": [],
-                    "secret_scopes": [],
-                },
+                **compiled,
             )
             self.blocker_store.resolve_active_stage(
                 task_id,
@@ -718,33 +734,35 @@ class TrainingWorkspace:
         decision: str,
         reason: str = "",
     ) -> dict[str, Any]:
-        read_json(self._task_path(task_id))
-        if decision == "approve":
-            self.training_plan_store.approve(
-                task_id,
-                revision_id,
-                expected_plan_sha256=expected_plan_sha256,
-                actor="local_user",
-                reason=reason,
-            )
-        elif decision == "reject":
-            self.training_plan_store.reject(
-                task_id,
-                revision_id,
-                expected_plan_sha256=expected_plan_sha256,
-                actor="local_user",
-                reason=reason or "用户拒绝当前计划",
-            )
-        elif decision == "cancel":
-            self.training_plan_store.cancel(
-                task_id,
-                revision_id,
-                expected_plan_sha256=expected_plan_sha256,
-                actor="local_user",
-                reason=reason or "用户取消当前计划",
-            )
-        else:
-            raise ContractError("decision 必须是 approve、reject 或 cancel")
+        with self._lock:
+            task = read_json(self._task_path(task_id))
+            self._require_task_mutable(task, "审批训练计划")
+            if decision == "approve":
+                self.training_plan_store.approve(
+                    task_id,
+                    revision_id,
+                    expected_plan_sha256=expected_plan_sha256,
+                    actor="local_user",
+                    reason=reason,
+                )
+            elif decision == "reject":
+                self.training_plan_store.reject(
+                    task_id,
+                    revision_id,
+                    expected_plan_sha256=expected_plan_sha256,
+                    actor="local_user",
+                    reason=reason or "用户拒绝当前计划",
+                )
+            elif decision == "cancel":
+                self.training_plan_store.cancel(
+                    task_id,
+                    revision_id,
+                    expected_plan_sha256=expected_plan_sha256,
+                    actor="local_user",
+                    reason=reason or "用户取消当前计划",
+                )
+            else:
+                raise ContractError("decision 必须是 approve、reject 或 cancel")
         return self.current_training_plan(task_id) or {}
 
     def revise_training_plan(
@@ -768,6 +786,7 @@ class TrainingWorkspace:
 
         with self._lock:
             task = read_json(self._task_path(task_id))
+            self._require_task_mutable(task, "修订训练计划")
             current_spec = self._ensure_spec_revision(task)
             if (
                 isinstance(base_spec_revision, bool)
@@ -789,6 +808,14 @@ class TrainingWorkspace:
             binding = self.model_source_store.current_binding(task_id)
             if binding is None:
                 raise HarnessError("请先选择并批准模型来源")
+            if (
+                task.get("current_model_binding_revision_id")
+                != binding.get("binding_revision_id")
+                or task.get("model_binding_stale_for_spec_revision") is True
+                or int(binding.get("base_spec_revision", 0))
+                != int(current_spec["revision"])
+            ):
+                raise HarnessError("当前模型来源绑定已过期，请为当前TaskSpec重新解析并批准")
             context = self.model_source_store.binding_context(
                 task_id, str(binding["binding_revision_id"])
             )
@@ -796,6 +823,15 @@ class TrainingWorkspace:
             snapshot = context["snapshot"]
             analysis_record = context["analysis"]
             analysis = analysis_record["analysis"]
+            analysis_status = str(analysis.get("status") or "")
+            if analysis_status != "complete":
+                if analysis_status in {"needs_input", "needs_manual_mapping"}:
+                    raise HarnessError(
+                        "仓库静态分析还需要入口或数据映射；请先创建新的分析 revision"
+                    )
+                raise HarnessError(
+                    "仓库静态分析存在未解决的风险或阻断；不能修订可批准的训练计划"
+                )
             license_policy = dict(
                 snapshot.get("details", {}).get("license_policy") or {}
             ) or _license_policy(
@@ -829,7 +865,14 @@ class TrainingWorkspace:
                 if hyperparameters is not None
                 else dict(current["hyperparameters"])
             )
-            capability = deepcopy(current_spec.get("capability_request", {}))
+            compiled = compile_training_plan(
+                task_spec=current_spec,
+                snapshot=snapshot,
+                analysis=analysis,
+                selected_entrypoint=selected_path,
+                hyperparameters=next_hyperparameters,
+                resource_budget=next_budget,
+            )
             revised = self.training_plan_store.revise_revision(
                 task_id,
                 revision_id,
@@ -840,20 +883,7 @@ class TrainingWorkspace:
                     "snapshot_digest": str(snapshot["content_digest"]),
                     "analysis_id": str(analysis_record["analysis_id"]),
                     "analysis_digest": str(analysis_record["content_digest"]),
-                    "entrypoint": {
-                        "argv": ["python", selected_path],
-                        "working_dir": "/workspace/source",
-                    },
-                    "dataset_mapping": {
-                        "source": "current_task_spec",
-                        "capability": capability,
-                        "requires_user_data_contract": True,
-                    },
-                    "hyperparameters": next_hyperparameters,
-                    "evaluation": dict(current["evaluation"]),
-                    "artifact_contract": dict(current["artifact_contract"]),
-                    "resource_budget": next_budget,
-                    "execution_policy": dict(current["execution_policy"]),
+                    **compiled,
                 },
             )
             self.blocker_store.resolve_active_stage(
@@ -876,7 +906,8 @@ class TrainingWorkspace:
     def current_resource_feasibility(self, task_id: str) -> dict[str, Any]:
         read_json(self._task_path(task_id))
         bundle = self.feasibility_store.current_bundle(task_id)
-        blockers = [
+        blockers = sorted(
+            [
             item
             for item in self.blocker_store.list(task_id, active_only=True)
             if item.get("stage") in {
@@ -884,26 +915,51 @@ class TrainingWorkspace:
                 "environment_lock",
                 "resource_fit",
             }
-        ]
+            ],
+            key=lambda item: (
+                str(item.get("created_at_utc") or ""),
+                str(item.get("blocker_id") or ""),
+            ),
+            reverse=True,
+        )
         report = bundle.get("resource_fit_report")
+        probe = bundle.get("resource_probe")
+        environment_lock = bundle.get("environment_lock")
         plan_view = self.current_training_plan(task_id)
         current_plan = plan_view.get("plan") if isinstance(plan_view, dict) else None
-        if (
+        lineage_current = bool(
             isinstance(report, dict)
             and isinstance(current_plan, dict)
-            and (
-                report.get("training_plan_revision_id")
-                != current_plan.get("training_plan_revision_id")
-                or report.get("training_plan_sha256")
-                != current_plan.get("plan_sha256")
-            )
-        ):
+            and isinstance(probe, dict)
+            and isinstance(environment_lock, dict)
+            and report.get("training_plan_revision_id")
+            == current_plan.get("training_plan_revision_id")
+            and report.get("training_plan_sha256")
+            == current_plan.get("plan_sha256")
+            and report.get("resource_probe_id") == probe.get("resource_probe_id")
+            and report.get("resource_probe_sha256") == probe.get("probe_sha256")
+            and report.get("environment_lock_id")
+            == environment_lock.get("environment_lock_id")
+            and report.get("environment_lock_sha256")
+            == environment_lock.get("lock_sha256")
+            and not blockers
+        )
+        if isinstance(report, dict) and not lineage_current:
             bundle = {
                 **bundle,
                 "stale_resource_fit_report": report,
                 "resource_fit_report": None,
             }
             report = None
+        elif report is None:
+            historical_reports = self.feasibility_store.list_resource_fit_reports(
+                task_id
+            )
+            if historical_reports:
+                bundle = {
+                    **bundle,
+                    "stale_resource_fit_report": historical_reports[-1],
+                }
         decision = (
             str(report["decision"])
             if isinstance(report, dict)
@@ -922,8 +978,13 @@ class TrainingWorkspace:
         base_image_digest: str | None = None,
         packages: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        if packages:
+            raise ContractError(
+                "packages由服务端从固定SourceSnapshot解析，客户端不能注入依赖锁"
+            )
         with self._lock:
             task = read_json(self._task_path(task_id))
+            self._require_task_mutable(task, "检查资源可行性")
             plan_view = self.current_training_plan(task_id)
             if plan_view is None:
                 raise HarnessError("请先生成并批准训练计划")
@@ -948,6 +1009,14 @@ class TrainingWorkspace:
             )
             probe = ResourceProbe.capture(self.root)
             probe_record = self.feasibility_store.append_resource_probe(task_id, probe)
+            for stage in ("resource_probe", "environment_lock", "resource_fit"):
+                self.blocker_store.resolve_active_stage(
+                    task_id,
+                    stage,
+                    action="superseded_by_new_resource_probe",
+                    related_object_type="ResourceProbe",
+                    related_object_id=str(probe_record["resource_probe_id"]),
+                )
             runtime = probe_record["container_runtime"]
             if runtime.get("available") is not True:
                 message = (
@@ -992,6 +1061,35 @@ class TrainingWorkspace:
                 )
                 return self.current_resource_feasibility(task_id)
 
+            dependency_resolution = resolve_environment_dependencies(
+                snapshot=context["snapshot"],
+                analysis=context["analysis"]["analysis"],
+            )
+            if dependency_resolution["status"] != "ready":
+                self.blocker_store.append(
+                    task_id,
+                    stage="environment_lock",
+                    code="blocked_environment",
+                    message=(
+                        "仓库依赖尚未形成精确版本和sha256哈希锁；"
+                        "请提交锁定后的requirements导出，再重新检查。"
+                    ),
+                    retry_action="provide_hashed_dependency_lock",
+                    related_object_type="RepositoryAnalysis",
+                    related_object_id=str(context["analysis"]["analysis_id"]),
+                    related_object_digest=str(context["analysis"]["content_digest"]),
+                    details={
+                        "reason_code": "blocked_dependency_lock",
+                        "detector": "static_dependency_resolver",
+                        "required": "exact package versions with sha256 hashes",
+                        "observed": dependency_resolution["unresolved"],
+                        "evidence_refs": dependency_resolution["evidence_refs"],
+                        "resolver_version": dependency_resolution["resolver_version"],
+                        "retryable": True,
+                    },
+                )
+                return self.current_resource_feasibility(task_id)
+
             accelerator_policy = probe_record["accelerator_policy"]
             environment = EnvironmentLock.create(
                 source_snapshot_id=str(context["snapshot"]["snapshot_id"]),
@@ -999,8 +1097,10 @@ class TrainingWorkspace:
                 platform_arch=str(probe_record["arch"].get("name") or ""),
                 execution_backend=str(plan["execution_policy"]["backend"]),
                 base_image_digest=selected_digest,
-                packages=list(packages or []),
-                system_dependencies=(),
+                packages=dependency_resolution["packages"],
+                system_dependencies=dependency_resolution[
+                    "system_dependencies"
+                ],
                 network_allowlist=plan["execution_policy"]["network_allowlist"],
                 detected_accelerators=accelerator_policy.get("detected") or (),
                 unusable_reason=str(accelerator_policy.get("unusable_reason") or ""),
@@ -1008,6 +1108,45 @@ class TrainingWorkspace:
             environment_record = self.feasibility_store.append_environment_lock(
                 task_id, environment
             )
+            estimate_basis = (
+                plan.get("dataset_mapping", {})
+                .get("plan_basis", {})
+                .get("resource_estimate_basis", {})
+            )
+            if (
+                not isinstance(estimate_basis, dict)
+                or estimate_basis.get("status") != "complete"
+            ):
+                self.blocker_store.resolve_active_stage(
+                    task_id,
+                    "environment_lock",
+                    action="environment_lock_created",
+                    related_object_type="EnvironmentLock",
+                    related_object_id=str(environment_record["environment_lock_id"]),
+                )
+                self.blocker_store.append(
+                    task_id,
+                    stage="resource_fit",
+                    code="blocked_resources",
+                    message=(
+                        "当前预算只是仓库快照启发式上限，尚未绑定基础模型权重与用户数据规模证据；"
+                        "不能生成资源fit结论。V3分析阶段到此停止，请进入L3环境构建资格验证补齐证据。"
+                    ),
+                    retry_action="continue_to_l3_qualification",
+                    related_object_type="TrainingPlanRevision",
+                    related_object_id=str(plan["training_plan_revision_id"]),
+                    related_object_digest=str(plan["plan_sha256"]),
+                    details={
+                        "detector": "resource_estimate_evidence_gate",
+                        "required": (
+                            "immutable base-model size/digest, dataset size/digest, "
+                            "and qualified build measurement"
+                        ),
+                        "observed": estimate_basis,
+                        "retryable": False,
+                    },
+                )
+                return self.current_resource_feasibility(task_id)
             report = evaluate_resource_fit(
                 training_plan_revision_id=str(plan["training_plan_revision_id"]),
                 training_plan_sha256=str(plan["plan_sha256"]),
@@ -1025,11 +1164,15 @@ class TrainingWorkspace:
                 related_object_type="EnvironmentLock",
                 related_object_id=str(environment_record["environment_lock_id"]),
             )
-            if report_record["decision"] == "fit":
+            if report_record["decision"] in {"fit", "fit_with_revision"}:
                 self.blocker_store.resolve_active_stage(
                     task_id,
                     "resource_fit",
-                    action="resource_fit_confirmed",
+                    action=(
+                        "resource_fit_confirmed"
+                        if report_record["decision"] == "fit"
+                        else "resource_fit_revision_recommended"
+                    ),
                     related_object_type="ResourceFitReport",
                     related_object_id=str(report_record["resource_fit_report_id"]),
                 )
@@ -1128,17 +1271,84 @@ class TrainingWorkspace:
         related_object_id: str | None = None,
         details: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        code = str(error).strip() or error.__class__.__name__
-        code = re.sub(r"[^a-zA-Z0-9._:-]+", "_", code)[:120] or "unknown_error"
+        reason_code = str(error).strip() or error.__class__.__name__
+        reason_code = (
+            re.sub(r"[^a-zA-Z0-9._:-]+", "_", reason_code)[:120]
+            or "unknown_error"
+        )
+        code = _canonical_model_source_blocker_code(reason_code)
+        selected_details = deepcopy(dict(details or {}))
+        selected_details["reason_code"] = reason_code
+        selected_details["canonical_code"] = code
+        evidence_refs = selected_details.get("evidence_refs")
         return self.blocker_store.append(
             task_id,
             stage=stage,
             code=code,
-            message=_model_source_error_message(code),
+            message=_model_source_error_message(reason_code),
             retry_action=retry_action,
             related_object_type=related_object_type,
             related_object_id=related_object_id,
-            details=details,
+            details=selected_details,
+            detector="model_source_provider@0.9",
+            facts=selected_details,
+            rule={
+                "failure_closed": True,
+                "required": "immutable_source_resolution_and_snapshot",
+            },
+            evidence_refs=(
+                list(evidence_refs) if isinstance(evidence_refs, list) else []
+            ),
+            recovery_actions=[retry_action],
+            retryable=True,
+        )
+
+    def _record_repository_analysis_blocker(
+        self,
+        task_id: str,
+        analysis_record: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        analysis = analysis_record.get("analysis") or {}
+        blocking_risks = [
+            deepcopy(item)
+            for item in analysis.get("risks", [])
+            if isinstance(item, dict)
+            and str(item.get("severity") or "").lower() in {"critical", "high"}
+        ]
+        if str(analysis.get("status") or "") != "blocked" or not blocking_risks:
+            return None
+        evidence_refs = list(
+            dict.fromkeys(
+                str(reference)
+                for risk in blocking_risks
+                for reference in risk.get("evidence_refs", [])
+                if str(reference).strip()
+            )
+        )
+        retry_action = "review_repository_risks"
+        return self.blocker_store.append(
+            task_id,
+            stage="repository_analysis",
+            code="blocked_security",
+            message=(
+                "仓库静态分析发现未解决的高风险执行或供应链行为；"
+                "当前来源只能审阅，不得生成计划或启动运行。"
+            ),
+            retry_action=retry_action,
+            related_object_type="RepositoryAnalysis",
+            related_object_id=str(analysis_record["analysis_id"]),
+            related_object_digest=str(analysis_record["content_digest"]),
+            details={
+                "reason_code": "blocked_high_risk_repository_analysis",
+                "risk_codes": [str(item.get("code") or "unknown") for item in blocking_risks],
+                "retryable": True,
+            },
+            detector=str(analysis.get("analyzer_version") or ANALYZER_VERSION),
+            facts={"blocking_risks": blocking_risks},
+            rule={"maximum_allowed_risk_severity": "medium"},
+            evidence_refs=evidence_refs,
+            recovery_actions=[retry_action],
+            retryable=True,
         )
 
     def search_model_sources(
@@ -1337,6 +1547,7 @@ class TrainingWorkspace:
 
         with self._lock:
             task = read_json(self._task_path(task_id))
+            self._require_task_mutable(task, "保存模型来源解析")
             current_spec = self._ensure_spec_revision(task)
             if int(current_spec["revision"]) != base_spec_revision:
                 raise HarnessError(
@@ -1535,6 +1746,7 @@ class TrainingWorkspace:
                 resolution_digest=str(resolution["content_digest"]),
                 expected_resolved_commit=expected_commit,
                 base_spec_revision=base_spec_revision,
+                analyzer_version=ANALYZER_VERSION,
             )
             attempt_id = str(attempt["attempt"]["attempt_id"])
             if (
@@ -1579,6 +1791,40 @@ class TrainingWorkspace:
             for item in self.binding_analysis_attempt_store.list_attempts(task_id)
         ]
 
+    def cancel_model_binding_attempt(
+        self,
+        task_id: str,
+        attempt_id: str,
+        *,
+        reason: str = "用户取消模型来源绑定与静态分析",
+    ) -> dict[str, Any]:
+        """Cancel one active source-read attempt without creating a binding.
+
+        The workspace lock is the linearization boundary shared with the final
+        snapshot/analysis/binding commit.  A cancellation that acquires it
+        first wins and the background worker must leave zero binding result;
+        once the final commit wins, cancellation reports that the attempt is
+        already terminal instead of rewriting history.
+        """
+
+        with self._lock:
+            read_json(self._task_path(task_id))
+            attempt = self.binding_analysis_attempt_store.get_attempt(
+                task_id, attempt_id
+            )
+            status = str(attempt["current_state"]["status"])
+            if status not in {"queued", "running"}:
+                return {"cancelled": False, "binding_attempt": attempt}
+            cancelled = self.binding_analysis_attempt_store.cancel(
+                task_id,
+                attempt_id,
+                reason=reason,
+            )
+            future = self._binding_futures.get(attempt_id)
+            if future is not None:
+                future.cancel()
+            return {"cancelled": True, "binding_attempt": cancelled}
+
     def _execute_model_source_binding_attempt(
         self,
         task_id: str,
@@ -1602,20 +1848,17 @@ class TrainingWorkspace:
                 expected_resolved_commit=expected_commit,
                 base_spec_revision=base_spec_revision,
                 token=token,
+                binding_attempt_id=attempt_id,
             )
-            binding = result["binding"]
-            analysis = result["analysis"]
-            self.binding_analysis_attempt_store.complete(
-                task_id,
-                attempt_id,
-                result={
-                    "binding_revision_id": binding["binding_revision_id"],
-                    "resolution_id": binding["resolution_id"],
-                    "snapshot_id": binding["snapshot_id"],
-                    "analysis_id": analysis["analysis_id"],
-                    "binding_status": binding["status"],
-                },
-            )
+            # ``bind_model_source`` appends the completed attempt while holding
+            # the same workspace lock as the final binding commit.  Reading the
+            # result here only asserts that the atomic finalization happened.
+            if result["binding"]["binding_revision_id"]:
+                completed = self.binding_analysis_attempt_store.get_attempt(
+                    task_id, attempt_id
+                )
+                if completed["current_state"]["status"] != "completed":
+                    raise HarnessError("模型来源绑定已提交但Attempt未形成完成证据")
         except Exception as error:
             try:
                 attempt = self.binding_analysis_attempt_store.get_attempt(
@@ -1664,6 +1907,7 @@ class TrainingWorkspace:
         expected_resolved_commit: str,
         base_spec_revision: int,
         token: str | None = None,
+        binding_attempt_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a static source snapshot and atomically bind it to a task."""
 
@@ -1716,13 +1960,17 @@ class TrainingWorkspace:
                     task_id, str(current["binding_revision_id"])
                 )
                 assert context is not None
-                return {
-                    "task": self.get_task(task_id),
-                    "binding": self._model_binding_projection(
-                        task, current, context, current_binding_id=str(current["binding_revision_id"])
-                    ),
-                    "analysis": deepcopy(context["analysis"]["analysis"]),
-                }
+                if (
+                    context["analysis"]["analysis"].get("analyzer_version")
+                    == ANALYZER_VERSION
+                ):
+                    return {
+                        "task": self.get_task(task_id),
+                        "binding": self._model_binding_projection(
+                            task, current, context, current_binding_id=str(current["binding_revision_id"])
+                        ),
+                        "analysis": deepcopy(context["analysis"]["analysis"]),
+                    }
             details = resolution.get("details", {})
             resolved_source = ResolvedSource(
                 provider=provider_id,
@@ -1769,6 +2017,13 @@ class TrainingWorkspace:
 
         with self._lock:
             task = read_json(self._task_path(task_id))
+            self._require_task_mutable(task, "提交模型来源绑定")
+            if binding_attempt_id is not None:
+                attempt = self.binding_analysis_attempt_store.get_attempt(
+                    task_id, binding_attempt_id
+                )
+                if attempt["current_state"]["status"] != "running":
+                    raise HarnessError("模型来源绑定已取消，未写入来源快照或绑定")
             current_spec = self._ensure_spec_revision(task)
             if int(current_spec["revision"]) != base_spec_revision:
                 raise HarnessError(
@@ -1799,10 +2054,22 @@ class TrainingWorkspace:
                     task_id,
                     snapshot_id=str(snapshot["snapshot_id"]),
                     snapshot_digest=str(snapshot["content_digest"]),
+                    expected_resolved_commit=source_snapshot.resolved_commit,
                     analyzer_version=ANALYZER_VERSION,
                 )
-            elif current_attempt["current_state"]["status"] == "completed":
+            elif (
+                current_attempt["current_state"]["status"] == "completed"
+                and current_attempt["attempt"].get("analyzer_version")
+                == ANALYZER_VERSION
+            ):
                 analysis_attempt = current_attempt
+            elif current_attempt["current_state"]["status"] == "completed":
+                analysis_attempt = self.repository_analysis_store.retry(
+                    task_id,
+                    str(current_attempt["attempt"]["attempt_id"]),
+                    analyzer_version=ANALYZER_VERSION,
+                    expected_resolved_commit=source_snapshot.resolved_commit,
+                )
             else:
                 current_status = current_attempt["current_state"]["status"]
                 if current_status in {"queued", "running"}:
@@ -1821,7 +2088,9 @@ class TrainingWorkspace:
                         details={"previous_status": current_status},
                     )
                 analysis_attempt = self.repository_analysis_store.retry(
-                    task_id, str(current_attempt["attempt"]["attempt_id"])
+                    task_id,
+                    str(current_attempt["attempt"]["attempt_id"]),
+                    expected_resolved_commit=source_snapshot.resolved_commit,
                 )
             attempt_status = analysis_attempt["current_state"]["status"]
             if attempt_status == "queued":
@@ -1894,6 +2163,17 @@ class TrainingWorkspace:
                         "downstream_code": downstream.code,
                         "evidence_refs": list(downstream.evidence_refs),
                     },
+                    detector="repository_analysis@0.9",
+                    facts={
+                        "license": source_snapshot.license,
+                        "license_status": source_snapshot.license_status,
+                        "policy": policy,
+                        "downstream_code": downstream.code,
+                    },
+                    rule={"license_policy_decision_required": "allow"},
+                    evidence_refs=list(downstream.evidence_refs),
+                    recovery_actions=["review_model_source_license"],
+                    retryable=True,
                 )
             current = self.model_source_store.current_binding(task_id)
             base_binding_revision = int(current["revision"]) if current else 0
@@ -1937,13 +2217,31 @@ class TrainingWorkspace:
                 related_object_type="SourceSnapshot",
                 related_object_id=str(snapshot["snapshot_id"]),
             )
-            self.blocker_store.resolve_active_stage(
-                task_id,
-                "repository_analysis",
-                action="repository_analysis_completed",
-                related_object_type="RepositoryAnalysis",
-                related_object_id=str(analysis_record["analysis_id"]),
-            )
+            if domain_analysis.status == "complete":
+                self.blocker_store.resolve_active_stage(
+                    task_id,
+                    "repository_analysis",
+                    action="repository_analysis_completed",
+                    related_object_type="RepositoryAnalysis",
+                    related_object_id=str(analysis_record["analysis_id"]),
+                )
+            else:
+                self._record_repository_analysis_blocker(
+                    task_id,
+                    analysis_record,
+                )
+            if binding_attempt_id is not None:
+                self.binding_analysis_attempt_store.complete(
+                    task_id,
+                    binding_attempt_id,
+                    result={
+                        "binding_revision_id": binding["binding_revision_id"],
+                        "resolution_id": binding["resolution_id"],
+                        "snapshot_id": binding["snapshot_id"],
+                        "analysis_id": analysis_record["analysis_id"],
+                        "binding_status": binding_view["status"],
+                    },
+                )
         return {
             "task": self.get_task(task_id),
             "binding": binding_view,
@@ -2013,6 +2311,398 @@ class TrainingWorkspace:
         read_json(self._task_path(task_id))
         record = self.model_source_store.get_analysis(task_id, analysis_id)
         return deepcopy(record["analysis"])
+
+    def get_repository_evidence_excerpt(
+        self,
+        task_id: str,
+        analysis_id: str,
+        *,
+        path: str,
+        line: int,
+        context_lines: int = 3,
+    ) -> dict[str, Any]:
+        """Return a bounded excerpt from the exact captured source document."""
+
+        read_json(self._task_path(task_id))
+        if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+            raise ContractError("evidence line must be a positive integer")
+        if (
+            isinstance(context_lines, bool)
+            or not isinstance(context_lines, int)
+            or context_lines < 0
+            or context_lines > 8
+        ):
+            raise ContractError("context_lines must be between 0 and 8")
+        selected_path = str(path or "").strip()
+        if (
+            not selected_path
+            or PurePosixPath(selected_path).is_absolute()
+            or ".." in PurePosixPath(selected_path).parts
+        ):
+            raise ContractError("invalid evidence path")
+        record = self.model_source_store.get_analysis(task_id, analysis_id)
+        snapshot = self.model_source_store.get_snapshot(
+            task_id, str(record["snapshot_id"])
+        )
+        document = next(
+            (
+                item
+                for item in snapshot.get("documents", [])
+                if item.get("path") == selected_path
+            ),
+            None,
+        )
+        if not isinstance(document, dict):
+            raise FileNotFoundError("evidence document was not captured")
+        try:
+            content = base64.b64decode(
+                str(document["content_base64"]), validate=True
+            )
+            text = content.decode("utf-8")
+        except (KeyError, ValueError, UnicodeDecodeError, binascii.Error) as exc:
+            raise ContractError("evidence document failed integrity decoding") from exc
+        observed_sha = hashlib.sha256(content).hexdigest()
+        if observed_sha != document.get("sha256"):
+            raise ContractError("evidence document digest changed")
+        lines = text.splitlines()
+        if line > max(len(lines), 1):
+            raise ContractError("evidence line is outside the captured document")
+        start = max(1, line - context_lines)
+        end = min(len(lines), line + context_lines)
+        return {
+            "analysis_id": analysis_id,
+            "snapshot_id": snapshot["snapshot_id"],
+            "resolved_commit": snapshot["resolved_commit"],
+            "path": selected_path,
+            "document_sha256": observed_sha,
+            "requested_line": line,
+            "line_start": start,
+            "line_end": end,
+            "lines": [
+                {"line": index, "text": lines[index - 1]}
+                for index in range(start, end + 1)
+            ],
+        }
+
+    def apply_repository_manual_mapping(
+        self,
+        task_id: str,
+        analysis_id: str,
+        *,
+        training_entrypoint: str,
+        dataset_argument: str | None = None,
+        inference_entrypoint: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a traceable analysis + binding revision from user mapping.
+
+        Manual mapping only changes interpretation of the already captured,
+        immutable source snapshot. It never reads a local checkout and never
+        executes repository code.
+        """
+
+        def selected_path(value: str, field: str) -> str:
+            candidate = str(value or "").strip()
+            parsed = PurePosixPath(candidate)
+            if (
+                not candidate
+                or parsed.is_absolute()
+                or ".." in parsed.parts
+                or any(ord(character) < 32 for character in candidate)
+            ):
+                raise ContractError(f"invalid {field}")
+            return candidate
+
+        selected_training = selected_path(
+            training_entrypoint, "training entrypoint"
+        )
+        if PurePosixPath(selected_training).suffix.lower() != ".py":
+            raise ContractError(
+                "V3 manual mapping currently supports only Python training entrypoints"
+            )
+        selected_inference = (
+            selected_path(inference_entrypoint, "inference entrypoint")
+            if inference_entrypoint is not None
+            and str(inference_entrypoint).strip()
+            else None
+        )
+        if (
+            selected_inference is not None
+            and PurePosixPath(selected_inference).suffix.lower() != ".py"
+        ):
+            raise ContractError(
+                "V3 manual mapping currently supports only Python inference entrypoints"
+            )
+        selected_dataset_argument = (
+            str(dataset_argument).strip()
+            if dataset_argument is not None and str(dataset_argument).strip()
+            else None
+        )
+        if selected_dataset_argument is not None and (
+            len(selected_dataset_argument) > 200
+            or any(ord(character) < 32 for character in selected_dataset_argument)
+        ):
+            raise ContractError("invalid dataset argument")
+
+        with self._lock:
+            task = read_json(self._task_path(task_id))
+            self._require_task_mutable(task, "修改仓库分析映射")
+            current_spec = self._ensure_spec_revision(task)
+            current_binding = self.model_source_store.current_binding(task_id)
+            if current_binding is None:
+                raise ContractError("current model binding not found")
+            context = self.model_source_store.binding_context(
+                task_id, str(current_binding["binding_revision_id"])
+            )
+            assert context is not None
+            current_analysis_record = context["analysis"]
+            if current_analysis_record["analysis_id"] != analysis_id:
+                raise ContractError("repository analysis is no longer current")
+            snapshot = context["snapshot"]
+            valid_files = {
+                str(item.get("path")): str(item.get("kind"))
+                for item in snapshot.get("files", [])
+                if isinstance(item, dict)
+                and item.get("kind") in {"blob", "executable"}
+            }
+            if selected_training not in valid_files:
+                raise ContractError(
+                    "training entrypoint is not an executable file in the current snapshot"
+                )
+            if (
+                selected_inference is not None
+                and selected_inference not in valid_files
+            ):
+                raise ContractError(
+                    "inference entrypoint is not an executable file in the current snapshot"
+                )
+
+            current_attempt = self.repository_analysis_store.current_attempt(
+                task_id, str(snapshot["snapshot_id"])
+            )
+            if current_attempt is None:
+                raise ContractError("repository analysis attempt not found")
+            if current_attempt["current_state"]["status"] not in {
+                "completed",
+                "failed",
+                "cancelled",
+            }:
+                raise ContractError("repository analysis is still running")
+
+            mapping_payload: dict[str, Any] = {
+                "training_entrypoint": selected_training,
+            }
+            if selected_dataset_argument is not None:
+                mapping_payload["dataset_argument"] = selected_dataset_argument
+            if selected_inference is not None:
+                mapping_payload["inference_entrypoint"] = selected_inference
+            mapping_revision = (
+                self.repository_analysis_store.create_manual_mapping_revision(
+                    task_id,
+                    snapshot_id=str(snapshot["snapshot_id"]),
+                    snapshot_digest=str(snapshot["content_digest"]),
+                    mapping=mapping_payload,
+                    created_by="user",
+                )
+            )
+            base_analyzer_version = str(
+                current_analysis_record["analysis"].get("analyzer_version")
+                or ANALYZER_VERSION
+            ).split("+manual-mapping/", 1)[0]
+            manual_analyzer_version = (
+                f"{base_analyzer_version}+manual-mapping/0.1"
+            )
+            retried = self.repository_analysis_store.retry(
+                task_id,
+                str(current_attempt["attempt"]["attempt_id"]),
+                analyzer_version=manual_analyzer_version,
+                manual_mapping_revision_id=str(
+                    mapping_revision["mapping_revision_id"]
+                ),
+            )
+            attempt_id = str(retried["attempt"]["attempt_id"])
+            self.repository_analysis_store.mark_running(task_id, attempt_id)
+
+            analysis = deepcopy(current_analysis_record["analysis"])
+            manual_ref = (
+                f"manual_mapping:{mapping_revision['mapping_revision_id']}:"
+                "training_entrypoint"
+            )
+            manual_evidence = {
+                "kind": "manual_mapping",
+                "ref": manual_ref,
+                "snapshot_id": snapshot["snapshot_id"],
+                "resolved_commit": snapshot["resolved_commit"],
+                "mapping_revision_id": mapping_revision[
+                    "mapping_revision_id"
+                ],
+                "mapping_revision_digest": mapping_revision["content_digest"],
+            }
+            manual_training = {
+                "path": selected_training,
+                "confidence": 1.0,
+                "evidence_refs": [manual_ref],
+                "evidence": [manual_evidence],
+            }
+            existing_training = [
+                item
+                for item in analysis.get("training_entrypoints", [])
+                if isinstance(item, dict)
+                and item.get("path") != selected_training
+            ]
+            analysis["training_entrypoints"] = [
+                manual_training,
+                *existing_training,
+            ]
+
+            existing_inference = [
+                item
+                for item in analysis.get("inference_entrypoints", [])
+                if isinstance(item, dict)
+                and item.get("path") != selected_inference
+            ]
+            if selected_inference is not None:
+                inference_ref = (
+                    f"manual_mapping:{mapping_revision['mapping_revision_id']}:"
+                    "inference_entrypoint"
+                )
+                existing_inference.insert(
+                    0,
+                    {
+                        "path": selected_inference,
+                        "confidence": 1.0,
+                        "evidence_refs": [inference_ref],
+                        "evidence": [
+                            {
+                                **manual_evidence,
+                                "ref": inference_ref,
+                            }
+                        ],
+                    },
+                )
+            analysis["inference_entrypoints"] = existing_inference
+            analysis["entrypoints"] = [
+                {"kind": "train", "symbol": None, **item}
+                for item in analysis["training_entrypoints"]
+            ] + [
+                {"kind": "inference", "symbol": None, **item}
+                for item in analysis["inference_entrypoints"]
+            ]
+
+            if selected_dataset_argument is not None:
+                data_ref = (
+                    f"manual_mapping:{mapping_revision['mapping_revision_id']}:"
+                    "dataset_argument"
+                )
+                manual_data_contract = {
+                    "name": f"dataset_argument:{selected_dataset_argument}",
+                    "evidence_refs": [data_ref],
+                    "evidence": [{**manual_evidence, "ref": data_ref}],
+                }
+                existing_contracts = [
+                    item
+                    for item in analysis.get("data_contract_hints", [])
+                    if isinstance(item, dict)
+                    and item.get("name") != manual_data_contract["name"]
+                ]
+                analysis["data_contract_hints"] = [
+                    manual_data_contract,
+                    *existing_contracts,
+                ]
+                analysis["data_contract_candidates"] = deepcopy(
+                    analysis["data_contract_hints"]
+                )
+
+            risks = analysis.get("risks", [])
+            has_blocking_risk = any(
+                isinstance(item, dict)
+                and str(item.get("severity", "")).lower()
+                in {"critical", "high"}
+                for item in risks
+            )
+            is_blocked = bool(analysis.get("downstream_blockers")) or has_blocking_risk
+            analysis["status"] = "blocked" if is_blocked else "complete"
+            analysis["next_action"] = (
+                str(analysis.get("next_action") or "resolve_repository_blocker")
+                if is_blocked
+                else "ready_for_environment_check"
+            )
+            analysis["analysis_id"] = (
+                "analysis_manual_"
+                f"{str(mapping_revision['content_digest'])[:20]}"
+            )
+            analysis["analyzer_version"] = manual_analyzer_version
+            analysis["manual_mapping"] = {
+                "mapping_revision_id": mapping_revision[
+                    "mapping_revision_id"
+                ],
+                "mapping_revision_digest": mapping_revision["content_digest"],
+                "mapping": deepcopy(mapping_payload),
+                "created_by": mapping_revision["created_by"],
+            }
+
+            self.repository_analysis_store.complete(
+                task_id, attempt_id, analysis=analysis
+            )
+            stored_analysis = self.model_source_store.create_analysis(
+                task_id,
+                snapshot_id=str(snapshot["snapshot_id"]),
+                analysis=analysis,
+            )
+            base_binding_revision = int(current_binding["revision"])
+            intent = self.model_source_store.prepare_binding_intent(
+                task_id,
+                snapshot_id=str(snapshot["snapshot_id"]),
+                analysis_id=str(stored_analysis["analysis_id"]),
+                idempotency_key=(
+                    f"{task_id}:{current_spec['revision']}:"
+                    f"{mapping_revision['mapping_revision_id']}"
+                ),
+                base_spec_revision=int(current_spec["revision"]),
+                base_binding_revision=base_binding_revision,
+            )
+            binding = self.model_source_store.commit_binding_intent(
+                task_id,
+                str(intent["intent_id"]),
+                expected_intent_digest=str(intent["content_digest"]),
+                current_spec_revision=int(current_spec["revision"]),
+            )
+            self._activate_model_binding_on_task(
+                task,
+                binding,
+                bound_spec_revision=int(current_spec["revision"]),
+            )
+            write_json(self._task_path(task_id), task)
+            if analysis["status"] == "complete":
+                self.blocker_store.resolve_active_stage(
+                    task_id,
+                    "repository_analysis",
+                    action="manual_mapping_confirmed",
+                    related_object_type="RepositoryAnalysis",
+                    related_object_id=str(stored_analysis["analysis_id"]),
+                )
+            else:
+                self._record_repository_analysis_blocker(
+                    task_id,
+                    stored_analysis,
+                )
+            binding_context = self.model_source_store.binding_context(
+                task_id, str(binding["binding_revision_id"])
+            )
+            assert binding_context is not None
+            return {
+                "task": self.get_task(task_id),
+                "binding": self._model_binding_projection(
+                    task,
+                    binding,
+                    binding_context,
+                    current_binding_id=str(binding["binding_revision_id"]),
+                ),
+                "analysis": deepcopy(stored_analysis["analysis"]),
+                "analysis_attempt": self.repository_analysis_store.get_attempt(
+                    task_id, attempt_id
+                ),
+                "manual_mapping_revision": mapping_revision,
+            }
 
     def attach_huggingface_model(
         self,
@@ -2142,6 +2832,8 @@ class TrainingWorkspace:
     ) -> dict[str, Any]:
         if not isinstance(changes, dict):
             raise ContractError("TaskSpec修订必须是对象")
+        if "reparse" in changes and not isinstance(changes["reparse"], bool):
+            raise ContractError("reparse必须是布尔值")
         with self._lock:
             task = read_json(self._task_path(task_id))
             if task.get("status") == "running":
@@ -2191,6 +2883,18 @@ class TrainingWorkspace:
                 family = normalize_family(requested_family)
                 if family is None:
                     raise ContractError(f"未知能力类型：{requested_family}")
+                if family == "custom" and not capability.get("modality"):
+                    inferred_modality = modality_from_candidate_families(
+                        [
+                            item.get("family")
+                            for item in current_spec.get(
+                                "capability_decision", {}
+                            ).get("candidates", [])
+                            if isinstance(item, dict)
+                        ]
+                    )
+                    if inferred_modality is not None:
+                        capability["modality"] = inferred_modality
                 capability = capability_for_family(family, capability)
             capability = self._normalize_capability(capability)
 
@@ -2218,6 +2922,11 @@ class TrainingWorkspace:
                 and spec["business_goal"] == current_spec["business_goal"]
                 and spec["capability_request"]
                 == current_spec.get("capability_request", {})
+                and (
+                    changes.get("reparse") is not True
+                    or spec["capability_decision"]
+                    == current_spec.get("capability_decision", {})
+                )
             ):
                 raise ContractError("修订未改变任务规格")
 
@@ -2629,49 +3338,390 @@ class TrainingWorkspace:
             write_json(self._task_path(task_id), task)
         return self.get_task(task_id)
 
-    def start_run(self, task_id: str) -> dict[str, Any]:
+    def task_exists(self, task_id: str) -> bool:
+        """Return whether ``task_id`` is owned by this workspace without creating it."""
+
+        return (self._task_dir(task_id) / "task.json").is_file()
+
+    @staticmethod
+    def _require_task_mutable(task: dict[str, Any], action: str) -> None:
+        if task.get("archived_at_utc"):
+            raise HarnessError(f"归档任务为只读，不能{action}")
+        if task.get("status") == "running":
+            raise HarnessError(f"训练运行中，不能{action}")
+
+    def task_id_for_run(self, run_id: str) -> str | None:
+        """Identify a workspace-owned Run, including an orphaned legacy bypass."""
+
+        state = self.runs.status(run_id)
+        task_id = str(state.get("task_id") or "")
+        return task_id if task_id and self.task_exists(task_id) else None
+
+    def _recover_pending_runs(self) -> None:
+        """Reconcile durable run intents left by a crash or ledger write failure."""
+
         with self._lock:
-            task = read_json(self._task_path(task_id))
-            if task.get("archived_at_utc"):
-                raise HarnessError("归档任务不能启动新的训练运行")
-            if task["status"] == "running":
-                raise HarnessError("当前任务已有运行正在执行")
-            if not task.get("contract_confirmed"):
-                raise HarnessError("必须先确认数据授权、标签和验收门槛")
-            contract_path = self._contract_path(task_id)
-            confirmed_digest = task.get("confirmed_contract_sha256")
-            if not confirmed_digest or confirmed_digest != sha256_file(contract_path):
-                task["contract_confirmed"] = False
-                task["confirmations"] = {}
-                task["confirmed_contract_sha256"] = None
-                task["status"] = "data_ready"
-                task["updated_at_utc"] = _utc_now()
-                write_json(self._task_path(task_id), task)
-                raise HarnessError(
-                    "训练合同在确认之后被修改，必须重新确认数据授权、标签和验收门槛"
-                )
-            contract = read_json(contract_path)
-            validate_contract(contract, registry=self.runs.registry)
-            self._assert_contract_model_binding_current(task, contract)
-            run_dir = self.runs.submit(contract)
-            task["current_run_id"] = run_dir.name
-            task["run_ids"] = [*task.get("run_ids", []), run_dir.name]
-            task["status"] = "running"
+            for task_path in sorted(self.tasks_dir.glob("*/task.json")):
+                self._reconcile_pending_run(read_json(task_path))
+
+    def _reconcile_pending_run(
+        self,
+        task: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        pending = task.get("pending_run")
+        if not isinstance(pending, dict):
+            return task, False
+        run_id = str(pending.get("run_id") or "")
+        if not run_id or Path(run_id).name != run_id:
+            raise HarnessError("任务包含无效的pending RunIntent")
+        state_path = self.runs.runs_dir / run_id / "run_state.json"
+        if not state_path.is_file():
+            task["pending_run"] = None
+            task["status"] = str(
+                pending.get("previous_status") or task.get("status") or "ready"
+            )
+            task["updated_at_utc"] = _utc_now()
+            write_json(self._task_path(str(task["task_id"])), task)
+            return task, False
+
+        state = read_json(state_path)
+        if state.get("task_id") != task.get("task_id"):
+            raise HarnessError("pending RunIntent指向了其他任务的运行")
+        if state.get("parent_run_id") != pending.get("parent_run_id"):
+            raise HarnessError("pending RunIntent的父运行血缘不一致")
+        run_ids = list(task.get("run_ids") or [])
+        if run_id not in run_ids:
+            run_ids.append(run_id)
+        status = str(state.get("status") or "interrupted")
+        task["run_ids"] = run_ids
+        task["current_run_id"] = run_id
+        task["status"] = (
+            status
+            if status in {"completed", "failed", "cancelled", "interrupted"}
+            else "running"
+        )
+        task["pending_run"] = None
+        task["updated_at_utc"] = _utc_now()
+        write_json(self._task_path(str(task["task_id"])), task)
+        return task, True
+
+    def _begin_run_intent(
+        self,
+        task: dict[str, Any],
+        *,
+        operation: str,
+        parent_run_id: str | None = None,
+        strategy_id: str | None = None,
+    ) -> str:
+        if task.get("pending_run"):
+            raise HarnessError("当前任务已有待对账的RunIntent")
+        run_id = new_run_id(str(task["task_id"]))
+        task["pending_run"] = {
+            "run_id": run_id,
+            "operation": operation,
+            "parent_run_id": parent_run_id,
+            "strategy_id": strategy_id,
+            "previous_status": task.get("status"),
+            "created_at_utc": _utc_now(),
+        }
+        task["updated_at_utc"] = _utc_now()
+        write_json(self._task_path(str(task["task_id"])), task)
+        return run_id
+
+    def _rollback_run_intent_if_uncreated(
+        self,
+        task_id: str,
+        run_id: str,
+    ) -> None:
+        if (self.runs.runs_dir / run_id / "run_state.json").is_file():
+            return
+        task = read_json(self._task_path(task_id))
+        pending = task.get("pending_run")
+        if isinstance(pending, dict) and pending.get("run_id") == run_id:
+            task["pending_run"] = None
+            task["status"] = str(
+                pending.get("previous_status") or task.get("status") or "ready"
+            )
             task["updated_at_utc"] = _utc_now()
             write_json(self._task_path(task_id), task)
+
+    def _finalize_run_intent(self, task_id: str, run_id: str) -> None:
+        task = read_json(self._task_path(task_id))
+        pending = task.get("pending_run")
+        if not isinstance(pending, dict) or pending.get("run_id") != run_id:
+            raise HarnessError("RunIntent在运行创建后丢失，停止写入任务血缘")
+        run_ids = list(task.get("run_ids") or [])
+        if run_id not in run_ids:
+            run_ids.append(run_id)
+        task["current_run_id"] = run_id
+        task["run_ids"] = run_ids
+        task["pending_run"] = None
+        task["status"] = "running"
+        task["updated_at_utc"] = _utc_now()
+        write_json(self._task_path(task_id), task)
+
+    def _authorize_task_run_creation(
+        self,
+        task_id: str,
+        *,
+        parent_run_id: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Fail closed before any root or child Run directory can be created."""
+
+        task = read_json(self._task_path(task_id))
+        if task.get("archived_at_utc"):
+            raise HarnessError("归档任务不能启动新的训练运行")
+        spec = self._ensure_spec_revision(task)
+        if spec.get("capability_decision", {}).get("status") != "resolved":
+            raise HarnessError("当前任务规格尚未澄清并确认")
+        current_run_id = str(task.get("current_run_id") or "")
+        if current_run_id and current_run_id != str(parent_run_id or ""):
+            try:
+                if self.runs.status(current_run_id).get("status") in ACTIVE_STATUSES:
+                    raise HarnessError("当前任务已有运行正在执行")
+            except FileNotFoundError:
+                raise HarnessError("当前任务的运行血缘不可恢复") from None
+        if not task.get("contract_confirmed"):
+            raise HarnessError("必须先确认数据授权、标签和验收门槛")
+        contract_path = self._contract_path(task_id)
+        confirmed_digest = task.get("confirmed_contract_sha256")
+        if not confirmed_digest or confirmed_digest != sha256_file(contract_path):
+            task["contract_confirmed"] = False
+            task["confirmations"] = {}
+            task["confirmed_contract_sha256"] = None
+            task["status"] = "data_ready"
+            task["updated_at_utc"] = _utc_now()
+            write_json(self._task_path(task_id), task)
+            raise HarnessError(
+                "训练合同在确认之后被修改，必须重新确认数据授权、标签和验收门槛"
+            )
+        contract = read_json(contract_path)
+        if contract.get("task_id") != task_id:
+            raise HarnessError("训练合同 task_id 与当前任务不一致")
+        validate_contract(contract, registry=self.runs.registry)
+        self._assert_contract_model_binding_current(task, contract)
+        self.authorize_v09_execution(task_id)
+        active_blockers = self.blocker_store.list(task_id, active_only=True)
+        if active_blockers:
+            raise HarnessError(
+                f"当前任务仍有活动阻断：{active_blockers[0].get('code', 'unknown')}"
+            )
+        if parent_run_id is not None:
+            _owned_task, parent_state = self._require_owned_run(
+                task_id, parent_run_id
+            )
+            if parent_state.get("task_id") != task_id:
+                raise HarnessError("父运行与当前训练任务不一致")
+            parent_contract = read_json(
+                self.runs.runs_dir / parent_run_id / "task_contract.json"
+            )
+            if parent_contract.get("task_id") != task_id:
+                raise HarnessError("父运行合同与当前训练任务不一致")
+            validate_contract(parent_contract, registry=self.runs.registry)
+            self._assert_contract_model_binding_current(task, parent_contract)
+            lineage_run_id = parent_run_id
+            seen_run_ids: set[str] = set()
+            while True:
+                if lineage_run_id in seen_run_ids:
+                    raise HarnessError("父运行血缘存在循环，禁止创建子运行")
+                seen_run_ids.add(lineage_run_id)
+                _lineage_task, lineage_state = self._require_owned_run(
+                    task_id,
+                    lineage_run_id,
+                )
+                ancestor = str(lineage_state.get("parent_run_id") or "")
+                if not ancestor:
+                    root_contract_path = (
+                        self.runs.runs_dir
+                        / lineage_run_id
+                        / "task_contract.json"
+                    )
+                    if sha256_file(root_contract_path) != confirmed_digest:
+                        raise HarnessError(
+                            "父运行血缘不是由当前已确认训练合同创建，禁止重试或应用策略"
+                        )
+                    break
+                lineage_run_id = ancestor
+        return task, contract
+
+    def authorize_v09_execution(self, task_id: str) -> dict[str, Any] | None:
+        """Authorize a BYOM execution only from the exact approved fit lineage.
+
+        Legacy registered Recipes do not have a v0.9 TrainingPlan and continue
+        through their existing contract gates.  Once a task has entered the
+        Universal BYOM planning protocol, however, every execution surface must
+        fail closed until the current immutable plan, source analysis,
+        EnvironmentLock, ResourceProbe and ResourceFitReport all agree.
+        """
+
+        task = read_json(self._task_path(task_id))
+        plan = self.training_plan_store.current_revision(task_id)
+        binding = self.model_source_store.current_binding(task_id)
+        if plan is None and binding is None:
+            return None
+        if plan is None:
+            raise HarnessError("当前BYOM模型来源尚无已批准训练计划，禁止启动训练")
+        if binding is None:
+            raise HarnessError("当前BYOM模型来源绑定不存在")
+        if (
+            task.get("current_model_binding_revision_id")
+            != binding.get("binding_revision_id")
+            or task.get("model_binding_stale_for_spec_revision") is True
+            or int(binding.get("base_spec_revision", 0))
+            != int(task["current_spec_revision"])
+        ):
+            raise HarnessError("当前BYOM模型来源绑定已失效")
+        context = self.model_source_store.binding_context(
+            task_id, str(binding["binding_revision_id"])
+        )
+        if context is None:
+            raise HarnessError("当前BYOM来源血缘不可恢复")
+        analysis_record = context["analysis"]
+        analysis = analysis_record.get("analysis") or {}
+        if str(analysis.get("status") or "") != "complete":
+            raise HarnessError("当前BYOM仓库分析未完成或存在未解决高风险")
+        if (
+            plan.get("analysis_id") != analysis_record.get("analysis_id")
+            or plan.get("analysis_digest") != analysis_record.get("content_digest")
+        ):
+            raise HarnessError("当前BYOM训练计划与当前仓库分析血缘不一致")
+        plan_view = self.current_training_plan(task_id)
+        if plan_view is None or plan_view.get("stale") is True:
+            raise HarnessError("当前BYOM训练计划已失效，禁止启动训练")
+        authorized_plan = self.training_plan_store.authorize_use(
+            task_id,
+            str(plan["training_plan_revision_id"]),
+            expected_plan_sha256=str(plan["plan_sha256"]),
+            current_spec_revision=int(task["current_spec_revision"]),
+            source_snapshot_id=str(context["snapshot"]["snapshot_id"]),
+            snapshot_digest=str(context["snapshot"]["content_digest"]),
+            analysis_id=str(context["analysis"]["analysis_id"]),
+            analysis_digest=str(context["analysis"]["content_digest"]),
+        )
+        bundle = self.feasibility_store.current_bundle(task_id)
+        probe = bundle.get("resource_probe")
+        lock = bundle.get("environment_lock")
+        report = bundle.get("resource_fit_report")
+        if not all(isinstance(item, dict) for item in (probe, lock, report)):
+            raise HarnessError("当前BYOM计划尚无完整资源资格证据，禁止启动训练")
+        assert isinstance(probe, dict)
+        assert isinstance(lock, dict)
+        assert isinstance(report, dict)
+        lineage_changed = (
+            report.get("training_plan_revision_id")
+            != authorized_plan["training_plan_revision_id"]
+            or report.get("training_plan_sha256") != authorized_plan["plan_sha256"]
+            or report.get("resource_probe_id") != probe.get("resource_probe_id")
+            or report.get("resource_probe_sha256") != probe.get("probe_sha256")
+            or report.get("environment_lock_id")
+            != lock.get("environment_lock_id")
+            or report.get("environment_lock_sha256") != lock.get("lock_sha256")
+        )
+        if lineage_changed:
+            raise HarnessError("BYOM资源资格证据与当前计划血缘不一致")
+        if report.get("decision") != "fit":
+            raise HarnessError(
+                "当前BYOM资源结论不是fit；请先处理阻断或采纳降级方案并重新批准"
+            )
+        active_blockers = [
+            item
+            for item in self.blocker_store.list(task_id, active_only=True)
+            if item.get("stage")
+            in {
+                "source_resolution",
+                "source_snapshot",
+                "repository_analysis",
+                "training_plan",
+                "resource_probe",
+                "environment_lock",
+                "resource_fit",
+            }
+        ]
+        if active_blockers:
+            raise HarnessError(
+                f"BYOM仍有活动阻断：{active_blockers[0].get('code', 'unknown')}"
+            )
+        raise HarnessError(
+            "V3只完成静态预算与本机资源匹配；尚未完成L3镜像拉取、依赖构建和隔离环境资格验证，禁止执行第三方训练代码"
+        )
+
+    def start_run(self, task_id: str) -> dict[str, Any]:
+        with self._lock:
+            _task, recovered = self._reconcile_pending_run(
+                read_json(self._task_path(task_id))
+            )
+            if recovered:
+                return self.get_task(task_id)
+            task, contract = self._authorize_task_run_creation(task_id)
+            run_id = self._begin_run_intent(task, operation="start")
+            try:
+                self.runs.submit(
+                    contract,
+                    run_id=run_id,
+                    workspace_task_id=task_id,
+                )
+            except Exception:
+                self._rollback_run_intent_if_uncreated(task_id, run_id)
+                raise
+            self._finalize_run_intent(task_id, run_id)
         return self.get_task(task_id)
 
     def apply_strategy(self, task_id: str, run_id: str, strategy_id: str) -> dict[str, Any]:
         with self._lock:
-            task = read_json(self._task_path(task_id))
-            if run_id not in task.get("run_ids", []):
-                raise HarnessError("该运行不属于当前训练任务")
-            child = self.runs.apply_strategy(run_id, strategy_id)
-            task["current_run_id"] = child.name
-            task["run_ids"] = [*task.get("run_ids", []), child.name]
-            task["status"] = "running"
-            task["updated_at_utc"] = _utc_now()
-            write_json(self._task_path(task_id), task)
+            _task, recovered = self._reconcile_pending_run(
+                read_json(self._task_path(task_id))
+            )
+            if recovered:
+                return self.get_task(task_id)
+            task, _contract = self._authorize_task_run_creation(
+                task_id,
+                parent_run_id=run_id,
+            )
+            child_run_id = self._begin_run_intent(
+                task,
+                operation="apply_strategy",
+                parent_run_id=run_id,
+                strategy_id=strategy_id,
+            )
+            try:
+                self.runs.apply_strategy(
+                    run_id,
+                    strategy_id,
+                    child_run_id=child_run_id,
+                    workspace_task_id=task_id,
+                )
+            except Exception:
+                self._rollback_run_intent_if_uncreated(task_id, child_run_id)
+                raise
+            self._finalize_run_intent(task_id, child_run_id)
+        return self.get_task(task_id)
+
+    def resume_run(self, task_id: str, run_id: str) -> dict[str, Any]:
+        with self._lock:
+            _task, recovered = self._reconcile_pending_run(
+                read_json(self._task_path(task_id))
+            )
+            if recovered:
+                return self.get_task(task_id)
+            task, _contract = self._authorize_task_run_creation(
+                task_id,
+                parent_run_id=run_id,
+            )
+            child_run_id = self._begin_run_intent(
+                task,
+                operation="resume",
+                parent_run_id=run_id,
+            )
+            try:
+                self.runs.resume(
+                    run_id,
+                    child_run_id=child_run_id,
+                    workspace_task_id=task_id,
+                )
+            except Exception:
+                self._rollback_run_intent_if_uncreated(task_id, child_run_id)
+                raise
+            self._finalize_run_intent(task_id, child_run_id)
         return self.get_task(task_id)
 
     def cancel_run(self, task_id: str, run_id: str) -> dict[str, Any]:
@@ -2684,7 +3734,10 @@ class TrainingWorkspace:
             run_state = self.runs.status(run_id)
             if run_state.get("task_id") != task_id:
                 raise HarnessError("运行所有者与当前训练任务不一致")
-            accepted = self.runs.cancel(run_id)
+            accepted = self.runs.cancel(
+                run_id,
+                workspace_task_id=task_id,
+            )
             if accepted:
                 task["updated_at_utc"] = _utc_now()
                 write_json(self._task_path(task_id), task)
@@ -3191,9 +4244,11 @@ class TrainingWorkspace:
                 binding_context,
                 current_binding_id=str(current_binding["binding_revision_id"]),
             )
-            task["repository_analysis"] = deepcopy(
-                binding_context["analysis"]["analysis"]
-            )
+            task["repository_analysis"] = {
+                **deepcopy(binding_context["analysis"]["analysis"]),
+                "analysis_digest": binding_context["analysis"]["content_digest"],
+                "snapshot_digest": binding_context["snapshot"]["content_digest"],
+            }
             task["repository_analysis_attempt"] = (
                 self.repository_analysis_store.current_attempt(
                     task["task_id"], str(binding_context["snapshot"]["snapshot_id"])
@@ -3676,8 +4731,42 @@ class TrainingWorkspace:
                         f"/tasks/{task_id}/resource-feasibility-checks",
                     ),
                 }
+            analysis = task.get("repository_analysis") or {}
+            analysis_status = str(analysis.get("status") or "")
+            if analysis_status in {"needs_input", "needs_manual_mapping"}:
+                return {
+                    "current_stage": "repository_analysis",
+                    "blocked_by": [
+                        {
+                            "code": "repository_analysis_needs_input",
+                            "message": "固定快照中没有足够证据确认训练入口；必须先补充映射并创建新的分析 revision",
+                        }
+                    ],
+                    "next_action": self._next_action(
+                        "map_training_entrypoint",
+                        "补充仓库入口映射",
+                        "GET",
+                        f"/tasks/{task_id}/repository-analyses/{analysis.get('analysis_id', '')}",
+                    ),
+                }
+            if analysis_status != "complete":
+                return {
+                    "current_stage": "repository_analysis",
+                    "blocked_by": [
+                        {
+                            "code": "repository_analysis_blocked",
+                            "message": "仓库静态分析发现未解决的高风险或下游阻断；训练计划、环境与运行保持关闭",
+                        }
+                    ],
+                    "next_action": self._next_action(
+                        str(analysis.get("next_action") or "review_repository_risks"),
+                        "审阅仓库风险证据",
+                        "GET",
+                        f"/tasks/{task_id}/repository-analyses/{analysis.get('analysis_id', '')}",
+                    ),
+                }
             return {
-                "current_stage": "repository_analysis",
+                "current_stage": "training_plan",
                 "blocked_by": [],
                 "next_action": self._next_action(
                     "create_training_plan",

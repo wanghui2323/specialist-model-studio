@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import json
+import re
 import socket
 import ssl
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import PurePosixPath
 from typing import Any, Mapping, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
@@ -42,6 +45,130 @@ from .model_sources import (
 
 GITHUB_API_ORIGIN = "https://api.github.com"
 GITHUB_API_VERSION = "2022-11-28"
+
+_GIT_LFS_VERSION = b"version https://git-lfs.github.com/spec/v1"
+_GIT_LFS_POINTER_MAX_BYTES = 1024
+_MAX_GIT_LFS_POINTER_PROBES = 128
+_MAX_GIT_ATTRIBUTES_FILES = 32
+_GIT_LFS_OID = re.compile(rb"oid sha256:([0-9a-f]{64})")
+_GIT_LFS_SIZE = re.compile(rb"size (0|[1-9][0-9]*)")
+_GIT_LFS_EXTENSION = re.compile(
+    rb"ext-([0-9]+)-([A-Za-z0-9][A-Za-z0-9.-]*) ([\x20-\x7e]+)"
+)
+_TYPICAL_WEIGHT_SUFFIXES = frozenset(
+    {
+        ".bin",
+        ".ckpt",
+        ".ggml",
+        ".gguf",
+        ".h5",
+        ".hdf5",
+        ".joblib",
+        ".mlmodel",
+        ".npy",
+        ".npz",
+        ".onnx",
+        ".params",
+        ".pb",
+        ".pickle",
+        ".pkl",
+        ".pt",
+        ".pth",
+        ".safetensors",
+        ".tflite",
+        ".weights",
+    }
+)
+
+
+def _git_blob_sha1(content: bytes) -> str:
+    header = f"blob {len(content)}\0".encode("ascii")
+    return hashlib.sha1(header + content).hexdigest()
+
+
+def _parse_git_lfs_pointer(content: bytes) -> tuple[str, int] | None:
+    """Return a validated LFS object identity, or ``None`` for a normal blob.
+
+    A blob that claims the Git LFS v1 prefix is never downgraded to ordinary
+    content: malformed or non-canonical pointer records fail closed.
+    """
+
+    if not content.startswith(_GIT_LFS_VERSION):
+        return None
+    if (
+        len(content) > _GIT_LFS_POINTER_MAX_BYTES
+        or not content.endswith(b"\n")
+        or b"\r" in content
+        or b"\x00" in content
+    ):
+        raise ModelSourceIncompleteError("github_lfs_pointer_invalid")
+    lines = content[:-1].split(b"\n")
+    if not lines or lines[0] != _GIT_LFS_VERSION:
+        raise ModelSourceIncompleteError("github_lfs_pointer_invalid")
+
+    index = 1
+    extension_names: set[tuple[bytes, bytes]] = set()
+    while index < len(lines):
+        extension = _GIT_LFS_EXTENSION.fullmatch(lines[index])
+        if extension is None:
+            break
+        extension_name = (extension.group(1), extension.group(2))
+        if extension_name in extension_names:
+            raise ModelSourceIncompleteError("github_lfs_pointer_invalid")
+        extension_names.add(extension_name)
+        index += 1
+
+    if len(lines) - index != 2:
+        raise ModelSourceIncompleteError("github_lfs_pointer_invalid")
+    oid = _GIT_LFS_OID.fullmatch(lines[index])
+    size = _GIT_LFS_SIZE.fullmatch(lines[index + 1])
+    if oid is None or size is None:
+        raise ModelSourceIncompleteError("github_lfs_pointer_invalid")
+    object_size = int(size.group(1))
+    if object_size > (2**63 - 1):
+        raise ModelSourceIncompleteError("github_lfs_pointer_invalid")
+    return oid.group(1).decode("ascii"), object_size
+
+
+def _git_lfs_attribute_patterns(content: bytes) -> tuple[str, ...]:
+    """Parse the common, bounded `filter=lfs` subset of .gitattributes."""
+
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ModelSourceIncompleteError("github_gitattributes_invalid") from exc
+    patterns: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if not any(part.casefold() == "filter=lfs" for part in parts[1:]):
+            continue
+        pattern = parts[0]
+        if (
+            pattern.startswith("!")
+            or pattern.startswith("[attr]")
+            or '"' in line
+            or "\\" in pattern
+            or any(ord(character) < 32 for character in pattern)
+        ):
+            raise ModelSourceIncompleteError("github_gitattributes_lfs_pattern_unsupported")
+        normalized = pattern.lstrip("/")
+        if not normalized:
+            raise ModelSourceIncompleteError("github_gitattributes_invalid")
+        if normalized not in patterns:
+            patterns.append(normalized)
+    return tuple(patterns)
+
+
+def _matches_lfs_attribute(path: str, base: PurePosixPath, pattern: str) -> bool:
+    selected = PurePosixPath(path)
+    try:
+        relative = selected.relative_to(base) if str(base) != "." else selected
+    except ValueError:
+        return False
+    return relative.match(pattern)
 
 
 class GitHubSourceNotFound(ModelSourceUpstreamError):
@@ -437,7 +564,77 @@ class GitHubSourceProvider:
                     remote_digest=digest,
                 )
             )
-        return tuple(sorted(files, key=lambda item: item.path))
+        files.sort(key=lambda item: item.path)
+        if any(item.kind == "submodule" for item in files):
+            raise ModelSourceIncompleteError("github_submodule_incomplete")
+
+        attribute_files = [
+            item
+            for item in files
+            if item.kind == "blob" and PurePosixPath(item.path).name == ".gitattributes"
+        ]
+        if len(attribute_files) > _MAX_GIT_ATTRIBUTES_FILES:
+            raise ModelSourceIncompleteError("github_gitattributes_file_limit_exceeded")
+        attribute_patterns: list[tuple[PurePosixPath, str]] = []
+        for attributes_file in attribute_files:
+            if (
+                attributes_file.size_bytes is None
+                or attributes_file.size_bytes > MAX_DOCUMENT_BYTES
+            ):
+                raise ModelSourceIncompleteError("github_gitattributes_incomplete")
+            content = self._read_blob_bytes(
+                source,
+                attributes_file,
+                token=selected_token,
+                max_content_bytes=MAX_DOCUMENT_BYTES,
+            )
+            base = PurePosixPath(attributes_file.path).parent
+            attribute_patterns.extend(
+                (base, pattern)
+                for pattern in _git_lfs_attribute_patterns(content)
+            )
+
+        lfs_candidates = [
+            item
+            for item in files
+            if item.kind in {"blob", "executable"}
+            and item.size_bytes is not None
+            and item.size_bytes <= _GIT_LFS_POINTER_MAX_BYTES
+            and (
+                PurePosixPath(item.path).suffix.lower() in _TYPICAL_WEIGHT_SUFFIXES
+                or any(
+                    _matches_lfs_attribute(item.path, base, pattern)
+                    for base, pattern in attribute_patterns
+                )
+            )
+        ]
+        if len(lfs_candidates) > _MAX_GIT_LFS_POINTER_PROBES:
+            raise ModelSourceIncompleteError(
+                "github_lfs_pointer_probe_limit_exceeded"
+            )
+        lfs_by_path: dict[str, tuple[str, int]] = {}
+        for candidate in lfs_candidates:
+            content = self._read_blob_bytes(
+                source,
+                candidate,
+                token=selected_token,
+                max_content_bytes=_GIT_LFS_POINTER_MAX_BYTES,
+            )
+            lfs_pointer = _parse_git_lfs_pointer(content)
+            if lfs_pointer is not None:
+                lfs_by_path[candidate.path] = lfs_pointer
+        if lfs_by_path:
+            files = [
+                replace(
+                    item,
+                    lfs_sha256=lfs_by_path[item.path][0],
+                    size_bytes=lfs_by_path[item.path][1],
+                )
+                if item.path in lfs_by_path
+                else item
+                for item in files
+            ]
+        return tuple(files)
 
     def read_document(
         self,
@@ -457,11 +654,43 @@ class GitHubSourceProvider:
             or not is_analysis_document_path(file.path)
         ):
             raise ModelSourceValidationError("github_document_not_readable")
+        content = self._read_blob_bytes(
+            source,
+            file,
+            token=selected_token,
+            max_content_bytes=MAX_DOCUMENT_BYTES,
+        )
+        if _parse_git_lfs_pointer(content) is not None:
+            raise ModelSourceIncompleteError(
+                "github_lfs_pointer_requires_object_metadata"
+            )
+        return SourceDocument.from_bytes(file.path, content)
+
+    def _read_blob_bytes(
+        self,
+        source: ResolvedSource,
+        file: RemoteSourceFile,
+        *,
+        token: str | None,
+        max_content_bytes: int,
+    ) -> bytes:
+        if (
+            isinstance(max_content_bytes, bool)
+            or not isinstance(max_content_bytes, int)
+            or max_content_bytes < 1
+            or max_content_bytes > MAX_DOCUMENT_BYTES
+            or file.size_bytes is None
+            or file.size_bytes > max_content_bytes
+        ):
+            raise ModelSourceValidationError("github_blob_read_limit_invalid")
         owner, repo = source.repository.split("/", 1)
         payload = self.transport.request_json(
             f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/git/blobs/{file.remote_digest}",
-            token=selected_token,
-            max_bytes=min(MAX_PROVIDER_RESPONSE_BYTES, MAX_DOCUMENT_BYTES * 2),
+            token=token,
+            max_bytes=min(
+                MAX_PROVIDER_RESPONSE_BYTES,
+                max(4096, max_content_bytes * 2),
+            ),
         )
         if not isinstance(payload, dict):
             raise ModelSourceUpstreamError("github_invalid_blob_response")
@@ -483,15 +712,15 @@ class GitHubSourceProvider:
             content = base64.b64decode(encoded, validate=True)
         except (UnicodeEncodeError, binascii.Error):
             raise ModelSourceUpstreamError("github_invalid_blob_encoding") from None
-        if len(content) != declared_size or len(content) > MAX_DOCUMENT_BYTES:
+        if len(content) != declared_size or len(content) > max_content_bytes:
             raise ModelSourceUpstreamError("github_blob_size_mismatch")
-        if content.startswith(b"version https://git-lfs.github.com/spec/v1\n"):
-            raise ModelSourceIncompleteError(
-                "github_lfs_pointer_requires_object_metadata"
+        if _git_blob_sha1(content) != file.remote_digest:
+            raise ModelSourceUpstreamError(
+                "github_blob_content_digest_mismatch"
             )
-        if selected_token is not None and selected_token.encode("utf-8") in content:
+        if token is not None and token.encode("utf-8") in content:
             raise ModelSourceValidationError("credential_material_detected")
-        return SourceDocument.from_bytes(file.path, content)
+        return content
 
     def _validate_source(self, source: ResolvedSource) -> None:
         if (

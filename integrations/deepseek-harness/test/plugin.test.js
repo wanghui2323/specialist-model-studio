@@ -22,7 +22,7 @@ test("plugin registers the complete task-first conversational toolchain", () => 
   const mounted = mountPlugin();
   assert.deepEqual(inject, ["tools", "systemPrompt"]);
   const names = new Set(mounted.tools.map((tool) => tool.name));
-  assert.equal(names.size, 53);
+  assert.equal(names.size, 51);
   for (const required of [
     "model_harness_list_tasks",
     "model_harness_list_data_adapters",
@@ -75,6 +75,8 @@ test("plugin registers the complete task-first conversational toolchain", () => 
   ]) {
     assert.equal(names.has(required), true, `missing ${required}`);
   }
+  assert.equal(names.has("model_harness_start_run"), false);
+  assert.equal(names.has("model_harness_apply_strategy"), false);
   assert.equal(
     mounted.sections.some((section) => section.name === "domain:model-training-harness"),
     true,

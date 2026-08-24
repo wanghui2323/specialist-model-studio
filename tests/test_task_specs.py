@@ -10,10 +10,12 @@ except ImportError:  # pragma: no cover
     TestClient = None  # type: ignore[assignment]
 
 from model_harness.server import create_app
+from model_harness.io_utils import read_json, write_json
 from model_harness.task_specs import (
     TASK_FAMILY_VALUES,
     capability_decision,
     capability_for_family,
+    modality_from_candidate_families,
 )
 
 
@@ -86,6 +88,7 @@ class CapabilityDecisionCandidateTests(unittest.TestCase):
                     "ocr",
                     "object_detection",
                     "segmentation",
+                    "custom",
                 },
             ),
             (
@@ -96,6 +99,7 @@ class CapabilityDecisionCandidateTests(unittest.TestCase):
                     "tabular_regression",
                     "time_series_forecasting",
                     "anomaly_detection",
+                    "custom",
                 },
             ),
             (
@@ -119,7 +123,7 @@ class CapabilityDecisionCandidateTests(unittest.TestCase):
                 self.assertIsNone(decision["selected_family"])
                 self.assertEqual(candidates, expected)
                 self.assertGreaterEqual(len(candidates), 2)
-                self.assertLessEqual(len(candidates), 4)
+                self.assertLessEqual(len(candidates), 5)
                 self.assertIsInstance(decision["question"], str)
                 self.assertIn("请选择", decision["question"])
 
@@ -139,6 +143,50 @@ class CapabilityDecisionCandidateTests(unittest.TestCase):
         self.assertEqual(
             decision["reason_codes"],
             ["missing_input_output_definition"],
+        )
+
+    def test_vae_like_image_task_can_choose_custom_without_clarification_loop(
+        self,
+    ) -> None:
+        goal = (
+            "输入一张图片，输出同尺寸的重建图片，使用MSE评测重建质量"
+        )
+        decision = capability_decision("VAE 图像重建模型", goal, {})
+
+        self.assertEqual(decision["status"], "needs_clarification")
+        self.assertIn(
+            "custom",
+            {item["family"] for item in decision["candidates"]},
+        )
+
+        resolved = capability_decision(
+            "VAE 图像重建模型",
+            goal,
+            capability_for_family("custom", {"modality": "image"}),
+        )
+        self.assertEqual(resolved["status"], "resolved")
+        self.assertEqual(resolved["selected_family"], "custom")
+        self.assertEqual(resolved["candidates"][0]["family"], "custom")
+        self.assertEqual(
+            modality_from_candidate_families(
+                [item["family"] for item in decision["candidates"]]
+            ),
+            "image",
+        )
+
+        explicit_custom = capability_decision(
+            "VAE 图像重建模型",
+            (
+                "输入仍然是图片，输出为同尺寸重建图；这是其他专用模型能力，"
+                "不是分类、OCR、检测或分割。"
+            ),
+            {},
+        )
+        self.assertEqual(explicit_custom["status"], "needs_confirmation")
+        self.assertEqual(explicit_custom["selected_family"], "custom")
+        self.assertEqual(
+            explicit_custom["reason_codes"][0],
+            "text_explicitly_requests_custom_output",
         )
 
 
@@ -215,6 +263,82 @@ class CapabilityFamilyMigrationTests(unittest.TestCase):
 
 @unittest.skipIf(TestClient is None, "server extra is not installed")
 class TaskSpecRevisionTests(unittest.TestCase):
+    def test_resumed_legacy_custom_description_can_be_reparsed_in_same_task(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runs_dir = Path(temp_dir) / "runs"
+            app = create_app(runs_dir)
+            with TestClient(app) as client:  # type: ignore[misc]
+                goal = (
+                    "输入仍然是图片，输出为同尺寸重建图；这是其他专用模型能力，"
+                    "不是分类、OCR、检测或分割。"
+                )
+                created = client.post(
+                    "/tasks",
+                    json={"name": "VAE 图像重建", "business_goal": goal},
+                ).json()["task"]
+                task_id = created["task_id"]
+                task_dir = runs_dir / "_workspace" / "tasks" / task_id
+                spec_path = task_dir / "spec_revisions" / "r1.json"
+                legacy_spec = read_json(spec_path)
+                legacy_spec["capability_request"] = {}
+                legacy_spec["capability_decision"] = {
+                    "status": "needs_clarification",
+                    "selected_family": None,
+                    "source": "ambiguous",
+                    "confidence": 0.0,
+                    "reason_codes": [
+                        "text_mentions_ocr",
+                        "text_mentions_classification_output",
+                        "multiple_output_families",
+                    ],
+                    "question": "请选择模型的唯一输出形式。",
+                    "candidates": [
+                        {
+                            "family": "image_classification",
+                            "label": "整张图片分类",
+                            "output": "为每张图片输出一个类别",
+                        },
+                        {
+                            "family": "ocr",
+                            "label": "OCR 文字识别",
+                            "output": "输出图片中的文字内容",
+                        },
+                    ],
+                }
+                write_json(spec_path, legacy_spec)
+                task_path = task_dir / "task.json"
+                task_record = read_json(task_path)
+                task_record["capability_request"] = {}
+                task_record["capability_status"] = "needs_clarification"
+                task_record["status"] = "needs_clarification"
+                write_json(task_path, task_record)
+
+                reparsed = client.patch(
+                    f"/tasks/{task_id}/spec",
+                    json={
+                        "base_revision": 1,
+                        "business_goal": goal,
+                        "reparse": True,
+                        "user_note": "重新理解已保存描述",
+                    },
+                )
+
+                self.assertEqual(reparsed.status_code, 200, reparsed.text)
+                task = reparsed.json()["task"]
+                self.assertEqual(task["task_id"], task_id)
+                self.assertEqual(task["current_spec_revision"], 2)
+                self.assertEqual(
+                    task["capability_decision"]["selected_family"], "custom"
+                )
+                self.assertEqual(
+                    task["capability_decision"]["status"], "needs_confirmation"
+                )
+                self.assertEqual(
+                    task["capability_decision"]["reason_codes"][0],
+                    "text_explicitly_requests_custom_output",
+                )
+                self.assertIsNone(task["current_run_id"])
+
     def test_inferred_classification_requires_confirmation_then_persists_revision(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             runs_dir = Path(temp_dir) / "runs"
@@ -612,6 +736,57 @@ class TaskSpecRevisionTests(unittest.TestCase):
                         "objective": "custom",
                     },
                 )
+
+                vae_goal = (
+                    "输入一张图片，输出同尺寸的重建图片，使用MSE评测重建质量"
+                )
+                vae = client.post(
+                    "/tasks",
+                    json={
+                        "name": "VAE 图像重建模型",
+                        "business_goal": vae_goal,
+                    },
+                ).json()["task"]
+                self.assertEqual(vae["status"], "needs_clarification")
+                self.assertIn(
+                    "custom",
+                    {
+                        item["family"]
+                        for item in vae["capability_decision"]["candidates"]
+                    },
+                )
+
+                selected_custom = client.patch(
+                    f"/tasks/{vae['task_id']}/spec",
+                    json={
+                        "base_revision": 1,
+                        "selected_family": "custom",
+                        "user_note": "图像输入和图像重建输出已经由用户明确描述",
+                    },
+                )
+                self.assertEqual(
+                    selected_custom.status_code,
+                    200,
+                    selected_custom.text,
+                )
+                vae_revised = selected_custom.json()["task"]
+                self.assertEqual(vae_revised["task_id"], vae["task_id"])
+                self.assertEqual(vae_revised["business_goal"], vae_goal)
+                self.assertEqual(vae_revised["status"], "needs_recipe")
+                self.assertEqual(
+                    vae_revised["capability_request"],
+                    {
+                        "family": "custom",
+                        "modality": "image",
+                        "objective": "custom",
+                    },
+                )
+                self.assertEqual(
+                    vae_revised["control"]["next_action"]["id"],
+                    "review_capability_gap",
+                )
+                self.assertIsNone(vae_revised["recipe_id"])
+                self.assertIsNone(vae_revised["current_run_id"])
 
     def test_ocr_clarification_can_be_corrected_without_faking_recipe_support(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

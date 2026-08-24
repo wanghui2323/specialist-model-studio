@@ -12,8 +12,10 @@ try:
 except ImportError:  # pragma: no cover
     TestClient = None  # type: ignore[assignment]
 
-from model_harness.server import create_app
+from model_harness.blockers import verify_blocker_evidence
+from model_harness.errors import HarnessError
 from model_harness.resource_feasibility import ResourceProbe
+from model_harness.server import create_app
 from tests.test_model_binding_workspace import (
     COMMIT_A,
     FakeProvider,
@@ -122,7 +124,11 @@ class ModelSourceApiTests(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 200, response.text)
             last = response.json()["binding_attempt"]
-            if last["current_state"]["status"] in {"completed", "failed"}:
+            if last["current_state"]["status"] in {
+                "completed",
+                "failed",
+                "cancelled",
+            }:
                 break
             time.sleep(0.01)
         self.assertIsNotNone(last)
@@ -237,11 +243,162 @@ class ModelSourceApiTests(unittest.TestCase):
         workspace_root = self.app.state.training_workspace.root
         self.assertNotIn(github_secret.encode("utf-8"), disk_bytes(workspace_root))
 
+    def test_repository_evidence_endpoint_returns_exact_commit_line_excerpt(self) -> None:
+        resolution = self.resolve().json()["resolution"]
+        result = self.bind_and_wait(resolution["resolution_id"])
+        analysis = result["analysis"]
+        entrypoint = analysis["training_entrypoints"][0]
+        text_evidence = next(
+            item
+            for item in entrypoint["evidence"]
+            if item["kind"] == "text_line"
+        )
+        response = self.client.get(
+            f"/tasks/{self.task_id}/repository-analyses/{analysis['analysis_id']}/evidence",
+            params={
+                "path": text_evidence["path"],
+                "line": text_evidence["line"],
+                "context_lines": 1,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        evidence = response.json()["evidence"]
+        self.assertEqual(evidence["resolved_commit"], COMMIT_A)
+        self.assertEqual(evidence["path"], "train.py")
+        self.assertEqual(
+            evidence["document_sha256"], text_evidence["document_sha256"]
+        )
+        self.assertTrue(
+            any("trainer.train" in item["text"] for item in evidence["lines"])
+        )
+
+        missing = self.client.get(
+            f"/tasks/{self.task_id}/repository-analyses/{analysis['analysis_id']}/evidence",
+            params={"path": "not-captured.py", "line": 1},
+        )
+        self.assertEqual(missing.status_code, 404, missing.text)
+
+    def test_needs_input_analysis_can_be_retried_with_traceable_manual_mapping(self) -> None:
+        self.github.contents = {
+            "README.md": (
+                b"# Manual fixture\n\nNo conventional entrypoint is declared.\n"
+                b"Evaluation uses accuracy_score(labels, predictions).\n"
+            ),
+            "scripts/custom_job.py": (
+                b"print('user-mapped training job')\n"
+                b"score = accuracy_score(labels, predictions)\n"
+            ),
+        }
+        resolution = self.resolve().json()["resolution"]
+        first = self.bind_and_wait(resolution["resolution_id"])
+        first_analysis = first["analysis"]
+        first_binding = first["binding"]
+        self.assertEqual(first_analysis["status"], "needs_input")
+        self.assertEqual(first_analysis["training_entrypoints"], [])
+
+        rejected = self.client.post(
+            f"/tasks/{self.task_id}/repository-analyses/{first_analysis['analysis_id']}/manual-mappings",
+            json={"training_entrypoint": "scripts/missing.py"},
+        )
+        self.assertEqual(rejected.status_code, 409, rejected.text)
+        rejected_readme = self.client.post(
+            f"/tasks/{self.task_id}/repository-analyses/{first_analysis['analysis_id']}/manual-mappings",
+            json={"training_entrypoint": "README.md"},
+        )
+        self.assertEqual(rejected_readme.status_code, 409, rejected_readme.text)
+        self.assertEqual(
+            self.app.state.training_workspace.repository_analysis_store.list_manual_mapping_revisions(
+                self.task_id,
+                first_analysis["source_snapshot_id"],
+            ),
+            [],
+        )
+        self.assertEqual(
+            self.client.get(
+                f"/tasks/{self.task_id}/model-bindings/current"
+            ).json()["binding"]["binding_revision_id"],
+            first_binding["binding_revision_id"],
+        )
+
+        mapped = self.client.post(
+            f"/tasks/{self.task_id}/repository-analyses/{first_analysis['analysis_id']}/manual-mappings",
+            json={
+                "training_entrypoint": "scripts/custom_job.py",
+                "dataset_argument": "--dataset-dir",
+            },
+        )
+        self.assertEqual(mapped.status_code, 201, mapped.text)
+        value = mapped.json()
+        analysis = value["analysis"]
+        self.assertEqual(analysis["status"], "complete")
+        self.assertNotEqual(analysis["analysis_id"], first_analysis["analysis_id"])
+        self.assertEqual(
+            analysis["source_snapshot_id"], first_analysis["source_snapshot_id"]
+        )
+        self.assertEqual(analysis["resolved_commit"], COMMIT_A)
+        self.assertEqual(
+            analysis["training_entrypoints"][0]["path"],
+            "scripts/custom_job.py",
+        )
+        self.assertEqual(
+            analysis["training_entrypoints"][0]["evidence"][0]["kind"],
+            "manual_mapping",
+        )
+        self.assertEqual(
+            analysis["manual_mapping"]["mapping"]["dataset_argument"],
+            "--dataset-dir",
+        )
+        self.assertNotEqual(
+            value["binding"]["binding_revision_id"],
+            first_binding["binding_revision_id"],
+        )
+        self.assertEqual(
+            value["analysis_attempt"]["attempt"]["retry_of_attempt_id"],
+            first["task"]["repository_analysis_attempt"]["attempt"][
+                "attempt_id"
+            ],
+        )
+
+        reentered = self.client.get(f"/tasks/{self.task_id}")
+        self.assertEqual(reentered.status_code, 200, reentered.text)
+        self.assertEqual(
+            reentered.json()["task"]["repository_analysis"]["analysis_id"],
+            analysis["analysis_id"],
+        )
+        historical = self.client.get(
+            f"/tasks/{self.task_id}/repository-analyses/{first_analysis['analysis_id']}"
+        )
+        self.assertEqual(historical.status_code, 200, historical.text)
+        self.assertEqual(historical.json()["analysis"]["status"], "needs_input")
+
+        plan = self.client.post(
+            f"/tasks/{self.task_id}/training-plans",
+            json={"base_spec_revision": 1},
+        )
+        self.assertEqual(plan.status_code, 201, plan.text)
+        self.assertEqual(
+            plan.json()["training_plan"]["plan"]["entrypoint"]["argv"],
+            ["python", "scripts/custom_job.py"],
+        )
+        self.assertEqual(
+            plan.json()["training_plan"]["plan"]["dataset_mapping"][
+                "entrypoint_argument"
+            ],
+            "--dataset-dir",
+        )
+
     def test_bound_source_can_generate_and_digest_approve_training_plan(self) -> None:
         resolved = self.resolve()
         self.assertEqual(resolved.status_code, 201, resolved.text)
         resolution = resolved.json()["resolution"]
         self.bind_and_wait(resolution["resolution_id"])
+        ready_task = self.client.get(f"/tasks/{self.task_id}").json()["task"]
+        self.assertEqual(ready_task["repository_analysis"]["status"], "complete")
+        self.assertEqual(ready_task["control"]["current_stage"], "training_plan")
+        self.assertEqual(
+            ready_task["control"]["next_action"]["id"],
+            "create_training_plan",
+        )
 
         created = self.client.post(
             f"/tasks/{self.task_id}/training-plans",
@@ -274,6 +431,7 @@ class ModelSourceApiTests(unittest.TestCase):
         self.assertEqual(
             approved.json()["training_plan"]["effective_status"], "approved"
         )
+
         task = self.client.get(f"/tasks/{self.task_id}").json()["task"]
         self.assertEqual(task["control"]["current_stage"], "resource_probe")
 
@@ -334,6 +492,226 @@ class ModelSourceApiTests(unittest.TestCase):
         task = self.client.get(f"/tasks/{self.task_id}").json()["task"]
         self.assertEqual(task["control"]["current_stage"], "training_plan")
 
+    def test_blocked_repository_analysis_cannot_create_training_plan(self) -> None:
+        self.github.contents["train.py"] = (
+            b"import subprocess\n"
+            b"subprocess.run(['echo', 'unsafe'])\n"
+            b"loss.backward()\noptimizer.step()\n"
+        )
+        resolution = self.resolve().json()["resolution"]
+        bound = self.bind_and_wait(resolution["resolution_id"])
+        self.assertEqual(bound["analysis"]["status"], "blocked")
+
+        task = self.client.get(f"/tasks/{self.task_id}").json()["task"]
+        self.assertEqual(task["control"]["current_stage"], "repository_analysis")
+        self.assertEqual(
+            task["control"]["next_action"]["id"],
+            "review_repository_risks",
+        )
+        self.assertEqual(
+            task["control"]["blocked_by"][0]["code"],
+            "blocked_security",
+        )
+        blocker = next(
+            item
+            for item in task["blockers"]
+            if item["stage"] == "repository_analysis"
+        )
+        self.assertEqual(blocker["code"], "blocked_security")
+        self.assertEqual(blocker["related_object_type"], "RepositoryAnalysis")
+        verify_blocker_evidence(blocker, allow_active_projection=True)
+
+        rejected = self.client.post(
+            f"/tasks/{self.task_id}/training-plans",
+            json={"base_spec_revision": 1},
+        )
+        self.assertEqual(rejected.status_code, 409, rejected.text)
+        self.assertIn("未解决的风险", rejected.text)
+        self.assertEqual(
+            self.client.get(
+                f"/tasks/{self.task_id}/training-plans/current"
+            ).status_code,
+            404,
+        )
+        reentered = self.client.get(f"/tasks/{self.task_id}").json()["task"]
+        self.assertIsNone(reentered["current_run_id"])
+        self.assertEqual(
+            reentered["control"]["current_stage"],
+            "repository_analysis",
+        )
+
+    def test_blocked_current_analysis_cannot_revise_or_authorize_old_plan(self) -> None:
+        first_resolution = self.resolve().json()["resolution"]
+        self.bind_and_wait(first_resolution["resolution_id"])
+        created = self.client.post(
+            f"/tasks/{self.task_id}/training-plans",
+            json={"base_spec_revision": 1},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        parent = created.json()["training_plan"]["plan"]
+
+        self.github.contents["train.py"] = (
+            b"import subprocess\nsubprocess.run(['echo', 'unsafe'])\n"
+            b"loss.backward()\noptimizer.step()\n"
+        )
+        second_resolution = self.resolve(revision="r2").json()["resolution"]
+        rebound = self.bind_and_wait(
+            second_resolution["resolution_id"],
+            expected_commit="b" * 40,
+        )
+        self.assertEqual(rebound["analysis"]["status"], "blocked")
+
+        before_revisions = len(
+            self.app.state.training_workspace.training_plan_store.list_revisions(
+                self.task_id
+            )
+        )
+        rejected = self.client.post(
+            f"/tasks/{self.task_id}/training-plans/{parent['training_plan_revision_id']}/revisions",
+            json={
+                "base_spec_revision": 1,
+                "expected_parent_sha256": parent["plan_sha256"],
+                "resource_budget": {"ram_bytes": 1},
+            },
+        )
+        self.assertEqual(rejected.status_code, 409, rejected.text)
+        self.assertIn("未解决的风险", rejected.json()["detail"])
+        self.assertEqual(
+            len(
+                self.app.state.training_workspace.training_plan_store.list_revisions(
+                    self.task_id
+                )
+            ),
+            before_revisions,
+        )
+        with self.assertRaisesRegex(HarnessError, "仓库分析"):
+            self.app.state.training_workspace.authorize_v09_execution(
+                self.task_id
+            )
+
+    def test_hashed_dependencies_still_require_model_and_dataset_size_evidence(self) -> None:
+        self.github.contents["requirements.txt"] = (
+            b"torch==2.5.1 --hash=sha256:"
+            + (b"c" * 64)
+            + b"\n"
+        )
+        self.github.contents.pop("pyproject.toml")
+        resolution = self.resolve().json()["resolution"]
+        self.bind_and_wait(resolution["resolution_id"])
+        created = self.client.post(
+            f"/tasks/{self.task_id}/training-plans",
+            json={"base_spec_revision": 1},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        plan = created.json()["training_plan"]["plan"]
+        approved = self.client.post(
+            f"/tasks/{self.task_id}/training-plans/{plan['training_plan_revision_id']}/decisions",
+            json={
+                "decision": "approve",
+                "expected_plan_sha256": plan["plan_sha256"],
+            },
+        )
+        self.assertEqual(approved.status_code, 200, approved.text)
+
+        available_probe = ResourceProbe.from_observations(probe_observations())
+        with patch(
+            "model_harness.workspace.ResourceProbe.capture",
+            return_value=available_probe,
+        ):
+            checked = self.client.post(
+                f"/tasks/{self.task_id}/resource-feasibility-checks",
+                json={
+                    "training_plan_revision_id": plan[
+                        "training_plan_revision_id"
+                    ],
+                    "expected_plan_sha256": plan["plan_sha256"],
+                    "base_image_digest": f"sha256:{'d' * 64}",
+                },
+            )
+        self.assertEqual(checked.status_code, 201, checked.text)
+        feasibility = checked.json()["resource_feasibility"]
+        self.assertEqual(feasibility["decision"], "blocked_resources")
+        self.assertEqual(
+            feasibility["environment_lock"]["packages"],
+            [
+                {
+                    "name": "torch",
+                    "version": "2.5.1",
+                    "hashes": [f"sha256:{'c' * 64}"],
+                }
+            ],
+        )
+        self.assertIsNone(feasibility["resource_fit_report"])
+        self.assertEqual(feasibility["blockers"][0]["code"], "blocked_resources")
+        self.assertEqual(
+            feasibility["blockers"][0]["retry_action"],
+            "continue_to_l3_qualification",
+        )
+        self.assertFalse(feasibility["blockers"][0]["details"]["retryable"])
+        with self.assertRaisesRegex(HarnessError, "资源资格证据"):
+            self.app.state.training_workspace.authorize_v09_execution(
+                self.task_id
+            )
+
+    def test_provisional_budget_never_creates_fit_report_or_run(self) -> None:
+        self.github.contents["requirements.txt"] = (
+            b"torch==2.5.1 --hash=sha256:" + (b"c" * 64) + b"\n"
+        )
+        self.github.contents.pop("pyproject.toml")
+        resolution = self.resolve().json()["resolution"]
+        self.bind_and_wait(resolution["resolution_id"])
+        created = self.client.post(
+            f"/tasks/{self.task_id}/training-plans",
+            json={
+                "base_spec_revision": 1,
+                "resource_budget": {"vram_bytes": 1},
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        plan = created.json()["training_plan"]["plan"]
+        approved = self.client.post(
+            f"/tasks/{self.task_id}/training-plans/{plan['training_plan_revision_id']}/decisions",
+            json={
+                "decision": "approve",
+                "expected_plan_sha256": plan["plan_sha256"],
+            },
+        )
+        self.assertEqual(approved.status_code, 200, approved.text)
+
+        before_runs = self.app.state.run_service.list_runs()
+        available_probe = ResourceProbe.from_observations(
+            probe_observations(detected=("cuda",))
+        )
+        with patch(
+            "model_harness.workspace.ResourceProbe.capture",
+            return_value=available_probe,
+        ):
+            checked = self.client.post(
+                f"/tasks/{self.task_id}/resource-feasibility-checks",
+                json={
+                    "training_plan_revision_id": plan[
+                        "training_plan_revision_id"
+                    ],
+                    "expected_plan_sha256": plan["plan_sha256"],
+                    "base_image_digest": f"sha256:{'d' * 64}",
+                },
+            )
+        self.assertEqual(checked.status_code, 201, checked.text)
+        feasibility = checked.json()["resource_feasibility"]
+        self.assertEqual(feasibility["decision"], "blocked_resources")
+        self.assertIsNone(feasibility["resource_fit_report"])
+        self.assertEqual(feasibility["blockers"][0]["code"], "blocked_resources")
+        self.assertEqual(
+            feasibility["blockers"][0]["retry_action"],
+            "continue_to_l3_qualification",
+        )
+        self.assertFalse(feasibility["blockers"][0]["details"]["retryable"])
+        self.assertEqual(self.app.state.run_service.list_runs(), before_runs)
+        with self.assertRaisesRegex(HarnessError, "资源资格证据"):
+            self.app.state.training_workspace.authorize_v09_execution(
+                self.task_id
+            )
+
     def test_training_plan_revision_requires_exact_parent_digest(self) -> None:
         resolution = self.resolve().json()["resolution"]
         self.bind_and_wait(resolution["resolution_id"])
@@ -381,6 +759,34 @@ class ModelSourceApiTests(unittest.TestCase):
             },
         )
         self.assertEqual(stale_parent_decision.status_code, 409)
+
+    def test_byom_plan_without_fit_evidence_fails_execution_authorization(self) -> None:
+        resolution = self.resolve().json()["resolution"]
+        self.bind_and_wait(resolution["resolution_id"])
+        created_plan = self.client.post(
+            f"/tasks/{self.task_id}/training-plans",
+            json={"base_spec_revision": 1},
+        )
+        self.assertEqual(created_plan.status_code, 201, created_plan.text)
+        plan = created_plan.json()["training_plan"]["plan"]
+        approved = self.client.post(
+            f"/tasks/{self.task_id}/training-plans/{plan['training_plan_revision_id']}/decisions",
+            json={
+                "decision": "approve",
+                "expected_plan_sha256": plan["plan_sha256"],
+                "reason": "guard fixture",
+            },
+        )
+        self.assertEqual(approved.status_code, 200, approved.text)
+
+        before = set(self.runs_dir.glob("*"))
+        with self.assertRaisesRegex(HarnessError, "资源资格证据"):
+            self.app.state.training_workspace.authorize_v09_execution(
+                self.task_id
+            )
+        self.assertEqual(set(self.runs_dir.glob("*")), before)
+        task = self.client.get(f"/tasks/{self.task_id}").json()["task"]
+        self.assertEqual(task["run_ids"], [])
 
     def test_official_catalog_search_requires_confirmed_spec_and_user_selection(self) -> None:
         workspace = self.app.state.training_workspace
@@ -566,6 +972,9 @@ class ModelSourceApiTests(unittest.TestCase):
             if item["stage"] == "source_discovery" and item["active"] is True
         )
         self.assertEqual(blocker["details"]["search_id"], restored[0]["search_id"])
+        self.assertEqual(blocker["code"], "blocked_repository")
+        self.assertIn("model_source_search_failed", blocker["details"]["reason_code"])
+        verify_blocker_evidence(blocker, allow_active_projection=True)
 
     def test_expected_commit_and_spec_conflicts_create_zero_bindings(self) -> None:
         stale_resolution = self.resolve(base_spec_revision=99)
@@ -690,6 +1099,12 @@ class ModelSourceApiTests(unittest.TestCase):
             f"/tasks/{other['task_id']}/blockers?active_only=true"
         ).json()["blockers"]
         self.assertEqual(persisted[0]["stage"], "source_resolution")
+        self.assertEqual(persisted[0]["code"], "blocked_repository")
+        self.assertEqual(
+            persisted[0]["details"]["reason_code"],
+            "fixture_provider_unavailable",
+        )
+        verify_blocker_evidence(persisted[0], allow_active_projection=True)
 
     def test_binding_request_returns_before_remote_read_and_projects_attempt(self) -> None:
         resolution = self.resolve().json()["resolution"]
@@ -730,6 +1145,58 @@ class ModelSourceApiTests(unittest.TestCase):
                 completed["current_state"]["result"]["resolution_id"],
                 resolution["resolution_id"],
             )
+
+    def test_running_binding_can_be_cancelled_without_binding_or_analysis(self) -> None:
+        resolution = self.resolve().json()["resolution"]
+        entered = threading.Event()
+        release = threading.Event()
+        original = self.github.list_tree
+
+        def blocked_tree(source, *, token=None):
+            entered.set()
+            self.assertTrue(release.wait(5.0))
+            return original(source, token=token)
+
+        with patch.object(self.github, "list_tree", side_effect=blocked_tree):
+            queued = self.bind(resolution["resolution_id"])
+            self.assertEqual(queued.status_code, 202, queued.text)
+            attempt_id = queued.json()["binding_attempt"]["attempt"]["attempt_id"]
+            self.assertTrue(entered.wait(1.0))
+            cancelled = self.client.post(
+                f"/tasks/{self.task_id}/model-binding-attempts/{attempt_id}/cancel",
+                json={"reason": "用户改变了模型选择"},
+            )
+            self.assertEqual(cancelled.status_code, 200, cancelled.text)
+            self.assertTrue(cancelled.json()["cancelled"])
+            self.assertEqual(
+                cancelled.json()["binding_attempt"]["current_state"]["status"],
+                "cancelled",
+            )
+            release.set()
+            terminal = self.wait_binding_attempt(
+                attempt_id,
+                expected_status="cancelled",
+            )
+            self.assertEqual(
+                terminal["current_state"]["cancellation"]["reason"],
+                "用户改变了模型选择",
+            )
+
+        self.assertEqual(
+            self.client.get(f"/tasks/{self.task_id}/model-bindings").json()[
+                "bindings"
+            ],
+            [],
+        )
+        self.assertEqual(
+            self.client.get(
+                f"/tasks/{self.task_id}/model-bindings/current"
+            ).status_code,
+            404,
+        )
+        task = self.client.get(f"/tasks/{self.task_id}").json()["task"]
+        self.assertIsNone(task["model_binding"])
+        self.assertIsNone(task["repository_analysis"])
 
 
 if __name__ == "__main__":

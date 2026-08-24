@@ -76,6 +76,8 @@ test("v0.9 model-source flow searches official catalogs and requires two explici
   assert.match(app, /task\.repository_analysis_attempt \|\| task\.model_binding_attempt/);
   assert.match(app, /if \(!binding && analysisAttempt\)/);
   assert.match(app, /repositoryAnalysisCard\.hidden = !binding && !attempt/);
+  assert.match(app, /const analysisBlocked = analysis\.status !== "complete" \|\| analysisBlockers\.length > 0/);
+  assert.match(app, /存在需要处理的风险或证据阻断/);
   assert.match(app, /label: "绑定并分析模型来源"/);
   assert.match(app, /failure\.code \|\| "unknown_failure"/);
   assert.match(app, /function retryFailedModelSourceBinding\(\)/);
@@ -152,17 +154,18 @@ test("terminal runs expose an Agent-independent task-owned retry path", async ()
   assert.doesNotMatch(app, /state\.task\.status\s*=\s*"running"/);
 });
 
-test("conversation-native shell has one live checkpoint and an optional desktop workspace", async () => {
+test("conversation-native shell keeps dialogue and a stage-aware desktop workspace side by side", async () => {
   const { html, css, app } = await sources();
   assert.match(html, /<title>Specialist Model Studio · 专业模型智能工作台<\/title>/);
   assert.match(html, /<strong>Specialist Model Studio<\/strong>/);
   for (const id of [
     "workspaceToggleButton", "agentCheckpoint", "agentCheckpointStage",
     "agentCheckpointTitle", "agentCheckpointState", "agentCheckpointBody",
+    "agentCheckpointActions", "agentCheckpointWorkspaceButton",
   ]) assert.equal((html.match(new RegExp(`id="${id}"`, "g")) || []).length, 1, `${id} must be unique`);
 
   assert.match(html, /id="taskControlPanel" hidden/);
-  assert.match(html, /id="workspaceToggleButton"[^>]*aria-label="打开训练工作区"/);
+  assert.match(html, /id="workspaceToggleButton"[^>]*aria-label="打开任务工作区"/);
   assert.match(html, /id="taskPlan" hidden/);
   assert.match(html, /id="stageList" hidden/);
   assert.match(html, /data-context="plan"[^>]*>方案</);
@@ -171,13 +174,29 @@ test("conversation-native shell has one live checkpoint and an optional desktop 
   assert.match(html, /data-context="evaluation"[^>]*>评测</);
   assert.match(html, /data-context="artifacts"[^>]*>产物</);
   assert.match(app, /checkpointHomes = new Map\(\)/);
+  assert.match(app, /function workflowStatus\(task\)/);
+  assert.match(app, /stage === "environment_lock"\) return \{ label: blocked \? "训练环境阻断"/);
+  assert.match(app, /task\.model_binding \? `已固定 \$\{modelSourceProviderLabel\(task\.model_binding\.provider\)\} 来源`/);
+  assert.match(app, /time\.textContent = formatRelativeTime\(task\.updated_at_utc\)/);
+  assert.match(app, /ui\.taskEyebrow\.textContent = `\$\{stageLabel\(stageKey\(task\)\)\} · \$\{workflow\.label\}`/);
   assert.match(app, /ui\.agentCheckpointBody\.append\(card\)/);
+  assert.match(app, /function checkpointIsInline\(card\)/);
+  assert.match(app, /function checkpointWorkspaceContext\(task, card = checkpointCardFor\(task\)\)/);
+  assert.match(app, /ui\.agentCheckpointActions\.hidden = inline/);
+  assert.match(app, /dockedWorkspaceMedia\.matches\) \{ openInspector\(context\); revealCurrentWorkspaceObject\(task\); \}/);
+  assert.match(app, /function revealCurrentWorkspaceObject\(task = state\.task\)/);
+  assert.match(app, /card\.scrollIntoView\(\{ block: "start", behavior: "smooth" \}\)/);
+  assert.match(app, /stage === "repository_analysis"\) return task\.model_binding \? ui\.repositoryAnalysisCard : sourceCard/);
+  assert.match(app, /stage === "training_plan"\) return ui\.trainingPlanCard/);
+  assert.match(app, /const blockedAnalysis = Boolean\(analysis\) && analysis\.status !== "complete"/);
+  assert.match(app, /仓库静态分析仍有未解决风险，不能生成训练计划/);
   assert.doesNotMatch(app, /cloneNode\(/);
   assert.match(app, /ui\.inspector\.dataset\.open = "true"/);
   assert.match(app, /ui\.inspector\.dataset\.open = "false"/);
   assert.match(app, /workspaceToggleButton\.setAttribute\("aria-expanded", "true"\)/);
-  assert.match(app, /workspaceToggleButton\.setAttribute\("aria-label", "关闭训练工作区"\)/);
+  assert.match(app, /workspaceToggleButton\.setAttribute\("aria-label", "关闭任务工作区"\)/);
   assert.match(app, /window\.requestAnimationFrame\(\(\) => ui\.closeInspectorButton\.focus\(\)\)/);
+  assert.match(app, /const isolated = overlayWorkspace\(\) && ui\.inspector\.dataset\.open === "true"/);
   assert.match(app, /ui\.sidebar\.inert = isolated; ui\.conversationMain\.inert = isolated; ui\.mobileViewNav\.inert = isolated/);
   assert.match(app, /ui\.inspector\.setAttribute\("aria-modal", "true"\)/);
   assert.match(app, /event\.key === "Escape"[^\n]*closeInspector\(\)/);
@@ -187,9 +206,18 @@ test("conversation-native shell has one live checkpoint and an optional desktop 
   assert.match(app, /const restoreTarget = opener\?\.isConnected[^\n]+ui\.workspaceToggleButton/);
   assert.match(app, /inspectorMedia\.addEventListener\("change"/);
   assert.match(css, /\.app-shell\{grid-template-columns:244px minmax\(0,1fr\)\}/);
+  assert.match(app, /dockedWorkspaceMedia = window\.matchMedia\("\(min-width:1184px\)"\)/);
+  assert.match(css, /@media\(min-width:1184px\)[\s\S]*body\[data-workspace="open"\] \.app-shell\{grid-template-columns:244px minmax\(0,1fr\) clamp\(340px,32vw,460px\)\}/);
+  assert.match(css, /@media\(min-width:1184px\)[\s\S]*\.inspector\{display:none;[^}]*grid-column:auto[^}]*\}/);
+  assert.match(css, /@media\(min-width:1184px\)[\s\S]*body\[data-workspace="open"\] \.inspector\{display:block;grid-column:3;/);
+  assert.match(css, /@media\(min-width:1184px\)[\s\S]*\.inspector-scrim:not\(\[hidden\]\)\{display:none!important\}/);
   assert.match(css, /\.inspector\[data-open="true"\]\{[^}]*visibility:visible[^}]*pointer-events:auto[^}]*transform:translateX\(0\)/);
   assert.match(css, /@media\(max-width:720px\)[\s\S]*?\.inspector\{width:100%;z-index:42\}/);
+  assert.match(css, /@media\(max-width:720px\)[\s\S]*body\[data-workspace="open"\] \.mobile-view-nav\{display:none\}/);
   assert.match(css, /#taskControlPanel,#taskPlan,#stageList\{display:none!important\}/);
+  assert.match(app, /function compactConversationItems\(items\)/);
+  assert.match(app, /kind: "tool_group"/);
+  assert.match(app, /result-summary:\$\{result\.run_id\}:\$\{evaluationDigest\}/);
 });
 
 test("runtime fallback is visible as a local workflow without disabling real task actions", async () => {
@@ -243,7 +271,7 @@ test("persisted source search and evidence timeline survive refresh without stal
   assert.match(app, /state\.modelSourceCandidates\.length\) showNotice\("官方目录没有返回候选[^\n]+else hideNotice\(\)/);
   assert.match(app, /ui\.capabilityState\.textContent = "模型已绑定"/);
   assert.match(app, /ui\.capabilityState\.textContent = analysisStatus === "failed" \? "分析失败" : "分析已取消"/);
-  assert.match(app, /else if \(analysis\) \{ ui\.capabilityState\.textContent = analysisBlockers\.length \? "分析有阻断" : "来源已分析"/);
+  assert.match(app, /else if \(analysis\) \{ const analysisBlocked = analysis\.status !== "complete" \|\| analysisBlockers\.length > 0/);
   assert.doesNotMatch(app, /const SPEC_FAMILIES/);
   assert.match(app, /request\("\/task-spec\/families"\)/);
   assert.match(app, /if \(currentCandidate && !candidates\.some\(\(item\) => item\.family === currentCandidate\.family\)\) candidates\.unshift\(currentCandidate\)/);
@@ -275,10 +303,16 @@ test("task understanding is a backend-driven quick-reply conversation with advan
   const { html, css, app } = await sources();
   assert.match(html, /id="taskSpecQuickReplies"[^>]*hidden/);
   assert.match(html, /id="editTaskSpecButton"[^>]*>高级编辑</);
-  assert.match(app, /\(decision\.candidates \|\| \[\]\)\.slice\(0, 4\)/);
+  assert.match(app, /const allCandidates = decision\.candidates \|\| \[\]/);
+  assert.match(app, /const customCandidate = allCandidates\.find\(\(item\) => item\.family === "custom"\)/);
+  assert.match(app, /if \(customCandidate && !candidates\.some\(\(item\) => item\.family === "custom"\)\) candidates\.push\(customCandidate\)/);
   assert.match(app, /prefix: "就是这个："/);
   assert.match(app, /switchOutput\.textContent = showAlternatives \? "收起其他输出" : "换一种输出"/);
   assert.match(app, /describe\.textContent = "我自己描述"/);
+  assert.match(app, /reparse\.textContent = "重新理解当前描述"/);
+  assert.match(app, /function reparseTaskSpec\(button\)/);
+  assert.match(app, /business_goal: spec\.business_goal, reparse: true, user_note: "用户请求系统使用当前规则重新理解已保存描述"/);
+  assert.match(app, /历史版本和原始描述仍然保留/);
   assert.match(app, /base_revision: spec\.revision, selected_family: candidate\.family/);
   assert.match(app, /\.\.\.\(confirm \? \{ confirm: true \} : \{\}\)/);
   assert.match(app, /stageKey\(state\.task\) === "task_understanding"/);
@@ -293,4 +327,5 @@ test("task understanding is a backend-driven quick-reply conversation with advan
   assert.match(app, /\["clarify_task_spec", "confirm_task_spec"\][^\n]*scrollToCheckpoint\(\)/);
   assert.match(css, /\.task-spec-quick-replies\{display:grid/);
   assert.match(css, /\.task-spec-choice\.featured/);
+  assert.match(css, /\.task-spec-reparse/);
 });

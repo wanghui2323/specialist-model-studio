@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import fcntl
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,18 +16,54 @@ from .io_utils import read_json, write_json
 
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")
-_STAGES = {
-    "source_discovery",
-    "source_resolution",
-    "source_snapshot",
-    "repository_analysis",
-    "training_plan",
-    "resource_probe",
-    "environment_lock",
-    "resource_fit",
-    "build",
-    "run",
-}
+BLOCKER_EVIDENCE_SCHEMA_VERSION = "0.2"
+LEGACY_BLOCKER_SCHEMA_VERSION = "0.1"
+LEGACY_SUPERSEDED_ACTION = "superseded_by_v0.2_blocker"
+V02_SUPERSEDED_ACTION = "superseded_by_newer_v0.2_blocker"
+_OCCURRENCE_IDENTITY_KEY = "__blocker_store_identity_digest"
+_OCCURRENCE_INDEX_KEY = "__blocker_store_occurrence"
+BLOCKER_EVIDENCE_STAGES = frozenset(
+    {
+        "source_discovery",
+        "source_resolution",
+        "source_snapshot",
+        "repository_analysis",
+        "training_plan",
+        "resource_probe",
+        "environment_lock",
+        "resource_fit",
+        "build",
+        "run",
+    }
+)
+CANONICAL_BLOCKER_CODES = frozenset(
+    {
+        "blocked_license",
+        "blocked_security",
+        "blocked_environment",
+        "blocked_platform",
+        "blocked_resources",
+        "blocked_data",
+        "blocked_repository",
+        "qualification_failed",
+    }
+)
+_SEMANTIC_KEYS = (
+    "task_id",
+    "stage",
+    "code",
+    "retry_action",
+    "related_object_type",
+    "related_object_id",
+    "related_object_digest",
+    "details",
+    "detector",
+    "facts",
+    "rule",
+    "evidence_refs",
+    "recovery_actions",
+    "retryable",
+)
 
 
 def _now() -> str:
@@ -38,6 +76,7 @@ def _canonical(value: Any) -> bytes:
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
 
 
@@ -94,6 +133,122 @@ def _verified(value: Any, expected_type: str) -> dict[str, Any]:
     return deepcopy(value)
 
 
+def _json_mapping(value: Mapping[str, Any] | None, label: str) -> dict[str, Any]:
+    try:
+        normalized = json.loads(_canonical(dict(value or {})))
+    except (TypeError, ValueError) as exc:
+        raise ContractError(f"invalid {label}") from exc
+    if not isinstance(normalized, dict):  # pragma: no cover - defensive invariant
+        raise ContractError(f"invalid {label}")
+    return normalized
+
+
+def _string_list(
+    value: Any, label: str, *, fallback: tuple[str, ...] = ()
+) -> list[str]:
+    selected = fallback if value is None else value
+    if not isinstance(selected, (list, tuple)):
+        raise ContractError(f"invalid {label}")
+    return [_safe_text(item, label, 500) for item in selected]
+
+
+def verify_blocker_evidence(
+    value: Any,
+    *,
+    allow_active_projection: bool = False,
+) -> dict[str, Any]:
+    """Verify one sealed v0.9 BlockerEvidence and return its immutable record.
+
+    API responses may add the derived ``active`` projection.  It is deliberately
+    excluded from the sealed record because resolution remains a separate,
+    append-only ``BlockerResolution`` fact.
+    """
+
+    if not isinstance(value, dict):
+        raise ContractError("invalid blocker record")
+    candidate = deepcopy(value)
+    active = candidate.pop("active", None)
+    if active is not None and (
+        not allow_active_projection or not isinstance(active, bool)
+    ):
+        raise ContractError("invalid blocker active projection")
+    record = _verified(candidate, "BlockerEvidence")
+    required = {
+        "schema_version",
+        "object_type",
+        "blocker_id",
+        "blocker_evidence_id",
+        *_SEMANTIC_KEYS,
+        "message",
+        "semantic_digest",
+        "created_at",
+        "created_at_utc",
+        "resolved_by",
+        "content_digest",
+    }
+    if set(record) != required:
+        raise ContractError("incomplete v0.9 blocker evidence")
+    if record["schema_version"] != BLOCKER_EVIDENCE_SCHEMA_VERSION:
+        raise ContractError("unsupported blocker evidence schema")
+    if record["blocker_evidence_id"] != record["blocker_id"]:
+        raise ContractError("blocker evidence id alias mismatch")
+    if record["created_at"] != record["created_at_utc"]:
+        raise ContractError("blocker created-at alias mismatch")
+    if record["resolved_by"] is not None:
+        raise ContractError("BlockerEvidence must remain immutable")
+    if record["stage"] not in BLOCKER_EVIDENCE_STAGES:
+        raise ContractError("invalid blocker stage")
+    if record["code"] not in CANONICAL_BLOCKER_CODES:
+        raise ContractError("non-canonical blocker code")
+    _safe_id(record["blocker_id"], "blocker id")
+    _safe_task_id(record["task_id"])
+    _safe_text(record["message"], "blocker message", 500)
+    _safe_text(record["retry_action"], "retry action", 120)
+    _safe_text(record["detector"], "blocker detector", 160)
+    if not isinstance(record["facts"], Mapping) or not isinstance(
+        record["rule"], Mapping
+    ):
+        raise ContractError("invalid blocker facts or rule")
+    _json_mapping(record["facts"], "blocker facts")
+    _json_mapping(record["rule"], "blocker rule")
+    _json_mapping(record["details"], "blocker details")
+    _string_list(record["evidence_refs"], "blocker evidence ref")
+    recovery_actions = _string_list(
+        record["recovery_actions"], "blocker recovery action"
+    )
+    if not recovery_actions:
+        raise ContractError("blocker recovery actions must not be empty")
+    if not isinstance(record["retryable"], bool):
+        raise ContractError("invalid blocker retryable flag")
+    if record["related_object_type"] is not None:
+        _safe_text(record["related_object_type"], "related object type", 80)
+    if record["related_object_id"] is not None:
+        _safe_id(record["related_object_id"], "related object id")
+    if record["related_object_digest"] is not None and not re.fullmatch(
+        r"[0-9a-f]{64}", str(record["related_object_digest"])
+    ):
+        raise ContractError("invalid related object digest")
+    try:
+        created_at = datetime.fromisoformat(record["created_at_utc"])
+    except (TypeError, ValueError) as exc:
+        raise ContractError("invalid blocker created-at timestamp") from exc
+    if created_at.tzinfo is None:
+        raise ContractError("invalid blocker created-at timestamp")
+    semantic = {key: record[key] for key in _SEMANTIC_KEYS}
+    if record["semantic_digest"] != _digest(semantic):
+        raise ContractError("blocker semantic digest mismatch")
+    if record["blocker_id"] != f"blocker_{record['semantic_digest'][:24]}":
+        raise ContractError("blocker id does not match semantic digest")
+    return record
+
+
+def _verified_blocker_record(value: Any) -> dict[str, Any]:
+    record = _verified(value, "BlockerEvidence")
+    if record.get("schema_version") == BLOCKER_EVIDENCE_SCHEMA_VERSION:
+        return verify_blocker_evidence(record)
+    return record
+
+
 class BlockerStore:
     """Append-only blocker facts plus separate resolution facts.
 
@@ -102,13 +257,43 @@ class BlockerStore:
     the UI to derive active blockers without inventing local state.
     """
 
-    SCHEMA_VERSION = "0.1"
+    SCHEMA_VERSION = BLOCKER_EVIDENCE_SCHEMA_VERSION
 
     def __init__(self, workspace_root: str | Path) -> None:
         self.root = Path(workspace_root).expanduser().resolve()
         self.tasks_dir = (self.root / "tasks").resolve()
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
+        self._process_locks: dict[str, tuple[Any, int]] = {}
+
+    @contextmanager
+    def _task_process_lock(self, task_id: str) -> Any:
+        """Serialize append/resolution allocation across local processes."""
+
+        selected_task = _safe_task_id(task_id)
+        held = self._process_locks.get(selected_task)
+        if held is not None:
+            handle, depth = held
+            self._process_locks[selected_task] = (handle, depth + 1)
+            try:
+                yield
+            finally:
+                current_handle, current_depth = self._process_locks[selected_task]
+                self._process_locks[selected_task] = (
+                    current_handle,
+                    current_depth - 1,
+                )
+            return
+        lock_path = self._task_dir(selected_task) / ".occurrence.lock"
+        handle = lock_path.open("a+b")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            self._process_locks[selected_task] = (handle, 1)
+            yield
+        finally:
+            self._process_locks.pop(selected_task, None)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
 
     def append(
         self,
@@ -122,12 +307,20 @@ class BlockerStore:
         related_object_id: str | None = None,
         related_object_digest: str | None = None,
         details: Mapping[str, Any] | None = None,
+        detector: str | None = None,
+        facts: Mapping[str, Any] | None = None,
+        rule: Mapping[str, Any] | None = None,
+        evidence_refs: list[str] | tuple[str, ...] | None = None,
+        recovery_actions: list[str] | tuple[str, ...] | None = None,
+        retryable: bool | None = None,
     ) -> dict[str, Any]:
         selected_task = _safe_task_id(task_id)
         selected_stage = str(stage).strip().lower()
-        if selected_stage not in _STAGES:
+        if selected_stage not in BLOCKER_EVIDENCE_STAGES:
             raise ContractError("invalid blocker stage")
         selected_code = _safe_text(code, "blocker code", 120)
+        if selected_code not in CANONICAL_BLOCKER_CODES:
+            raise ContractError("non-canonical blocker code")
         selected_message = _safe_text(message, "blocker message", 500)
         selected_retry = _safe_text(retry_action, "retry action", 120)
         related_type = (
@@ -147,12 +340,50 @@ class BlockerStore:
         )
         if related_digest is not None and not re.fullmatch(r"[0-9a-f]{64}", related_digest):
             raise ContractError("invalid related object digest")
-        selected_details = deepcopy(dict(details or {}))
-        try:
-            _canonical(selected_details)
-        except (TypeError, ValueError) as exc:
-            raise ContractError("invalid blocker details") from exc
-        semantic = {
+        selected_details = _json_mapping(details, "blocker details")
+        if any(
+            key in selected_details
+            for key in (_OCCURRENCE_IDENTITY_KEY, _OCCURRENCE_INDEX_KEY)
+        ):
+            raise ContractError("blocker occurrence metadata is store-owned")
+        selected_detector = _safe_text(
+            detector
+            or selected_details.get("detector")
+            or "model_harness.blocker_store@0.2",
+            "blocker detector",
+            160,
+        )
+        selected_facts = _json_mapping(
+            facts if facts is not None else selected_details,
+            "blocker facts",
+        )
+        selected_rule = _json_mapping(
+            rule
+            if rule is not None
+            else {"code": selected_code, "stage": selected_stage},
+            "blocker rule",
+        )
+        selected_refs = _string_list(
+            evidence_refs
+            if evidence_refs is not None
+            else selected_details.get("evidence_refs"),
+            "blocker evidence ref",
+        )
+        selected_recovery = _string_list(
+            recovery_actions
+            if recovery_actions is not None
+            else selected_details.get("recovery_actions"),
+            "blocker recovery action",
+            fallback=(selected_retry,),
+        )
+        selected_retryable = (
+            retryable
+            if retryable is not None
+            else selected_details.get("retryable", True)
+        )
+        if not isinstance(selected_retryable, bool):
+            raise ContractError("invalid blocker retryable flag")
+        base_semantic = {
             "task_id": selected_task,
             "stage": selected_stage,
             "code": selected_code,
@@ -161,26 +392,149 @@ class BlockerStore:
             "related_object_id": related_id,
             "related_object_digest": related_digest,
             "details": selected_details,
+            "detector": selected_detector,
+            "facts": selected_facts,
+            "rule": selected_rule,
+            "evidence_refs": selected_refs,
+            "recovery_actions": selected_recovery,
+            "retryable": selected_retryable,
         }
-        semantic_digest = _digest(semantic)
-        blocker_id = f"blocker_{semantic_digest[:24]}"
-        record = _sealed(
-            {
-                "schema_version": self.SCHEMA_VERSION,
-                "object_type": "BlockerEvidence",
-                "blocker_id": blocker_id,
-                **semantic,
-                "message": selected_message,
-                "semantic_digest": semantic_digest,
-                "created_at_utc": _now(),
-            }
-        )
-        with self._lock:
-            path = self._evidence_dir(selected_task) / f"{blocker_id}.json"
-            if path.exists():
-                return _verified(read_json(path), "BlockerEvidence")
-            write_json(path, record)
-        return record
+        identity_digest = _digest(base_semantic)
+        with self._lock, self._task_process_lock(selected_task):
+            matching: list[dict[str, Any]] = []
+            for existing in self.list(selected_task):
+                if existing.get("schema_version") != self.SCHEMA_VERSION:
+                    continue
+                existing_details = existing.get("details") or {}
+                existing_identity = existing_details.get(
+                    _OCCURRENCE_IDENTITY_KEY,
+                    existing.get("semantic_digest"),
+                )
+                if existing_identity == identity_digest:
+                    matching.append(existing)
+
+            active_matching = [item for item in matching if item.get("active")]
+            if active_matching:
+                selected_record = deepcopy(sorted(
+                    active_matching,
+                    key=lambda item: (item["created_at_utc"], item["blocker_id"]),
+                )[-1])
+                selected_record.pop("active", None)
+                created = False
+            else:
+                occurrence_index = 0
+                if matching:
+                    occurrence_index = max(
+                        int(
+                            (item.get("details") or {}).get(
+                                _OCCURRENCE_INDEX_KEY,
+                                0,
+                            )
+                        )
+                        for item in matching
+                    ) + 1
+                occurrence_details = deepcopy(selected_details)
+                if occurrence_index:
+                    occurrence_details[_OCCURRENCE_IDENTITY_KEY] = identity_digest
+                    occurrence_details[_OCCURRENCE_INDEX_KEY] = occurrence_index
+                semantic = {
+                    **base_semantic,
+                    "details": occurrence_details,
+                }
+                semantic_digest = _digest(semantic)
+                blocker_id = f"blocker_{semantic_digest[:24]}"
+                created_at = _now()
+                record = _sealed(
+                    {
+                        "schema_version": self.SCHEMA_VERSION,
+                        "object_type": "BlockerEvidence",
+                        "blocker_id": blocker_id,
+                        "blocker_evidence_id": blocker_id,
+                        **semantic,
+                        "message": selected_message,
+                        "semantic_digest": semantic_digest,
+                        "created_at": created_at,
+                        "created_at_utc": created_at,
+                        "resolved_by": None,
+                    }
+                )
+                path = self._evidence_dir(selected_task) / f"{blocker_id}.json"
+                if path.exists():
+                    selected_record = self._read_evidence_path(selected_task, path)
+                    created = False
+                else:
+                    write_json(path, record)
+                    selected_record = record
+                    created = True
+            self._supersede_active_v01_stage(
+                selected_task,
+                selected_stage,
+                superseding_blocker=selected_record,
+            )
+            if created:
+                self._supersede_active_v02_identity(
+                    selected_task,
+                    selected_stage,
+                    selected_code,
+                    superseding_blocker=selected_record,
+                )
+            return selected_record
+
+    def _supersede_active_v01_stage(
+        self,
+        task_id: str,
+        stage: str,
+        *,
+        superseding_blocker: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Resolve only active v0.1 blockers replaced by this v0.2 stage fact."""
+
+        resolutions: list[dict[str, Any]] = []
+        for blocker in self.list(task_id, active_only=True):
+            if (
+                blocker.get("schema_version") == LEGACY_BLOCKER_SCHEMA_VERSION
+                and blocker.get("stage") == stage
+            ):
+                resolutions.append(
+                    self.resolve(
+                        task_id,
+                        str(blocker["blocker_id"]),
+                        action=LEGACY_SUPERSEDED_ACTION,
+                        related_object_type="BlockerEvidence",
+                        related_object_id=str(superseding_blocker["blocker_id"]),
+                    )
+                )
+        return resolutions
+
+    def _supersede_active_v02_identity(
+        self,
+        task_id: str,
+        stage: str,
+        code: str,
+        *,
+        superseding_blocker: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Resolve older active v0.2 facts for the same task/stage/code only."""
+
+        superseding_id = str(superseding_blocker["blocker_id"])
+        resolutions: list[dict[str, Any]] = []
+        for blocker in self.list(task_id, active_only=True):
+            if (
+                blocker.get("schema_version") == BLOCKER_EVIDENCE_SCHEMA_VERSION
+                and blocker.get("stage") == stage
+                and blocker.get("code") == code
+                and blocker.get("blocker_id") != superseding_id
+            ):
+                resolutions.append(
+                    self.resolve(
+                        task_id,
+                        str(blocker["blocker_id"]),
+                        action=V02_SUPERSEDED_ACTION,
+                        related_object_type="BlockerEvidence",
+                        related_object_id=superseding_id,
+                    )
+                )
+        return resolutions
 
     def resolve(
         self,
@@ -222,29 +576,30 @@ class BlockerStore:
                 "created_at_utc": _now(),
             }
         )
-        with self._lock:
+        with self._lock, self._task_process_lock(selected_task):
             path = self._resolution_dir(selected_task) / f"{resolution_id}.json"
             if path.exists():
-                return _verified(read_json(path), "BlockerResolution")
+                return self._read_resolution_path(selected_task, path)
             write_json(path, record)
         return record
 
     def get(self, task_id: str, blocker_id: str) -> dict[str, Any]:
-        path = self._evidence_dir(_safe_task_id(task_id)) / f"{_safe_id(blocker_id, 'blocker id')}.json"
+        selected_task = _safe_task_id(task_id)
+        path = self._evidence_dir(selected_task) / f"{_safe_id(blocker_id, 'blocker id')}.json"
         if not path.exists():
             raise FileNotFoundError("blocker not found")
-        return _verified(read_json(path), "BlockerEvidence")
+        return self._read_evidence_path(selected_task, path)
 
     def list(self, task_id: str, *, active_only: bool = False) -> list[dict[str, Any]]:
         selected_task = _safe_task_id(task_id)
         evidence = [
-            _verified(read_json(path), "BlockerEvidence")
+            self._read_evidence_path(selected_task, path)
             for path in sorted(self._evidence_dir(selected_task).glob("*.json"))
         ]
         resolved_ids = {
             record["blocker_id"]
             for record in (
-                _verified(read_json(path), "BlockerResolution")
+                self._read_resolution_path(selected_task, path)
                 for path in sorted(self._resolution_dir(selected_task).glob("*.json"))
             )
         }
@@ -253,6 +608,35 @@ class BlockerStore:
         if active_only:
             evidence = [record for record in evidence if record["active"]]
         return sorted(evidence, key=lambda item: (item["created_at_utc"], item["blocker_id"]))
+
+    def _read_evidence_path(self, task_id: str, path: Path) -> dict[str, Any]:
+        selected_task = _safe_task_id(task_id)
+        record = _verified_blocker_record(read_json(path))
+        if record.get("task_id") != selected_task:
+            raise ContractError("blocker evidence task identity mismatch")
+        if record.get("blocker_id") != path.stem:
+            raise ContractError("blocker evidence file identity mismatch")
+        return record
+
+    def _read_resolution_path(self, task_id: str, path: Path) -> dict[str, Any]:
+        selected_task = _safe_task_id(task_id)
+        record = _verified(read_json(path), "BlockerResolution")
+        if record.get("task_id") != selected_task:
+            raise ContractError("blocker resolution task identity mismatch")
+        if record.get("resolution_id") != path.stem:
+            raise ContractError("blocker resolution file identity mismatch")
+        blocker_id = record.get("blocker_id")
+        if not isinstance(blocker_id, str):
+            raise ContractError("blocker resolution blocker identity mismatch")
+        try:
+            blocker = self.get(selected_task, blocker_id)
+        except FileNotFoundError as exc:
+            raise ContractError(
+                "blocker resolution references blocker outside requested task"
+            ) from exc
+        if record.get("blocker_digest") != blocker.get("content_digest"):
+            raise ContractError("blocker resolution blocker digest mismatch")
+        return record
 
     def resolve_active_stage(
         self,

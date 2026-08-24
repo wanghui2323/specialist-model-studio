@@ -7,7 +7,7 @@ from .service import RunService
 
 
 HELP_ACTIONS = [
-    {"label": "开始数字识别实验", "message": "开始数字识别实验"},
+    {"label": "查看可用能力", "message": "有哪些能力"},
     {"label": "查看当前进度", "message": "查看当前进度"},
     {"label": "给出优化建议", "message": "给出优化建议"},
 ]
@@ -28,17 +28,8 @@ class ChatController:
         if normalized.startswith("/start") or self._contains(
             text, "开始数字", "开始实验", "训练数字", "新建实验"
         ):
-            contract = self.service.registry.get_recipe(
-                "digit-classification"
-            ).template()
-            run_dir = self.service.submit(contract)
-            state = self.service.status(run_dir.name)
-            return self._reply(
-                "数字识别参考实验已经创建。我会保留训练、验证和独立测试边界，并持续更新阶段。",
-                "run_started",
-                run_dir.name,
-                data={"state": state},
-                actions=[{"label": "查看进度", "message": "查看当前进度"}],
+            raise HarnessError(
+                "对话层不能直接创建运行；请先创建并确认训练任务，再使用 task-owned 运行入口"
             )
 
         if normalized in {"/recipes", "/capabilities"} or self._contains(
@@ -56,26 +47,8 @@ class ChatController:
         if normalized.startswith("/apply") or self._contains(
             text, "批准", "应用策略", "执行策略"
         ):
-            selected = self._require_run(run_id)
-            strategy_id = self._strategy_id(text)
-            if strategy_id is None:
-                return self._reply(
-                    "请明确批准哪一条策略，例如“批准位移增强”或输入 `/apply add-shift-augmentation`。",
-                    "approval_required",
-                    selected,
-                    data=self.service.result(selected),
-                )
-            child = self.service.apply_strategy(selected, strategy_id)
-            return self._reply(
-                "策略已记录为人工批准，并创建了新的子运行；父运行的合同、模型和证据没有被覆盖。",
-                "strategy_applied",
-                child.name,
-                data={
-                    "parent_run_id": selected,
-                    "child_run_id": child.name,
-                    "strategy_id": strategy_id,
-                },
-                actions=[{"label": "查看子运行", "message": "查看当前进度"}],
+            raise HarnessError(
+                "对话层不能直接创建子运行；请在当前训练任务中明确批准并应用策略"
             )
 
         if normalized in {"/strategies", "/optimize"} or self._contains(
@@ -101,18 +74,8 @@ class ChatController:
         if normalized in {"/cancel", "/stop"} or self._contains(
             text, "取消当前", "停止当前", "先停下"
         ):
-            selected = self._require_run(run_id)
-            accepted = self.service.cancel(selected, "requested from chat")
-            message_text = (
-                "取消请求已记录，将在下一个安全阶段边界生效。"
-                if accepted
-                else "当前运行已经结束，无法再请求取消。"
-            )
-            return self._reply(
-                message_text,
-                "cancel_requested" if accepted else "run_terminal",
-                selected,
-                data=self.service.result(selected),
+            raise HarnessError(
+                "对话层不能仅凭 run_id 取消运行；请从当前训练任务的 task-owned 入口取消"
             )
 
         if normalized in {"/status", "/progress"} or self._contains(
@@ -128,7 +91,7 @@ class ChatController:
             )
 
         return self._reply(
-            "这一版对话层只执行可审计命令，还不是通用大模型问答。你可以让我开始实验、查看进度、给出策略、批准策略或取消运行。",
+            "这一版对话层只执行可审计的读取命令，还不是通用大模型问答。运行创建、取消和策略应用必须从当前训练任务入口发起。",
             "help",
             run_id,
             actions=HELP_ACTIONS,

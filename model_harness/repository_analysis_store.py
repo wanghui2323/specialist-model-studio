@@ -143,6 +143,7 @@ class AnalysisAttempt:
     task_id: str
     snapshot_id: str
     snapshot_digest: str
+    expected_resolved_commit: str
     attempt_sequence: int
     retry_of_attempt_id: str | None
     retry_of_attempt_digest: str | None
@@ -167,6 +168,7 @@ class BindingAnalysisAttempt:
     resolution_digest: str
     expected_resolved_commit: str
     base_spec_revision: int
+    analyzer_version: str
     attempt_sequence: int
     retry_of_attempt_id: str | None
     retry_of_attempt_digest: str | None
@@ -239,6 +241,7 @@ class RepositoryAnalysisStore:
         *,
         snapshot_id: str,
         snapshot_digest: str,
+        expected_resolved_commit: str,
         analyzer_version: str,
         retry_of_attempt_id: str | None = None,
         manual_mapping_revision_id: str | None = None,
@@ -248,6 +251,9 @@ class RepositoryAnalysisStore:
         selected_snapshot_digest = _safe_digest(
             snapshot_digest, "snapshot digest"
         )
+        selected_commit = str(expected_resolved_commit).strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", selected_commit):
+            raise ContractError("invalid expected resolved commit")
         selected_analyzer = _safe_text(
             analyzer_version, "analyzer version", maximum=160
         )
@@ -268,6 +274,18 @@ class RepositoryAnalysisStore:
                 retry_state = self.get_attempt(
                     selected_task, retry_record["attempt_id"]
                 )["current_state"]
+                retry_commit = retry_record.get("expected_resolved_commit")
+                if retry_commit is None:
+                    retry_result = retry_state.get("result")
+                    retry_analysis = (
+                        retry_result.get("analysis")
+                        if isinstance(retry_result, Mapping)
+                        else None
+                    )
+                    if isinstance(retry_analysis, Mapping):
+                        retry_commit = retry_analysis.get("resolved_commit")
+                if retry_commit is not None and retry_commit != selected_commit:
+                    raise ContractError("retry resolved commit changed")
                 if retry_state["status"] not in _TERMINAL_STATUSES:
                     raise ContractError("only a terminal analysis attempt can be retried")
                 current = self._current_pointer(selected_task, selected_snapshot)
@@ -303,6 +321,7 @@ class RepositoryAnalysisStore:
                 task_id=selected_task,
                 snapshot_id=selected_snapshot,
                 snapshot_digest=selected_snapshot_digest,
+                expected_resolved_commit=selected_commit,
                 attempt_sequence=sequence,
                 retry_of_attempt_id=(
                     retry_record["attempt_id"] if retry_record else None
@@ -348,12 +367,33 @@ class RepositoryAnalysisStore:
         *,
         analyzer_version: str | None = None,
         manual_mapping_revision_id: str | None = None,
+        expected_resolved_commit: str | None = None,
     ) -> dict[str, Any]:
         previous = self.get_attempt_record(task_id, attempt_id)
+        selected_commit = (
+            expected_resolved_commit
+            if expected_resolved_commit is not None
+            else previous.get("expected_resolved_commit")
+        )
+        if selected_commit is None:
+            previous_state = self.get_attempt(task_id, attempt_id)["current_state"]
+            previous_result = previous_state.get("result")
+            previous_analysis = (
+                previous_result.get("analysis")
+                if isinstance(previous_result, Mapping)
+                else None
+            )
+            if isinstance(previous_analysis, Mapping):
+                selected_commit = previous_analysis.get("resolved_commit")
+        if selected_commit is None:
+            raise ContractError(
+                "legacy analysis attempt requires expected resolved commit for retry"
+            )
         return self.create_attempt(
             task_id,
             snapshot_id=previous["snapshot_id"],
             snapshot_digest=previous["snapshot_digest"],
+            expected_resolved_commit=str(selected_commit),
             analyzer_version=analyzer_version or previous["analyzer_version"],
             retry_of_attempt_id=previous["attempt_id"],
             manual_mapping_revision_id=(
@@ -379,6 +419,23 @@ class RepositoryAnalysisStore:
         supplied_policy = selected_analysis.get("execution_policy")
         if supplied_policy not in {None, self.EXECUTION_POLICY}:
             raise ContractError("analysis result has an unsafe execution policy")
+        attempt = self.get_attempt_record(task_id, attempt_id)
+        expected_commit = attempt.get("expected_resolved_commit")
+        if expected_commit is None:
+            raise ContractError(
+                "legacy analysis attempt lacks expected resolved commit; retry is required"
+            )
+        expected_identity = {
+            "task_id": attempt["task_id"],
+            "source_snapshot_id": attempt["snapshot_id"],
+            "resolved_commit": expected_commit,
+            "analyzer_version": attempt["analyzer_version"],
+        }
+        for field, expected in expected_identity.items():
+            if selected_analysis.get(field) != expected:
+                raise ContractError(
+                    f"analysis result {field} does not match immutable attempt"
+                )
         return self._transition(
             task_id,
             attempt_id,
@@ -521,6 +578,15 @@ class RepositoryAnalysisStore:
             ):
                 raise RepositoryAnalysisIntegrityError(
                     "analysis attempt snapshot digest changed"
+                )
+            if (
+                previous is not None
+                and previous.get("expected_resolved_commit") is not None
+                and record.get("expected_resolved_commit")
+                != previous.get("expected_resolved_commit")
+            ):
+                raise RepositoryAnalysisIntegrityError(
+                    "analysis attempt resolved commit changed"
                 )
             previous_by_snapshot[snapshot] = record
             expected_by_snapshot[snapshot] = expected + 1
@@ -1133,6 +1199,7 @@ class BindingAnalysisAttemptStore:
         resolution_digest: str,
         expected_resolved_commit: str,
         base_spec_revision: int,
+        analyzer_version: str,
     ) -> dict[str, Any]:
         selected_task = _safe_task_id(task_id)
         selected_resolution = _safe_id(resolution_id, "resolution id")
@@ -1146,9 +1213,23 @@ class BindingAnalysisAttemptStore:
             or base_spec_revision < 1
         ):
             raise ContractError("base spec revision must be a positive integer")
+        selected_analyzer = _safe_text(
+            analyzer_version, "analyzer version", maximum=160
+        )
 
         with self._lock:
             attempts = self.list_attempts(selected_task)
+            for existing in attempts:
+                if existing["resolution_id"] != selected_resolution:
+                    continue
+                if (
+                    existing["resolution_digest"] != selected_digest
+                    or existing["expected_resolved_commit"] != selected_commit
+                    or existing["base_spec_revision"] != base_spec_revision
+                ):
+                    raise RepositoryAnalysisIntegrityError(
+                        "binding analysis resolution identity changed"
+                    )
             current = self._projection_for_record(attempts[-1]) if attempts else None
             same_request = bool(
                 current
@@ -1156,6 +1237,7 @@ class BindingAnalysisAttemptStore:
                 and current["attempt"]["resolution_digest"] == selected_digest
                 and current["attempt"]["expected_resolved_commit"] == selected_commit
                 and current["attempt"]["base_spec_revision"] == base_spec_revision
+                and current["attempt"].get("analyzer_version") == selected_analyzer
             )
             if current and current["current_state"]["status"] in {
                 "queued",
@@ -1172,6 +1254,10 @@ class BindingAnalysisAttemptStore:
                     item
                     for item in reversed(attempts)
                     if item["resolution_id"] == selected_resolution
+                    and item["resolution_digest"] == selected_digest
+                    and item["expected_resolved_commit"] == selected_commit
+                    and item["base_spec_revision"] == base_spec_revision
+                    and item.get("analyzer_version") == selected_analyzer
                 ),
                 None,
             )
@@ -1198,6 +1284,7 @@ class BindingAnalysisAttemptStore:
                 resolution_digest=selected_digest,
                 expected_resolved_commit=selected_commit,
                 base_spec_revision=base_spec_revision,
+                analyzer_version=selected_analyzer,
                 attempt_sequence=sequence,
                 retry_of_attempt_id=(
                     str(retry_record["attempt_id"]) if retry_record else None
@@ -1231,6 +1318,28 @@ class BindingAnalysisAttemptStore:
         selected_result = _json_mapping(result, "binding analysis result")
         if not selected_result:
             raise ContractError("binding analysis result must not be empty")
+        attempt = self._get_attempt_record(task_id, attempt_id)
+        immutable_identity = {
+            "task_id": attempt["task_id"],
+            "resolution_id": attempt["resolution_id"],
+            "resolution_digest": attempt["resolution_digest"],
+            "expected_resolved_commit": attempt["expected_resolved_commit"],
+            "base_spec_revision": attempt["base_spec_revision"],
+            "analyzer_version": attempt["analyzer_version"],
+        }
+        if "resolution_id" not in selected_result:
+            raise ContractError(
+                "binding analysis result resolution_id is required"
+            )
+        for field, expected in immutable_identity.items():
+            if (
+                field in selected_result
+                and _canonical(selected_result[field]) != _canonical(expected)
+            ):
+                raise ContractError(
+                    f"binding analysis result {field} does not match immutable attempt"
+                )
+            selected_result[field] = deepcopy(expected)
         return self._transition(
             task_id,
             attempt_id,
@@ -1263,6 +1372,26 @@ class BindingAnalysisAttemptStore:
             attempt_id,
             status="failed",
             failure=failure.to_dict(),
+        )
+
+    def cancel(
+        self,
+        task_id: str,
+        attempt_id: str,
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Append a durable cancellation before any binding is committed."""
+
+        return self._transition(
+            task_id,
+            attempt_id,
+            status="cancelled",
+            cancellation={
+                "reason": _safe_message(
+                    reason, "cancellation reason", maximum=500
+                )
+            },
         )
 
     def get_attempt(self, task_id: str, attempt_id: str) -> dict[str, Any]:
@@ -1301,6 +1430,13 @@ class BindingAnalysisAttemptStore:
                     previous is None
                     or previous["content_digest"] != retry_digest
                     or previous["resolution_id"] != record["resolution_id"]
+                    or previous["resolution_digest"] != record["resolution_digest"]
+                    or previous["expected_resolved_commit"]
+                    != record["expected_resolved_commit"]
+                    or previous["base_spec_revision"]
+                    != record["base_spec_revision"]
+                    or previous.get("analyzer_version")
+                    != record.get("analyzer_version")
                 ):
                     raise RepositoryAnalysisIntegrityError(
                         "binding analysis retry lineage is broken"
@@ -1345,11 +1481,12 @@ class BindingAnalysisAttemptStore:
         status: str,
         result: Mapping[str, Any] | None = None,
         failure: Mapping[str, Any] | None = None,
+        cancellation: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         selected_task = _safe_task_id(task_id)
         selected_attempt = _safe_id(attempt_id, "binding analysis attempt id")
         selected_status = str(status).strip().lower()
-        if selected_status not in {"running", "completed", "failed"}:
+        if selected_status not in {"running", "completed", "failed", "cancelled"}:
             raise ContractError("invalid binding analysis attempt status")
         with self._lock:
             current = self.current_attempt(selected_task)
@@ -1374,6 +1511,7 @@ class BindingAnalysisAttemptStore:
                 previous=previous,
                 result=result,
                 failure=failure,
+                cancellation=cancellation,
             )
             return self._projection(current["attempt"], state)
 
@@ -1385,6 +1523,7 @@ class BindingAnalysisAttemptStore:
         previous: Mapping[str, Any] | None,
         result: Mapping[str, Any] | None = None,
         failure: Mapping[str, Any] | None = None,
+        cancellation: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         revision = int(previous["state_revision"]) + 1 if previous else 1
         semantic = {
@@ -1397,7 +1536,9 @@ class BindingAnalysisAttemptStore:
             "status": status,
             "result": deepcopy(dict(result)) if result is not None else None,
             "failure": deepcopy(dict(failure)) if failure is not None else None,
-            "cancellation": None,
+            "cancellation": (
+                deepcopy(dict(cancellation)) if cancellation is not None else None
+            ),
         }
         self._validate_state_payload(semantic)
         semantic_digest = _digest(semantic)
@@ -1425,17 +1566,23 @@ class BindingAnalysisAttemptStore:
         status = str(value["status"])
         has_result = value.get("result") is not None
         has_failure = value.get("failure") is not None
+        has_cancellation = value.get("cancellation") is not None
         if status == "completed" and not has_result:
             raise ContractError("completed binding analysis state requires a result")
         if status == "failed" and not has_failure:
             raise ContractError("failed binding analysis state requires evidence")
-        if status in {"queued", "running"} and (has_result or has_failure):
-            raise ContractError("active binding analysis state cannot have a result")
-        if status not in {"queued", "running", "completed", "failed"}:
-            raise ContractError("invalid binding analysis state")
-        if int(has_result) + int(has_failure) != int(
-            status in {"completed", "failed"}
+        if status == "cancelled" and not has_cancellation:
+            raise ContractError("cancelled binding analysis state requires a reason")
+        if status in {"queued", "running"} and (
+            has_result or has_failure or has_cancellation
         ):
+            raise ContractError("active binding analysis state cannot have a result")
+        if status not in {"queued", "running", "completed", "failed", "cancelled"}:
+            raise ContractError("invalid binding analysis state")
+        expected_count = int(status == "completed") + int(status == "failed") + int(
+            status == "cancelled"
+        )
+        if int(has_result) + int(has_failure) + int(has_cancellation) != expected_count:
             raise ContractError("binding analysis state payload does not match status")
         _canonical(value)
 

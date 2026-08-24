@@ -1,9 +1,10 @@
 # Specialist Model Studio v0.9 · Universal BYOM 机器验收合同
 
-> 当前状态：L0–L2 已进入本地实现与审查，L3–L5 仍是目标门禁；本文和 Gate 定义的存在不代表对应层级已经通过
+> 当前状态（2026-08-24 审计）：L0 合同已实现但既有证据失配；L1 的 V1/V2 实现候选已存在但无完整联网/浏览器证据；L2/V3 已达到 analysis-only 实现完成、可供审阅，fresh wheel 仓库外 Python 388/388、Node 29/29、生产 wheel CLI、task-owned 授权负例与 WorkBuddy 式三视口 smoke 已通过；源码旧 editable `.venv` 因 macOS hidden `.pth` 仍仅有 3 个 installed-CLI 测试失败，生产 wheel CLI 不受影响。当前尚无冻结 commit 的 C06/C07/C15 整层证据；L3–L5 仍是目标门禁。本文和 Gate 定义的存在不代表对应层级已经通过
 > 主对象：`TrainingTask`
 > 目标聚合器：`scripts/verify_v09_byom.py`（L5 实现后才可作为验收证据）
 > Gate 定义：`acceptance/v0.9-gates.json`（已区分 reviewable RC、完整本地 BYOM 与 GitHub Release）
+> 纵向版本与 Loop 映射：`plans/v0.9-universal-byom/VERTICAL-EXECUTION-PLAN.md`
 > 目标报告 Schema：`acceptance/v0.9-report.schema.json`（L5 实现）
 
 ## 1. 通用支持的可检验定义
@@ -36,9 +37,9 @@ TrainingTask
 
 ## 2. 证据与状态合同
 
-- L0–L5 在实现期间只使用 `planned / implementing`；完成编码不能自动升级为验收通过。
+- L0–L5 的实现阶段使用 `planned / implementing / implemented`；完成编码只能进入 `implemented`，不能自动升级为验收通过。
 - 机器 Gate 的运行结论只允许 `passed / failed / blocked`；`skipped` 不能满足 required gate。
-- `implemented`、`verified`、`accepted` 保留为后续证据状态，但本轮 L0 合同创建不得预填这些状态。
+- `verified` 只由绑定冻结 commit 的机器证据产生，`accepted` 只由用户验收产生；两者都不能由 `implemented` 自动推导。
 - 任一 required gate 为 `failed` 或 `blocked`，对应层级不得退出。
 - 用户确认、源码实现、自动验证、本地可用与 GitHub 发布是五个独立事实，不能互相替代。
 - 所有证据绑定干净工作树与 40 位 source commit；源码、锁文件、Gate 定义或证据 producer 变化后，旧结论失效。
@@ -93,7 +94,7 @@ required：
 1. 需求工作台、对象/状态机、能力边界、双来源、安全边界和发布分级可被结构化校验；
 2. 当前 Python、Node、服务、注册表、浏览器和已验证训练家族全部重新取证，不继承旧数字；
 3. “已内置 Recipe”“可进入通用构建流程”“已在当前机器训练成功”三类能力在 API/UI/文档中分开；
-4. 本文件与 `loop-tasks.json` Schema 校验通过，且所有 L0–L5 状态仍为 `planned / implementing`；
+4. 本文件与 `loop-tasks.json` Schema 校验通过，L0 的当前证据哈希、`owned_paths` 与状态失效检查均有效；
 5. 不得因规划合同存在而显示 v0.9 已实现、已验证或已发布。
 
 ### L1 · ModelSource 与仓库分析
@@ -106,6 +107,8 @@ required：
 4. 重启后仍由同一 `task_id` 找回相同 source/commit；刷新只创建新版本，不改写历史；
 5. 不执行仓库代码也能完成 L1，任何分析器不得在主进程 import 第三方模块。
 
+L1 的闭环范围是 C01–C05：V1 提供 C01–C04，V2 补齐 C05；只有五行在同一冻结 commit 全部 6/6 才可标记 L1 verified。
+
 ### L2 · 环境锁与资源资格
 
 required：
@@ -116,12 +119,16 @@ required：
 4. CPU/RAM/磁盘/GPU 不足、平台不兼容、依赖冲突、预计制品越界全部在 Run 前阻断；
 5. 降级策略生成新计划版本并重新确认，不改变测试集和 release gates。
 
+L2 的闭环范围是 C06、C07、C15，分别覆盖计划审批、环境/资源结论和规范阻断恢复。三行必须在同一冻结 commit 全部 6/6。
+
+V3/L2 是 analysis-only：它不得创建 `QualificationRun` 或 `TrainingRun`。当资源预算依据仍为 `provisional` 时，不生成 `ResourceFitReport`，而是产生 `blocked_resources`，`retryable=false`，并把 `continue_to_l3_qualification` 记录为跨层交接动作。该动作不允许在 V3 原地“补齐后重试”，也不证明 L3 资格验证或训练已经发生。
+
 ### L3 · Build → Test → Register → Resume
 
 required：
 
-1. Code Agent 只在隔离 Worker 中生成/修改 Recipe、Data Adapter、Evaluator、Inference 和 Exporter；
-2. 每次修复产生新的不可变 `BuildAttempt`，失败日志、输入快照、环境和资源使用可复核；
+1. 隔离 Worker 只执行已批准的固定来源与人工补丁；系统或 Agent 可以提出下一次 attempt，但不得自动生成或应用代码补丁；
+2. 每次人工修复产生新的不可变 `BuildAttempt`，`patch_origin="human"`，失败日志、输入快照、环境和资源使用可复核；
 3. 资格试跑使用受限小样本与预算，超时/取消/强杀不会注册 Recipe 或创建正式 Run；
 4. 只有全部安全、Schema、单测和资格试跑通过的精确 `RecipeVersion` 才能原子注册；
 5. 注册成功自动回到原 `task_id`，继续数据确认和正式训练；失败可恢复并保持原任务身份；

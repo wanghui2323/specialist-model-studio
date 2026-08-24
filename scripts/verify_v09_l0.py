@@ -9,9 +9,37 @@ import re
 import subprocess
 from pathlib import Path
 
+try:
+    from scripts.check_v09_status import StatusCheckError, check_level_evidence
+except ModuleNotFoundError:  # Direct execution: python scripts/verify_v09_l0.py
+    from check_v09_status import StatusCheckError, check_level_evidence
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PLAN = ROOT / "plans" / "v0.9-universal-byom"
+ALLOWED_LIFECYCLE_STATES = {
+    "planned",
+    "implementing",
+    "implemented",
+    "verified",
+    "accepted",
+}
+EXPECTED_LOOP_IDS = ["L0", "L1", "L2", "L3", "L4", "L5"]
+STATIC_L0_PATHS = (
+    "AGENTS.md",
+    "plans/v0.9-universal-byom/requirements.md",
+    "plans/v0.9-universal-byom/object-model.md",
+    "plans/v0.9-universal-byom/closure-matrix.md",
+    "plans/v0.9-universal-byom/acceptance-contract.md",
+    "plans/v0.9-universal-byom/baseline-evidence.json",
+    "scripts/check_v09_status.py",
+    "scripts/verify_v09_l0.py",
+)
+PYTHON_REGRESSION_COMMAND = ".venv/bin/python -m unittest discover -s tests"
+NODE_REGRESSION_COMMAND = "npm run check && npm test"
+NODE_REGRESSION_WORKDIR = "integrations/deepseek-harness"
+_FULL_COMMIT = re.compile(r"[0-9a-f]{40}")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 def _read(path: Path) -> str:
@@ -27,10 +55,10 @@ def _json(path: Path) -> dict:
     return value
 
 
-def _git_blob(commit: str, path: str) -> bytes:
+def _git_blob(commit: str, path: str, *, repository: Path = ROOT) -> bytes:
     return subprocess.run(
         ["git", "show", f"{commit}:{path}"],
-        cwd=ROOT,
+        cwd=repository,
         check=True,
         capture_output=True,
     ).stdout
@@ -42,17 +70,150 @@ def _require(text: str, *needles: str) -> None:
         raise AssertionError(f"missing required contract terms: {missing}")
 
 
-def main() -> None:
-    tracked_status = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=no"],
-        cwd=ROOT,
+def validate_ledger_for_l0_gate(
+    ledger: dict,
+    *,
+    require_passed: bool = True,
+) -> list[dict]:
+    loops = ledger.get("loops")
+    if not isinstance(loops, list) or [item.get("loop_id") for item in loops] != EXPECTED_LOOP_IDS:
+        raise AssertionError("ledger must contain ordered L0-L5 loops")
+    planning_states = [item.get("status") for item in loops]
+    planning_states.extend(
+        task.get("status") for item in loops for task in item.get("tasks", [])
+    )
+    unsupported = set(planning_states) - ALLOWED_LIFECYCLE_STATES
+    if unsupported:
+        raise AssertionError(
+            f"transition ledger contains unsupported lifecycle states: {sorted(unsupported)}"
+        )
+    if not require_passed:
+        return loops
+    if loops[0].get("status") not in {"verified", "accepted"}:
+        raise AssertionError("L0 gate requires verified or accepted L0")
+    l0_tasks = loops[0].get("tasks", [])
+    if not isinstance(l0_tasks, list) or [task.get("id") for task in l0_tasks] != [
+        "MH-900",
+        "MH-901",
+        "MH-902",
+    ]:
+        raise AssertionError("L0 task inventory must be ordered MH-900 through MH-902")
+    task_states = {str(task.get("id")): task.get("status") for task in l0_tasks}
+    if task_states != {
+        "MH-900": "verified",
+        "MH-901": "verified",
+        "MH-902": "verified",
+    }:
+        raise AssertionError("L0 tasks MH-900 through MH-902 must be verified")
+    return loops
+
+
+def _regression_passed(
+    value: object,
+    *,
+    expected_command: str,
+    minimum_total: int,
+    expected_workdir: str | None = None,
+) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("command") == expected_command
+        and (expected_workdir is None or value.get("workdir") == expected_workdir)
+        and type(value.get("exit_code")) is int
+        and value["exit_code"] == 0
+        and type(value.get("passed")) is int
+        and type(value.get("total")) is int
+        and value["total"] >= minimum_total
+        and value["passed"] == value["total"]
+        and isinstance(value.get("report_sha256"), str)
+        and _SHA256.fullmatch(value["report_sha256"]) is not None
+    )
+
+
+def _ordered_loops(ledger: dict) -> list[dict]:
+    return validate_ledger_for_l0_gate(ledger, require_passed=False)
+
+
+def _l0_task_states(loop: dict) -> tuple[list[str], list[object]]:
+    tasks = loop.get("tasks", [])
+    if not isinstance(tasks, list):
+        raise AssertionError("L0 tasks must be a list")
+    return (
+        [str(task.get("id")) for task in tasks],
+        [task.get("status") for task in tasks],
+    )
+
+
+def validate_l0_transition(
+    repository: Path,
+    pre_gate_commit: str,
+    source_commit: str,
+) -> None:
+    if _FULL_COMMIT.fullmatch(pre_gate_commit) is None:
+        raise AssertionError("pre_gate_commit must be a full 40-character commit")
+    if _FULL_COMMIT.fullmatch(source_commit) is None:
+        raise AssertionError("source_commit must be a full 40-character commit")
+    if pre_gate_commit == source_commit:
+        raise AssertionError("pre_gate_commit must differ from source_commit")
+    subprocess.run(
+        ["git", "cat-file", "-e", f"{pre_gate_commit}^{{commit}}"],
+        cwd=repository,
         check=True,
         capture_output=True,
-        text=True,
-    ).stdout.strip()
-    if tracked_status:
-        raise AssertionError("L0 gate requires a clean tracked worktree")
+    )
+    subprocess.run(
+        ["git", "cat-file", "-e", f"{source_commit}^{{commit}}"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "merge-base", "--is-ancestor", pre_gate_commit, source_commit],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    pre_ledger = json.loads(
+        _git_blob(
+            pre_gate_commit,
+            "plans/v0.9-universal-byom/loop-tasks.json",
+            repository=repository,
+        )
+    )
+    source_ledger = json.loads(
+        _git_blob(
+            source_commit,
+            "plans/v0.9-universal-byom/loop-tasks.json",
+            repository=repository,
+        )
+    )
+    pre_loops = _ordered_loops(pre_ledger)
+    source_loops = _ordered_loops(source_ledger)
+    if pre_loops[0].get("status") != "implemented":
+        raise AssertionError("pre-gate L0 must be implemented")
+    if source_loops[0].get("status") != "verified":
+        raise AssertionError("source L0 must be verified")
+    expected_ids = ["MH-900", "MH-901", "MH-902"]
+    pre_ids, pre_states = _l0_task_states(pre_loops[0])
+    source_ids, source_states = _l0_task_states(source_loops[0])
+    if pre_ids != expected_ids or pre_states != ["implemented"] * 3:
+        raise AssertionError("pre-gate MH-900 through MH-902 must be implemented")
+    if source_ids != expected_ids or source_states != ["verified"] * 3:
+        raise AssertionError("source MH-900 through MH-902 must be verified")
+    if pre_loops[1:] != source_loops[1:]:
+        raise AssertionError("L1-L5 must be identical across the L0 transition")
+    normalized_pre_l0 = json.loads(json.dumps(pre_loops[0]))
+    normalized_source_l0 = json.loads(json.dumps(source_loops[0]))
+    normalized_pre_l0["status"] = normalized_source_l0["status"] = "<l0-status>"
+    for task in normalized_pre_l0["tasks"]:
+        task["status"] = "<l0-task-status>"
+    for task in normalized_source_l0["tasks"]:
+        task["status"] = "<l0-task-status>"
+    if normalized_pre_l0 != normalized_source_l0:
+        raise AssertionError("L0 may change only its loop and task statuses")
 
+
+def main() -> None:
     required = {
         "agents": ROOT / "AGENTS.md",
         "requirements": PLAN / "requirements.md",
@@ -72,45 +233,18 @@ def main() -> None:
     baseline = _json(required["baseline"])
     l0_evidence = _json(required["l0_evidence"])
 
+    try:
+        evidence_status = check_level_evidence(ROOT, required["l0_evidence"])
+    except StatusCheckError as exc:
+        raise AssertionError(f"L0 evidence status invalid: {exc}") from exc
+    if not evidence_status.is_current:
+        raise AssertionError(
+            "L0 evidence owned paths changed: " + ", ".join(evidence_status.changed_paths)
+        )
+
     if ledger.get("iteration") != "v0.9 Universal BYOM":
         raise AssertionError("unexpected iteration ledger")
-    loops = ledger.get("loops")
-    if not isinstance(loops, list) or [item.get("loop_id") for item in loops] != [
-        "L0",
-        "L1",
-        "L2",
-        "L3",
-        "L4",
-        "L5",
-    ]:
-        raise AssertionError("ledger must contain ordered L0-L5 loops")
-    allowed_planning_states = {"planned", "implementing", "verified"}
-    planning_states = [item.get("status") for item in loops]
-    planning_states.extend(
-        task.get("status") for item in loops for task in item.get("tasks", [])
-    )
-    if set(planning_states) - allowed_planning_states:
-        raise AssertionError("L0 transition ledger contains an unsupported lifecycle state")
-    if loops[0].get("status") != "verified" or any(
-        task.get("status") != "verified" for task in loops[0].get("tasks", [])
-    ):
-        raise AssertionError("L0 and its tasks must be verified after the machine gate")
-    if loops[1].get("status") != "implementing":
-        raise AssertionError("L1 must be implementing after the L0 transition")
-    l1_task_states = [task.get("status") for task in loops[1].get("tasks", [])]
-    if l1_task_states != ["implementing", "planned", "planned"]:
-        raise AssertionError("expected only the first dependency-safe L1 task to be implementing")
-    if any(item.get("status") != "planned" for item in loops[2:]):
-        raise AssertionError("L2-L5 must remain planned at the L0 exit gate")
-    if any(
-        task.get("status") != "planned"
-        for item in loops[2:]
-        for task in item.get("tasks", [])
-    ):
-        raise AssertionError("L2-L5 tasks must remain planned at the L0 exit gate")
-    current_decisions = ledger.get("confirmed_decisions", [])
-    if len(current_decisions) != 9:
-        raise AssertionError("confirmed product decisions are incomplete")
+    loops = validate_ledger_for_l0_gate(ledger)
 
     if baseline.get("iteration") != "v0.9-universal-byom":
         raise AssertionError("baseline iteration mismatch")
@@ -136,8 +270,9 @@ def main() -> None:
         raise AssertionError("L0 evidence does not record a passed gate")
     if l0_evidence.get("baseline_commit") != resolved_baseline_commit:
         raise AssertionError("L0 evidence does not bind the full baseline commit")
+    pre_gate_commit = str(l0_evidence.get("pre_gate_commit", ""))
     source_commit = str(l0_evidence.get("source_commit", ""))
-    if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
+    if _FULL_COMMIT.fullmatch(source_commit) is None:
         raise AssertionError("L0 evidence source_commit must be a full 40-character commit")
     subprocess.run(
         ["git", "cat-file", "-e", f"{source_commit}^{{commit}}"],
@@ -155,8 +290,16 @@ def main() -> None:
     )
     if l0_evidence.get("producer_commit") != source_commit:
         raise AssertionError("L0 evidence producer_commit must equal source_commit")
+    validate_l0_transition(ROOT, pre_gate_commit, source_commit)
+    source_ledger = json.loads(
+        _git_blob(source_commit, "plans/v0.9-universal-byom/loop-tasks.json")
+    )
+    source_decisions = source_ledger.get("confirmed_decisions", [])
+    if not isinstance(source_decisions, list) or len(source_decisions) != 9:
+        raise AssertionError("source confirmed product decisions are incomplete")
     expected_transition = {
-        "pre_gate": "implementing",
+        "pre_gate_commit": pre_gate_commit,
+        "pre_gate": "implemented",
         "gate_result": "passed",
         "post_gate": "verified",
         "authority": "ITERATION-PLAN.md#V0",
@@ -165,9 +308,9 @@ def main() -> None:
     if l0_evidence.get("status_transition") != expected_transition:
         raise AssertionError("L0 status transition evidence mismatch")
     if l0_evidence.get("structural_gate", {}).get("confirmed_decisions") != len(
-        current_decisions
+        source_decisions
     ):
-        raise AssertionError("current confirmed decision count mismatch")
+        raise AssertionError("source confirmed decision count mismatch")
     browser = l0_evidence.get("browser", {})
     if browser.get("desktop", {}).get("viewport") != "1440x900":
         raise AssertionError("desktop browser evidence is missing")
@@ -179,25 +322,21 @@ def main() -> None:
             raise AssertionError(f"{viewport} browser evidence contains horizontal overflow")
         if result.get("tiny_visible_targets") != 0:
             raise AssertionError(f"{viewport} browser evidence contains tiny visible targets")
-    if l0_evidence.get("regression", {}).get("python") != {"passed": 163, "total": 163}:
+    if not _regression_passed(
+        l0_evidence.get("regression", {}).get("python"),
+        expected_command=PYTHON_REGRESSION_COMMAND,
+        minimum_total=330,
+    ):
         raise AssertionError("Python regression evidence mismatch")
-    if l0_evidence.get("regression", {}).get("node") != {"passed": 20, "total": 20}:
+    if not _regression_passed(
+        l0_evidence.get("regression", {}).get("node"),
+        expected_command=NODE_REGRESSION_COMMAND,
+        minimum_total=30,
+        expected_workdir=NODE_REGRESSION_WORKDIR,
+    ):
         raise AssertionError("Node regression evidence mismatch")
 
-    artifact_paths = {
-        "AGENTS.md": required["agents"],
-        "requirements.md": required["requirements"],
-        "object-model.md": required["objects"],
-        "closure-matrix.md": required["closure"],
-        "acceptance-contract.md": required["acceptance"],
-        "baseline-evidence.json": required["baseline"],
-        "ITERATION-PLAN.md": required["iteration_plan"],
-        "index.html": required["workbench"],
-        "styles.css": required["styles"],
-        "workbench.js": required["javascript"],
-        "loop-tasks.json": required["ledger"],
-        "scripts/verify_v09_l0.py": ROOT / "scripts" / "verify_v09_l0.py",
-    }
+    artifact_paths = {path: ROOT / path for path in STATIC_L0_PATHS}
     recorded_hashes = l0_evidence.get("artifact_sha256", {})
     if set(recorded_hashes) != set(artifact_paths):
         raise AssertionError("L0 evidence artifact hash inventory mismatch")
@@ -206,37 +345,13 @@ def main() -> None:
         if recorded_hashes.get(name) != actual:
             raise AssertionError(f"L0 evidence artifact hash mismatch: {name}")
 
-    stable_source_paths = {
-        "AGENTS.md": "AGENTS.md",
-        "requirements.md": "plans/v0.9-universal-byom/requirements.md",
-        "object-model.md": "plans/v0.9-universal-byom/object-model.md",
-        "closure-matrix.md": "plans/v0.9-universal-byom/closure-matrix.md",
-        "acceptance-contract.md": "plans/v0.9-universal-byom/acceptance-contract.md",
-        "baseline-evidence.json": "plans/v0.9-universal-byom/baseline-evidence.json",
-        "ITERATION-PLAN.md": "plans/v0.9-universal-byom/ITERATION-PLAN.md",
-        "index.html": "plans/v0.9-universal-byom/index.html",
-        "styles.css": "plans/v0.9-universal-byom/styles.css",
-        "workbench.js": "plans/v0.9-universal-byom/workbench.js",
-        "scripts/verify_v09_l0.py": "scripts/verify_v09_l0.py",
-    }
-    for name, repo_path in stable_source_paths.items():
+    owned_paths = l0_evidence.get("owned_paths")
+    if owned_paths != list(STATIC_L0_PATHS):
+        raise AssertionError("L0 evidence owned_paths inventory mismatch")
+    for repo_path in STATIC_L0_PATHS:
         source_hash = hashlib.sha256(_git_blob(source_commit, repo_path)).hexdigest()
-        if source_hash != recorded_hashes[name]:
-            raise AssertionError(f"source commit blob mismatch: {name}")
-
-    source_ledger = json.loads(
-        _git_blob(source_commit, "plans/v0.9-universal-byom/loop-tasks.json")
-    )
-    source_loops = source_ledger.get("loops", [])
-    if not source_loops or source_loops[0].get("status") != "implementing":
-        raise AssertionError("source commit must preserve the pre-gate L0 state")
-    if any(task.get("status") != "implementing" for task in source_loops[0].get("tasks", [])):
-        raise AssertionError("source commit L0 tasks must all be implementing")
-    source_loops[0]["status"] = "verified"
-    for task in source_loops[0].get("tasks", []):
-        task["status"] = "verified"
-    if source_ledger != ledger:
-        raise AssertionError("loop ledger changed beyond the authorized L0 status transition")
+        if source_hash != recorded_hashes[repo_path]:
+            raise AssertionError(f"source commit blob mismatch: {repo_path}")
 
     combined = "\n".join(texts.values())
     _require(
@@ -263,10 +378,9 @@ def main() -> None:
     )
     _require(
         texts["acceptance"],
-        "本轮 L0 合同创建不得预填这些状态",
-        "所有 L0–L5 状态仍为 `planned / implementing`",
+        "planned / implementing / implemented",
+        "`verified` 只由绑定冻结 commit 的机器证据产生",
     )
-    _require(texts["iteration_plan"], "V0 全部完成后再改回")
     if sum(texts["objects"].count(term) for term in ("patch_origin", "accelerator_policy")) < 4:
         raise AssertionError("V0 object-model patch and accelerator policy gate failed")
     forbidden_terms = {
@@ -308,7 +422,7 @@ def main() -> None:
         "tasks": sum(len(item.get("tasks", [])) for item in loops),
         "closure_rows": len(closure_ids),
         "baseline_confirmed_decisions": len(decisions),
-        "confirmed_decisions": len(current_decisions),
+        "confirmed_decisions": len(source_decisions),
         "required_files": len(required),
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))

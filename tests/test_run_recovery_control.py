@@ -105,7 +105,13 @@ class RunRecoveryApiTests(unittest.TestCase):
                 workspace = app.state.training_workspace
                 task_path = workspace.tasks_dir / task_id / "task.json"
                 contract = read_json(workspace._contract_path(task_id))  # noqa: SLF001
-                failed_run = prepare_run(contract, runs_dir, run_id="failed-original")
+                failed_run = prepare_run(
+                    contract,
+                    runs_dir,
+                    run_id="failed-original",
+                    workspace_task_id=task_id,
+                    workspace_root=workspace.root,
+                )
                 RunState.load(failed_run).fail("synthetic worker failure for retry contract test")
                 persisted = read_json(task_path)
                 persisted.update(

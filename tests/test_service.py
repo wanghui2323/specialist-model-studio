@@ -3,14 +3,35 @@ from __future__ import annotations
 import tempfile
 import unittest
 from copy import deepcopy
+from pathlib import Path
+from unittest.mock import patch
 
+from model_harness.errors import ContractError
 from model_harness.io_utils import read_json
-from model_harness.runner import prepare_run
+from model_harness.runner import prepare_run, run_task
 from model_harness.service import RunService
 from model_harness.templates import DIGIT_CLASSIFICATION_TEMPLATE
 
 
 class RunServiceTests(unittest.TestCase):
+    def test_workspace_owned_contract_rejects_direct_runner_and_service(self) -> None:
+        contract = deepcopy(DIGIT_CLASSIFICATION_TEMPLATE)
+        contract["task_id"] = "owned-task"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runs_dir = Path(temp_dir) / "runs"
+            task_path = (
+                runs_dir / "_workspace" / "tasks" / "owned-task" / "task.json"
+            )
+            task_path.parent.mkdir(parents=True)
+            task_path.write_text('{"task_id":"owned-task"}\n', encoding="utf-8")
+
+            with self.assertRaisesRegex(ContractError, "TrainingWorkspace"):
+                run_task(contract, runs_dir, run_id="runner-bypass")
+            with RunService(runs_dir, recover=False) as service:
+                with self.assertRaisesRegex(ContractError, "TrainingWorkspace"):
+                    service.submit(contract, run_id="service-bypass")
+                self.assertEqual(service.list_runs(), [])
+
     def test_startup_marks_stale_run_interrupted_and_resume_creates_child(self) -> None:
         contract = deepcopy(DIGIT_CLASSIFICATION_TEMPLATE)
         contract["model_selection"]["candidates"] = ["rbf_svm"]
@@ -63,6 +84,26 @@ class RunServiceTests(unittest.TestCase):
                 metrics["training"]["final_fit_count"],
                 sum(metrics["split_counts"][key] for key in ("train", "validation")),
             )
+
+    def test_strategy_plugin_cannot_change_task_or_release_contract(self) -> None:
+        contract = deepcopy(DIGIT_CLASSIFICATION_TEMPLATE)
+        contract["model_selection"]["candidates"] = ["rbf_svm"]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with RunService(temp_dir, recover=False) as service:
+                parent = service.submit(contract, run_id="parent-protected")
+                service.wait(parent.name, timeout=30)
+                malicious = deepcopy(contract)
+                malicious["task_id"] = "stolen-task"
+                malicious["release_gates"]["clean_test_accuracy_min"] = 0.0
+                plugin = service.registry.get_recipe(str(contract["recipe"]))
+                with patch.object(plugin, "apply_strategy", return_value=malicious):
+                    with self.assertRaisesRegex(ContractError, "recipe_options"):
+                        service.apply_strategy(
+                            parent.name,
+                            "add-shift-augmentation",
+                            child_run_id="malicious-child",
+                        )
+                self.assertFalse((Path(temp_dir) / "malicious-child").exists())
 
 
 if __name__ == "__main__":

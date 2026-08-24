@@ -123,6 +123,10 @@ main { min-width: 0; overflow: auto; padding: 24px clamp(18px, 2.4vw, 36px) 48px
 .task-copy { min-width: 0; display: grid; gap: 4px; }
 .task-copy b { display: -webkit-box; overflow: hidden; color: var(--ink); font-size: 13px; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .task-copy small, .task-acceptance { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.task-acceptance { min-width: 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.task-acceptance small { font-size: 11px; line-height: 1.4; }
+.task-evidence { color: var(--muted); }
+.task-blockers { color: var(--red); }
 .task-status { min-height: 26px; display: grid; place-items: center; padding: 0 8px; border-radius: 999px; color: var(--muted); background: #eef0f3; font-size: 11px; font-weight: 700; }
 .task-status[data-state="implementing"] { color: var(--amber); background: var(--amber-soft); }
 .task-status[data-state="verified"], .task-status[data-state="accepted"] { color: var(--teal); background: var(--teal-soft); }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -19,6 +20,7 @@ from model_harness.repository_analysis_store import (
 
 SNAPSHOT_ID = "source-snapshot-r1-abc123def456"
 SNAPSHOT_DIGEST = "a" * 64
+SNAPSHOT_COMMIT = "c" * 40
 
 
 class RepositoryAnalysisStoreTests(unittest.TestCase):
@@ -40,6 +42,7 @@ class RepositoryAnalysisStoreTests(unittest.TestCase):
             self.task_id,
             snapshot_id=SNAPSHOT_ID,
             snapshot_digest=SNAPSHOT_DIGEST,
+            expected_resolved_commit=SNAPSHOT_COMMIT,
             analyzer_version="repository-analysis/0.2",
             manual_mapping_revision_id=mapping_revision_id,
         )
@@ -59,6 +62,10 @@ class RepositoryAnalysisStoreTests(unittest.TestCase):
             self.task_id,
             attempt_id,
             analysis={
+                "task_id": self.task_id,
+                "source_snapshot_id": SNAPSHOT_ID,
+                "resolved_commit": SNAPSHOT_COMMIT,
+                "analyzer_version": "repository-analysis/0.2",
                 "status": "complete",
                 "execution_policy": "static_only_never_execute",
                 "frameworks": [{"name": "pytorch", "evidence_refs": ["train.py:1"]}],
@@ -143,7 +150,13 @@ class RepositoryAnalysisStoreTests(unittest.TestCase):
             self.store.complete(
                 self.task_id,
                 attempt_id,
-                analysis={"status": "complete"},
+                analysis={
+                    "task_id": self.task_id,
+                    "source_snapshot_id": SNAPSHOT_ID,
+                    "resolved_commit": SNAPSHOT_COMMIT,
+                    "analyzer_version": "repository-analysis/0.2",
+                    "status": "complete",
+                },
             )
 
         self.store.mark_running(self.task_id, attempt_id)
@@ -159,6 +172,72 @@ class RepositoryAnalysisStoreTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ContractError, "invalid analysis transition"):
             self.store.mark_running(self.task_id, attempt_id)
+
+    def test_completed_result_must_match_attempt_task_snapshot_and_analyzer(self) -> None:
+        created = self._create_attempt()
+        attempt_id = created["attempt"]["attempt_id"]
+        self.store.mark_running(self.task_id, attempt_id)
+        base = {
+            "task_id": self.task_id,
+            "source_snapshot_id": SNAPSHOT_ID,
+            "resolved_commit": SNAPSHOT_COMMIT,
+            "analyzer_version": "repository-analysis/0.2",
+            "status": "complete",
+        }
+        for field, value in (
+            ("task_id", "other-task"),
+            ("source_snapshot_id", "other-snapshot"),
+            ("resolved_commit", "d" * 40),
+            ("analyzer_version", "repository-analysis/9.9"),
+        ):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ContractError, field):
+                    self.store.complete(
+                        self.task_id,
+                        attempt_id,
+                        analysis={**base, field: value},
+                    )
+        completed = self.store.complete(
+            self.task_id,
+            attempt_id,
+            analysis=base,
+        )
+        self.assertEqual(completed["current_state"]["status"], "completed")
+
+    def test_legacy_attempt_without_commit_field_remains_listable(self) -> None:
+        created = self._create_attempt()
+        attempt_id = created["attempt"]["attempt_id"]
+        attempt_path = (
+            self.root
+            / "tasks"
+            / self.task_id
+            / "repository_analysis_lifecycle"
+            / "attempts"
+            / attempt_id
+            / "attempt.json"
+        )
+        legacy = json.loads(attempt_path.read_text(encoding="utf-8"))
+        legacy.pop("expected_resolved_commit")
+        unsigned = {
+            key: value for key, value in legacy.items() if key != "content_digest"
+        }
+        legacy["content_digest"] = hashlib.sha256(
+            json.dumps(
+                unsigned,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        write_json(attempt_path, legacy)
+
+        records = RepositoryAnalysisStore(self.root).list_attempts(
+            self.task_id,
+            snapshot_id=SNAPSHOT_ID,
+        )
+        self.assertEqual(len(records), 1)
+        self.assertNotIn("expected_resolved_commit", records[0])
 
     def test_manual_mapping_revisions_do_not_overwrite_prior_analysis(self) -> None:
         first_mapping = self.store.create_manual_mapping_revision(
@@ -179,6 +258,10 @@ class RepositoryAnalysisStoreTests(unittest.TestCase):
             self.task_id,
             first_id,
             analysis={
+                "task_id": self.task_id,
+                "source_snapshot_id": SNAPSHOT_ID,
+                "resolved_commit": SNAPSHOT_COMMIT,
+                "analyzer_version": "repository-analysis/0.2",
                 "status": "complete",
                 "training_entrypoint": "scripts/train.py",
             },
@@ -318,6 +401,7 @@ class RepositoryAnalysisStoreTests(unittest.TestCase):
             self.task_id,
             snapshot_id=SNAPSHOT_ID,
             snapshot_digest=SNAPSHOT_DIGEST,
+            expected_resolved_commit=SNAPSHOT_COMMIT,
             analyzer_version="repository-analysis/0.2",
         )
         other_lifecycle = (
@@ -412,6 +496,7 @@ class RepositoryAnalysisStoreTests(unittest.TestCase):
                 linked_task,
                 snapshot_id=SNAPSHOT_ID,
                 snapshot_digest=SNAPSHOT_DIGEST,
+                expected_resolved_commit=SNAPSHOT_COMMIT,
                 analyzer_version="repository-analysis/0.2",
             )
         self.assertEqual(list(outside.iterdir()), [])
@@ -437,6 +522,7 @@ class BindingAnalysisAttemptStoreTests(unittest.TestCase):
             resolution_digest="b" * 64,
             expected_resolved_commit="c" * 40,
             base_spec_revision=1,
+            analyzer_version="repository-analysis/0.4",
         )
 
     def test_attempt_is_visible_before_binding_and_retains_terminal_evidence(self) -> None:
@@ -471,6 +557,7 @@ class BindingAnalysisAttemptStoreTests(unittest.TestCase):
             resolution_digest="b" * 64,
             expected_resolved_commit="c" * 40,
             base_spec_revision=1,
+            analyzer_version="repository-analysis/0.4",
         )
         self.assertEqual(retried["attempt"]["retry_of_attempt_id"], attempt_id)
 
@@ -492,6 +579,107 @@ class BindingAnalysisAttemptStoreTests(unittest.TestCase):
             current["current_state"]["failure"]["details"]["previous_status"],
             "running",
         )
+
+    def test_cancel_is_durable_terminal_evidence_and_can_be_retried(self) -> None:
+        queued = self.create_attempt()
+        attempt_id = queued["attempt"]["attempt_id"]
+        cancelled = self.store.cancel(
+            self.task_id,
+            attempt_id,
+            reason="用户取消来源读取",
+        )
+        self.assertEqual(cancelled["current_state"]["status"], "cancelled")
+        self.assertEqual(
+            cancelled["current_state"]["cancellation"]["reason"],
+            "用户取消来源读取",
+        )
+        with self.assertRaises(ContractError):
+            self.store.mark_running(self.task_id, attempt_id)
+
+        restarted = BindingAnalysisAttemptStore(self.root)
+        persisted = restarted.current_attempt(self.task_id)
+        self.assertEqual(persisted["current_state"]["status"], "cancelled")
+        retried = restarted.create_attempt(
+            self.task_id,
+            resolution_id="source-resolution-r1-abc123def456",
+            resolution_digest="b" * 64,
+            expected_resolved_commit="c" * 40,
+            base_spec_revision=1,
+            analyzer_version="repository-analysis/0.4",
+        )
+        self.assertEqual(retried["attempt"]["retry_of_attempt_id"], attempt_id)
+
+    def test_resolution_tuple_cannot_change_under_existing_resolution_id(self) -> None:
+        created = self.create_attempt()
+        self.store.fail(
+            self.task_id,
+            created["attempt"]["attempt_id"],
+            stage="source_snapshot",
+            code="fixture_failure",
+            message="fixture failure",
+            retryable=True,
+        )
+        with self.assertRaisesRegex(
+            RepositoryAnalysisIntegrityError,
+            "resolution identity changed",
+        ):
+            self.store.create_attempt(
+                self.task_id,
+                resolution_id="source-resolution-r1-abc123def456",
+                resolution_digest="d" * 64,
+                expected_resolved_commit="c" * 40,
+                base_spec_revision=1,
+                analyzer_version="repository-analysis/0.4",
+            )
+
+    def test_completed_result_is_bound_to_immutable_request_tuple(self) -> None:
+        created = self.create_attempt()
+        attempt_id = created["attempt"]["attempt_id"]
+        self.store.mark_running(self.task_id, attempt_id)
+        base_result = {
+            "resolution_id": "source-resolution-r1-abc123def456",
+            "binding_revision_id": "model-binding-r1-abc123def456",
+            "snapshot_id": SNAPSHOT_ID,
+            "analysis_id": "analysis_abc123def456",
+        }
+        with self.assertRaisesRegex(ContractError, "resolution_id"):
+            self.store.complete(
+                self.task_id,
+                attempt_id,
+                result={
+                    key: value
+                    for key, value in base_result.items()
+                    if key != "resolution_id"
+                },
+            )
+        mismatches = (
+            ("task_id", "other-task"),
+            ("resolution_id", "source-resolution-r1-other000000"),
+            ("resolution_digest", "d" * 64),
+            ("expected_resolved_commit", "d" * 40),
+            ("base_spec_revision", 2),
+            ("analyzer_version", "repository-analysis/9.9"),
+        )
+        for field, value in mismatches:
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ContractError, field):
+                    self.store.complete(
+                        self.task_id,
+                        attempt_id,
+                        result={**base_result, field: value},
+                    )
+
+        completed = self.store.complete(
+            self.task_id,
+            attempt_id,
+            result=base_result,
+        )
+        result = completed["current_state"]["result"]
+        self.assertEqual(result["task_id"], self.task_id)
+        self.assertEqual(result["resolution_digest"], "b" * 64)
+        self.assertEqual(result["expected_resolved_commit"], "c" * 40)
+        self.assertEqual(result["base_spec_revision"], 1)
+        self.assertEqual(result["analyzer_version"], "repository-analysis/0.4")
 
 
 if __name__ == "__main__":

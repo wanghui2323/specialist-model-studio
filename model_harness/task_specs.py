@@ -84,12 +84,19 @@ _FAMILY_SCOPED_CAPABILITY_FIELDS = (
 
 MODALITY_CLARIFICATION_FAMILIES: dict[str, tuple[str, ...]] = {
     "audio": ("audio_classification", "asr", "speech_synthesis", "custom"),
-    "image": ("image_classification", "ocr", "object_detection", "segmentation"),
+    "image": (
+        "image_classification",
+        "ocr",
+        "object_detection",
+        "segmentation",
+        "custom",
+    ),
     "tabular": (
         "tabular_classification",
         "tabular_regression",
         "time_series_forecasting",
         "anomaly_detection",
+        "custom",
     ),
     "text": ("text_classification", "named_entity_recognition", "custom"),
 }
@@ -158,6 +165,30 @@ FAMILY_ALIASES = {
 def normalize_family(value: Any) -> str | None:
     selected = str(value or "").strip().lower()
     return FAMILY_ALIASES.get(selected)
+
+
+def modality_from_candidate_families(values: list[Any]) -> str | None:
+    """Recover the clarified modality when the user selects ``custom``.
+
+    A custom task deliberately has no predeclared output family, but it should
+    not discard an already-established input modality such as image or audio.
+    The candidate set is backend-owned decision evidence, so it is safer than
+    guessing from arbitrary prose during the revision write.
+    """
+
+    families = {
+        normalized
+        for value in values
+        if (normalized := normalize_family(value)) not in {None, "custom"}
+    }
+    if not families:
+        return None
+    matches = [
+        modality
+        for modality, candidates in MODALITY_CLARIFICATION_FAMILIES.items()
+        if families <= (set(candidates) - {"custom"})
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def capability_for_family(
@@ -270,6 +301,17 @@ def capability_decision(
     looks_image = _looks_image(text, modality)
     looks_tabular = _looks_tabular(text, modality)
     looks_text = _looks_text(text, modality)
+    explicit_custom_intent = _contains_any(
+        text,
+        "其他专用模型能力",
+        "其他专用模型",
+        "自定义模型能力",
+        "自定义输入输出",
+        "custom model",
+        "custom output",
+    )
+    if explicit_custom_intent:
+        reason_codes.append("text_explicitly_requests_custom_output")
 
     asr_intent = _contains_any(
         text,
@@ -467,6 +509,8 @@ def capability_decision(
             1.0,
             reason_codes,
         )
+    if explicit_custom_intent and explicit is None:
+        return _needs_confirmation("custom", reason_codes)
     conflicting = bool(
         explicit
         and strong_families
@@ -483,7 +527,7 @@ def capability_decision(
         return _resolved(explicit, "explicit_capability", 1.0, reason_codes)
     if len(strong_families) > 1:
         return _clarification(
-            sorted(strong_families, key=_family_sort_key),
+            sorted({*strong_families, "custom"}, key=_family_sort_key),
             "业务描述同时包含多种不同的输出形式",
             [*reason_codes, "multiple_output_families"],
         )
@@ -491,7 +535,7 @@ def capability_decision(
         inferred = next(iter(strong_families))
         if inferred == "ocr":
             return _clarification(
-                ["ocr", "image_classification", "object_detection"],
+                ["ocr", "image_classification", "object_detection", "custom"],
                 "你希望它读出文字、判断文档类别，还是定位文字区域？",
                 [*reason_codes, "ocr_output_requires_clarification"],
             )
@@ -499,7 +543,7 @@ def capability_decision(
     if generic_visual_recognition:
         return _clarification(
             list(MODALITY_CLARIFICATION_FAMILIES["image"]),
-            "你希望图片模型输出类别、文字、目标位置，还是分割区域？",
+            "你希望图片模型输出类别、文字、目标位置、分割区域，还是其他明确结果？",
             [*reason_codes, "generic_visual_recognition"],
         )
     if looks_audio:
@@ -511,13 +555,13 @@ def capability_decision(
     if looks_image:
         return _clarification(
             list(MODALITY_CLARIFICATION_FAMILIES["image"]),
-            "你希望图片模型输出类别、文字、目标位置，还是分割区域？",
+            "你希望图片模型输出类别、文字、目标位置、分割区域，还是其他明确结果？",
             [*reason_codes, "generic_image_task"],
         )
     if looks_tabular:
         return _clarification(
             list(MODALITY_CLARIFICATION_FAMILIES["tabular"]),
-            "你希望表格模型输出类别、数值、未来趋势，还是发现异常？",
+            "你希望表格模型输出类别、数值、未来趋势、异常，还是其他明确结果？",
             [*reason_codes, "generic_tabular_task"],
         )
     if looks_text:

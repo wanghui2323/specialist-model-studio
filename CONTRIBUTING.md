@@ -1,12 +1,12 @@
 # Contributing
 
-Specialist Model Studio is in alpha. Small, reviewable contributions that preserve its audit and safety boundaries are preferred.
+Specialist Model Studio is an unreleased release candidate under local review. The version label does not imply production readiness or GitHub release. Small, reviewable contributions that preserve its audit and safety boundaries are preferred.
 
 ## Local setup
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install -e '.[server]'
+.venv/bin/python -m pip install -e '.[server,test]'
 .venv/bin/python scripts/verify_project.py
 ```
 

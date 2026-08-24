@@ -22,7 +22,8 @@ LICENSE_POLICY_VERSION = "v0.9-permissive-allowlist-1"
 
 _DIGEST_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _TRAINING_SOURCE_NAME = re.compile(
-    r"^(?:train|trainer|finetune|fine[-_]?tune|run[-_].*|.*[-_](?:train|finetune))\.py$",
+    r"^(?:train|trainer|finetune|fine[-_]?tune|run[-_].*|"
+    r"(?:train|finetune|fine[-_]?tune)[-_].*|.*[-_](?:train|finetune))\.py$",
     re.IGNORECASE,
 )
 _DECLARATIVE_DOCUMENT_NAMES = {

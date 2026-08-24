@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
@@ -15,7 +16,7 @@ from .model_sources import (
 )
 
 
-ANALYZER_VERSION = "repository-analysis/0.2"
+ANALYZER_VERSION = "repository-analysis/0.4"
 MAX_SELECTED_DOCUMENTS = 64
 MAX_SELECTED_DOCUMENT_BYTES = 256 * 1024
 MAX_TOTAL_SELECTED_DOCUMENT_BYTES = 2 * 1024 * 1024
@@ -62,6 +63,20 @@ _TRAINING_TEXT_SIGNALS = (
     "accelerator.prepare(",
     "torchrun ",
     "accelerate launch ",
+)
+_INFERENCE_ENTRY_BASENAMES = {
+    "infer.py": 0.98,
+    "inference.py": 0.98,
+    "predict.py": 0.96,
+    "prediction.py": 0.9,
+    "serve.py": 0.88,
+}
+_INFERENCE_TEXT_SIGNALS = (
+    "model.eval(",
+    "pipeline(",
+    "model.predict(",
+    "predict_proba(",
+    "generate(",
 )
 _DEPENDENCY_BASENAMES = {
     "pyproject.toml": "python-project",
@@ -215,11 +230,49 @@ def _evidence_kind(reference: str) -> str:
     return "unknown"
 
 
-def _evidence_records(references: tuple[str, ...]) -> list[dict[str, str]]:
-    return [
-        {"kind": _evidence_kind(reference), "ref": reference}
-        for reference in references
-    ]
+_TEXT_EVIDENCE_PATTERN = re.compile(
+    r"^(?P<path>.+):L(?P<line>[1-9][0-9]*)#sha256=(?P<sha256>[0-9a-f]{64})$"
+)
+_MANIFEST_EVIDENCE_PATTERN = re.compile(
+    r"^manifest:(?P<sha256>[0-9a-f]{64}):(?P<path>.+)#basis=(?P<basis>[^#]+)$"
+)
+
+
+def _evidence_records(
+    references: tuple[str, ...],
+    *,
+    snapshot_id: str | None = None,
+    resolved_commit: str | None = None,
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for reference in references:
+        record: dict[str, Any] = {
+            "kind": _evidence_kind(reference),
+            "ref": reference,
+        }
+        if snapshot_id is not None:
+            record["snapshot_id"] = snapshot_id
+        if resolved_commit is not None:
+            record["resolved_commit"] = resolved_commit
+        text_match = _TEXT_EVIDENCE_PATTERN.match(reference)
+        if text_match is not None:
+            record.update(
+                {
+                    "path": text_match.group("path"),
+                    "line": int(text_match.group("line")),
+                    "document_sha256": text_match.group("sha256"),
+                }
+            )
+        manifest_match = _MANIFEST_EVIDENCE_PATTERN.match(reference)
+        if manifest_match is not None:
+            record["kind"] = "manifest_entry"
+            record["manifest_entry"] = {
+                "path": manifest_match.group("path"),
+                "tree_manifest_sha256": manifest_match.group("sha256"),
+                "basis": manifest_match.group("basis"),
+            }
+        records.append(record)
+    return records
 
 
 def _manifest_evidence(tree_sha256: str, path: str, basis: str) -> str:
@@ -231,11 +284,20 @@ class AnalysisSignal:
     name: str
     evidence_refs: tuple[str, ...]
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(
+        self,
+        *,
+        snapshot_id: str | None = None,
+        resolved_commit: str | None = None,
+    ) -> dict[str, Any]:
         return {
             "name": self.name,
             "evidence_refs": list(self.evidence_refs),
-            "evidence": _evidence_records(self.evidence_refs),
+            "evidence": _evidence_records(
+                self.evidence_refs,
+                snapshot_id=snapshot_id,
+                resolved_commit=resolved_commit,
+            ),
         }
 
 
@@ -245,12 +307,21 @@ class TaskCandidate:
     confidence: float
     evidence_refs: tuple[str, ...]
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(
+        self,
+        *,
+        snapshot_id: str | None = None,
+        resolved_commit: str | None = None,
+    ) -> dict[str, Any]:
         return {
             "task": self.task,
             "confidence": self.confidence,
             "evidence_refs": list(self.evidence_refs),
-            "evidence": _evidence_records(self.evidence_refs),
+            "evidence": _evidence_records(
+                self.evidence_refs,
+                snapshot_id=snapshot_id,
+                resolved_commit=resolved_commit,
+            ),
         }
 
 
@@ -260,12 +331,21 @@ class DependencyManifest:
     kind: str
     evidence_refs: tuple[str, ...] = ()
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(
+        self,
+        *,
+        snapshot_id: str | None = None,
+        resolved_commit: str | None = None,
+    ) -> dict[str, Any]:
         return {
             "path": self.path,
             "kind": self.kind,
             "evidence_refs": list(self.evidence_refs),
-            "evidence": _evidence_records(self.evidence_refs),
+            "evidence": _evidence_records(
+                self.evidence_refs,
+                snapshot_id=snapshot_id,
+                resolved_commit=resolved_commit,
+            ),
         }
 
 
@@ -275,12 +355,21 @@ class TrainingEntrypointCandidate:
     confidence: float
     evidence_refs: tuple[str, ...]
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(
+        self,
+        *,
+        snapshot_id: str | None = None,
+        resolved_commit: str | None = None,
+    ) -> dict[str, Any]:
         return {
             "path": self.path,
             "confidence": self.confidence,
             "evidence_refs": list(self.evidence_refs),
-            "evidence": _evidence_records(self.evidence_refs),
+            "evidence": _evidence_records(
+                self.evidence_refs,
+                snapshot_id=snapshot_id,
+                resolved_commit=resolved_commit,
+            ),
         }
 
 
@@ -290,12 +379,21 @@ class RepositoryRisk:
     severity: str
     evidence_refs: tuple[str, ...]
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(
+        self,
+        *,
+        snapshot_id: str | None = None,
+        resolved_commit: str | None = None,
+    ) -> dict[str, Any]:
         return {
             "code": self.code,
             "severity": self.severity,
             "evidence_refs": list(self.evidence_refs),
-            "evidence": _evidence_records(self.evidence_refs),
+            "evidence": _evidence_records(
+                self.evidence_refs,
+                snapshot_id=snapshot_id,
+                resolved_commit=resolved_commit,
+            ),
         }
 
 
@@ -306,13 +404,44 @@ class DownstreamBlocker:
     message: str
     evidence_refs: tuple[str, ...]
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(
+        self,
+        *,
+        snapshot_id: str | None = None,
+        resolved_commit: str | None = None,
+    ) -> dict[str, Any]:
         return {
             "code": self.code,
             "stage": self.stage,
             "message": self.message,
             "evidence_refs": list(self.evidence_refs),
-            "evidence": _evidence_records(self.evidence_refs),
+            "evidence": _evidence_records(
+                self.evidence_refs,
+                snapshot_id=snapshot_id,
+                resolved_commit=resolved_commit,
+            ),
+        }
+
+
+@dataclass(frozen=True)
+class BaseModelCandidate:
+    model_id: str
+    evidence_refs: tuple[str, ...]
+
+    def to_dict(
+        self,
+        *,
+        snapshot_id: str | None = None,
+        resolved_commit: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "model_id": self.model_id,
+            "evidence_refs": list(self.evidence_refs),
+            "evidence": _evidence_records(
+                self.evidence_refs,
+                snapshot_id=snapshot_id,
+                resolved_commit=resolved_commit,
+            ),
         }
 
 
@@ -338,8 +467,40 @@ class RepositoryAnalysis:
     task_candidates: tuple[TaskCandidate, ...] = ()
     metrics: tuple[AnalysisSignal, ...] = ()
     artifacts: tuple[AnalysisSignal, ...] = ()
+    inference_entrypoints: tuple[TrainingEntrypointCandidate, ...] = ()
+    base_model_candidates: tuple[BaseModelCandidate, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
+        evidence_context = {
+            "snapshot_id": self.source_snapshot_id,
+            "resolved_commit": self.resolved_commit,
+        }
+        frameworks = [
+            item.to_dict(**evidence_context) for item in self.frameworks
+        ]
+        task_candidates = [
+            item.to_dict(**evidence_context) for item in self.task_candidates
+        ]
+        dependencies = [
+            item.to_dict(**evidence_context) for item in self.dependency_manifests
+        ]
+        training_entrypoints = [
+            item.to_dict(**evidence_context) for item in self.training_entrypoints
+        ]
+        inference_entrypoints = [
+            item.to_dict(**evidence_context) for item in self.inference_entrypoints
+        ]
+        data_contracts = [
+            item.to_dict(**evidence_context) for item in self.data_contract_hints
+        ]
+        risks = [item.to_dict(**evidence_context) for item in self.risks]
+        entrypoints = [
+            {"kind": "train", "symbol": None, **item}
+            for item in training_entrypoints
+        ] + [
+            {"kind": "inference", "symbol": None, **item}
+            for item in inference_entrypoints
+        ]
         return {
             "analysis_id": self.analysis_id,
             "task_id": self.task_id,
@@ -351,23 +512,34 @@ class RepositoryAnalysis:
             "execution_policy": self.execution_policy,
             "license": self.license,
             "license_status": self.license_status,
-            "frameworks": [item.to_dict() for item in self.frameworks],
-            "task_candidates": [item.to_dict() for item in self.task_candidates],
-            "dependency_manifests": [
-                item.to_dict() for item in self.dependency_manifests
+            "frameworks": frameworks,
+            "task_candidates": task_candidates,
+            "entrypoints": entrypoints,
+            "data_contract_candidates": data_contracts,
+            "dependency_files": dependencies,
+            "risk_findings": risks,
+            "inference_entrypoints": inference_entrypoints,
+            "base_model_candidates": [
+                item.to_dict(**evidence_context)
+                for item in self.base_model_candidates
             ],
-            "training_entrypoints": [
-                item.to_dict() for item in self.training_entrypoints
+            # Backward-compatible projections used by the existing Workspace/UI.
+            "dependency_manifests": dependencies,
+            "training_entrypoints": training_entrypoints,
+            "data_contract_hints": data_contracts,
+            "weight_formats": [
+                item.to_dict(**evidence_context) for item in self.weight_formats
             ],
-            "data_contract_hints": [
-                item.to_dict() for item in self.data_contract_hints
+            "metrics": [
+                item.to_dict(**evidence_context) for item in self.metrics
             ],
-            "weight_formats": [item.to_dict() for item in self.weight_formats],
-            "metrics": [item.to_dict() for item in self.metrics],
-            "artifacts": [item.to_dict() for item in self.artifacts],
-            "risks": [item.to_dict() for item in self.risks],
+            "artifacts": [
+                item.to_dict(**evidence_context) for item in self.artifacts
+            ],
+            "risks": risks,
             "downstream_blockers": [
-                item.to_dict() for item in self.downstream_blockers
+                item.to_dict(**evidence_context)
+                for item in self.downstream_blockers
             ],
         }
 
@@ -380,9 +552,15 @@ class _SelectedText:
 
 
 def _line_evidence(document: _SelectedText, needle: str) -> str:
-    folded = document.text.casefold()
-    index = folded.find(needle.casefold())
-    line = document.text.count("\n", 0, max(index, 0)) + 1
+    selected = needle.casefold()
+    line = next(
+        (
+            line_number
+            for line_number, content in enumerate(document.text.splitlines(), start=1)
+            if selected in content.casefold()
+        ),
+        1,
+    )
     return f"{document.path}:L{line}#sha256={document.sha256}"
 
 
@@ -429,6 +607,12 @@ class StaticRepositoryAnalyzer:
             text_by_path,
             snapshot.tree_manifest_sha256,
         )
+        inference_entrypoints = _inference_entrypoints(
+            file_paths,
+            text_by_path,
+            snapshot.tree_manifest_sha256,
+        )
+        base_models = _base_model_candidates(selected_texts)
         data_hints = _data_contract_hints(selected_texts)
         weight_formats = _weight_formats(
             file_paths,
@@ -447,8 +631,16 @@ class StaticRepositoryAnalyzer:
             weight_formats=weight_formats,
         )
         blockers = _downstream_blockers(snapshot)
-        status = "complete" if entrypoints else "needs_manual_mapping"
-        next_action = _next_action(status=status, blockers=blockers)
+        status = _analysis_status(
+            snapshot=snapshot,
+            training_entrypoints=entrypoints,
+            risks=risks,
+        )
+        next_action = _next_action(
+            status=status,
+            blockers=blockers,
+            risks=risks,
+        )
         analysis_id = _analysis_id(snapshot)
 
         return RepositoryAnalysis(
@@ -472,6 +664,8 @@ class StaticRepositoryAnalyzer:
             task_candidates=task_candidates,
             metrics=metrics,
             artifacts=artifacts,
+            inference_entrypoints=inference_entrypoints,
+            base_model_candidates=base_models,
         )
 
 
@@ -660,7 +854,12 @@ def _training_entrypoints(
     for path in file_paths:
         pure_path = PurePosixPath(path)
         basename = pure_path.name.lower()
-        confidence = _TRAIN_ENTRY_BASENAMES.get(basename)
+        is_python_entrypoint = pure_path.suffix.lower() == ".py"
+        confidence = (
+            _TRAIN_ENTRY_BASENAMES.get(basename)
+            if is_python_entrypoint
+            else None
+        )
         evidence: list[str] = []
         if confidence is not None:
             evidence.append(
@@ -679,7 +878,7 @@ def _training_entrypoints(
                 _manifest_evidence(tree_manifest_sha256, path, "training-filename")
             )
 
-        document = text_by_path.get(path)
+        document = text_by_path.get(path) if is_python_entrypoint else None
         if document is not None:
             folded = document.text.casefold()
             matched = [signal for signal in _TRAINING_TEXT_SIGNALS if signal in folded]
@@ -697,6 +896,82 @@ def _training_entrypoints(
                 )
             )
     return tuple(sorted(selected, key=lambda item: (-item.confidence, item.path)))
+
+
+def _inference_entrypoints(
+    file_paths: tuple[str, ...],
+    text_by_path: dict[str, _SelectedText],
+    tree_manifest_sha256: str,
+) -> tuple[TrainingEntrypointCandidate, ...]:
+    selected: list[TrainingEntrypointCandidate] = []
+    for path in file_paths:
+        pure_path = PurePosixPath(path)
+        basename = pure_path.name.casefold()
+        is_python_entrypoint = pure_path.suffix.lower() == ".py"
+        confidence = (
+            _INFERENCE_ENTRY_BASENAMES.get(basename)
+            if is_python_entrypoint
+            else None
+        )
+        evidence: list[str] = []
+        if confidence is not None:
+            evidence.append(
+                _manifest_evidence(tree_manifest_sha256, path, "inference-filename")
+            )
+
+        document = text_by_path.get(path) if is_python_entrypoint else None
+        if document is not None:
+            folded = document.text.casefold()
+            matched = [
+                signal for signal in _INFERENCE_TEXT_SIGNALS if signal in folded
+            ]
+            if matched:
+                confidence = min(0.99, (confidence or 0.52) + 0.12)
+                evidence.extend(
+                    _line_evidence(document, signal) for signal in matched[:3]
+                )
+        if confidence is not None:
+            selected.append(
+                TrainingEntrypointCandidate(
+                    path=path,
+                    confidence=round(confidence, 2),
+                    evidence_refs=tuple(dict.fromkeys(evidence)),
+                )
+            )
+    return tuple(sorted(selected, key=lambda item: (-item.confidence, item.path)))
+
+
+_BASE_MODEL_PATTERNS = (
+    re.compile(r"from_pretrained\s*\(\s*['\"]([^'\"]+)['\"]", re.IGNORECASE),
+    re.compile(
+        r"model_name_or_path\s*=\s*['\"]([^'\"]+)['\"]",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _base_model_candidates(
+    selected_texts: tuple[_SelectedText, ...],
+) -> tuple[BaseModelCandidate, ...]:
+    evidence: dict[str, set[str]] = {}
+    for document in selected_texts:
+        for pattern in _BASE_MODEL_PATTERNS:
+            for match in pattern.finditer(document.text):
+                model_id = match.group(1).strip()
+                if not model_id or len(model_id) > 200 or any(
+                    character.isspace() for character in model_id
+                ):
+                    continue
+                evidence.setdefault(model_id, set()).add(
+                    _line_evidence(document, match.group(0))
+                )
+    return tuple(
+        BaseModelCandidate(
+            model_id=model_id,
+            evidence_refs=tuple(sorted(references)),
+        )
+        for model_id, references in sorted(evidence.items())
+    )
 
 
 def _data_contract_hints(
@@ -851,37 +1126,64 @@ def _repository_risks(
             for evidence_ref in item.evidence_refs:
                 add("unsafe_deserialization_format", "high", evidence_ref)
 
+    executable_text_suffixes = {
+        ".bat",
+        ".bash",
+        ".cmd",
+        ".ps1",
+        ".py",
+        ".pyx",
+        ".sh",
+        ".zsh",
+    }
     text_rules = {
         "dynamic_code_loading": (
-            "trust_remote_code=true",
-            "trust_remote_code = true",
-            "importlib.import_module(",
-            "__import__(",
-            "runpy.run_",
+            r"\btrust_remote_code\s*=\s*true\b",
+            r"\bimportlib\.import_module\s*\(",
+            r"(?<![\w.])__import__\s*\(",
+            r"\brunpy\.run_\w*\s*\(",
         ),
-        "direct_code_execution": ("exec(", "eval(", "os.system(", "subprocess."),
+        "direct_code_execution": (
+            r"(?<![\w.])exec\s*\(",
+            r"(?<![\w.])eval\s*\(",
+            r"\bos\.system\s*\(",
+            r"\bsubprocess\.",
+        ),
         "network_download_during_run": (
-            "requests.get(",
-            "urllib.request",
-            "snapshot_download(",
-            "hf_hub_download(",
-            "git clone ",
-            "curl ",
-            "wget ",
+            r"\brequests\.get\s*\(",
+            r"\burllib\.request\b",
+            r"\bsnapshot_download\s*\(",
+            r"\bhf_hub_download\s*\(",
+            r"\bgit\s+clone\s+",
+            r"\bcurl\s+",
+            r"\bwget\s+",
         ),
         "credential_access": (
-            "os.environ",
-            "getenv(",
-            "api_token",
-            "access_token",
+            r"\bos\.environ\b",
+            r"(?<![\w.])getenv\s*\(",
+            r"\bapi_token\b",
+            r"\baccess_token\b",
         ),
     }
     for document in selected_texts:
         folded = document.text.casefold()
-        for code, needles in text_rules.items():
-            for needle in needles:
-                if needle in folded:
-                    add(code, "high", _line_evidence(document, needle))
+        is_executable_text = (
+            PurePosixPath(document.path).suffix.casefold()
+            in executable_text_suffixes
+        )
+        for code, patterns in text_rules.items():
+            for pattern in patterns:
+                match = re.search(pattern, folded)
+                if match is None:
+                    continue
+                if is_executable_text:
+                    add(code, "high", _line_evidence(document, match.group(0)))
+                elif code == "network_download_during_run":
+                    add(
+                        "network_download_documentation",
+                        "medium",
+                        _line_evidence(document, match.group(0)),
+                    )
 
     return tuple(
         RepositoryRisk(
@@ -934,13 +1236,41 @@ def _downstream_blockers(snapshot: SourceSnapshot) -> tuple[DownstreamBlocker, .
     )
 
 
+def _analysis_status(
+    *,
+    snapshot: SourceSnapshot,
+    training_entrypoints: tuple[TrainingEntrypointCandidate, ...],
+    risks: tuple[RepositoryRisk, ...],
+) -> str:
+    policy = dict(snapshot.license_policy) or evaluate_license_policy(
+        snapshot.license, snapshot.license_status
+    )
+    has_blocking_risk = any(
+        item.severity.casefold() in {"critical", "high"} for item in risks
+    )
+    if policy.get("decision") == "deny" or has_blocking_risk:
+        return "blocked"
+    if not training_entrypoints:
+        return "needs_input"
+    return "complete"
+
+
 def _next_action(
     *,
     status: str,
     blockers: tuple[DownstreamBlocker, ...],
+    risks: tuple[RepositoryRisk, ...],
 ) -> str:
-    if status == "needs_manual_mapping":
+    if status == "needs_input":
         return "map_training_entrypoint"
+    if status == "blocked" and any(
+        item.code == "blocked_license_denied" for item in blockers
+    ):
+        return "resolve_license"
+    if status == "blocked" and any(
+        item.severity.casefold() in {"critical", "high"} for item in risks
+    ):
+        return "review_repository_risks"
     if blockers:
         return "resolve_license"
     return "ready_for_environment_check"

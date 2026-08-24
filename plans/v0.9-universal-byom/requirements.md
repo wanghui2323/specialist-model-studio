@@ -1,11 +1,12 @@
 # Specialist Model Studio v0.9 Universal BYOM 需求合同
 
 > 版本：v0.9 L0
-> 日期：2026-08-23
+> 日期：2026-08-23；边界修订：2026-08-24
 > 主对象：`TrainingTask`
 > 已确认来源：Hugging Face、GitHub
-> 决策状态：用户已确认本合同第 3 节的四项产品边界
+> 决策状态：用户已确认本合同第 3 节的六项产品边界
 > 交付状态：本文件创建只代表 `implemented`；必须经机器门禁成为 `verified`，再由用户对同一份证据确认后成为 `accepted`
+> V1–V3 与 L0–L5 的唯一映射：`VERTICAL-EXECUTION-PLAN.md`
 
 ## 1. 用户结果
 
@@ -111,12 +112,16 @@ Specialist Model Studio 面向不具备模型训练工程能力、但拥有业�
 
 | Loop | 用户可见结果 | 必做实现 | `verified` 退出门槛 | `accepted` 条件 |
 | --- | --- | --- | --- | --- |
-| L0 合同冻结 | 清楚知道产品承诺与限制 | 本需求、对象模型、闭环矩阵、基线证据 | 文件互相引用一致；所有 P0 有 owner、对象、负例和证据要求 | 用户确认四项冻结边界与 L1–L5 范围 |
+| L0 合同冻结 | 清楚知道产品承诺与限制 | 本需求、对象模型、闭环矩阵、基线证据 | 文件互相引用一致；所有 P0 有 owner、对象、负例和证据要求 | 用户确认六项冻结边界与 L1–L5 范围 |
 | L1 模型来源 | HF/GitHub 模型可绑定且不会漂移 | Provider、SourceSnapshot、静态 RepositoryAnalysis、许可门禁 | 两种来源固定 commit；刷新/重启后同 ID；分支漂移、未知许可、网络失败负例通过 | 用户确认来源交互与许可提示可理解 |
 | L2 环境资源 | 训练前知道本机能否运行 | EnvironmentLock、ResourceProbe、ResourceFitReport、计划版本 | 真实本机报告；资源不足禁止 Run；降级产生新 revision；重启可恢复 | 用户确认阻断与降级建议可决策 |
 | L3 隔离构建 | 系统能安全构建和修复训练方案 | 隔离 Worker、BuildAttempt Loop、QualificationRun、注册审批 | 越权文件/网络/进程负例被拦截；超时可强杀；主服务存活；失败重试不丢证据 | 用户确认执行权限、日志和审批体验 |
 | L4 通用训练 | 新模型无需改前端即可完成正式训练 | Worker 协议、schema UI、Register→Resume、正式 Run/Evaluation/Inference | HF 与 GitHub 两条真实纵向切片通过；同 `task_id`；无模型 ID 前端分支 | 用户确认两条真实结果可信可用 |
 | L5 盲测验收 | 用未参与开发的模型验证通用性 | 盲测、安全/资源负例、冷克隆、双视口 | 三个模型无 ID 硬编码；全部 P0 6/6；完整测试、重启、冷环境、1440/390 通过 | 用户对精确 commit 和证据包确认；GitHub 发布仍单独记录 |
+
+纵向版本与 Loop 的固定映射：V1 完成 L1 的 C01–C04，V2 追加 C05 后才允许 L1 退出；V3 完成 L2 的 C06、C07、C15。版本实现完成不能替代整层 `verified` 门，也不能把 V3 的分析/资源判断描述为完整 BYOM 已验证。
+
+V3 的资源终点是 analysis-only。若 `resource_estimate_basis.status=provisional`，系统不得生成 `ResourceFitReport`、`QualificationRun` 或 `TrainingRun`；必须返回 `blocked_resources`，标记 `retryable=false`，并只把 `continue_to_l3_qualification` 作为进入 L3 后续资格验证的交接动作。该动作不是 V3 内原地补齐或训练成功的承诺。
 
 ## 6. 工程状态与产品结果不得混用
 

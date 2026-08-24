@@ -15,6 +15,7 @@ from model_harness.resource_feasibility import (
     canonical_sha256,
     evaluate_resource_fit,
 )
+from model_harness.training_plans import TrainingPlanRevision
 
 
 SHA = "a" * 64
@@ -292,6 +293,60 @@ class EnvironmentLockTests(unittest.TestCase):
 
 
 class ResourceFitReportTests(unittest.TestCase):
+    def assert_directly_applicable_plan_patch(
+        self,
+        patch: dict,
+        *,
+        original_budget: dict,
+    ) -> None:
+        self.assertTrue(patch)
+        self.assertEqual(
+            set(patch) - {"resource_budget", "hyperparameters"},
+            set(),
+        )
+        revised_budget = {**original_budget, **patch.get("resource_budget", {})}
+        for value in patch.get("resource_budget", {}).values():
+            self.assertIs(type(value), int)
+            self.assertGreaterEqual(value, 0)
+        plan = TrainingPlanRevision.create(
+            training_plan_revision_id="plan_typed_alternative",
+            task_id="task_typed_alternative",
+            base_spec_revision=1,
+            source_snapshot_id="snapshot_fixture",
+            snapshot_digest="d" * 64,
+            analysis_id="analysis_fixture",
+            analysis_digest="e" * 64,
+            revision=1,
+            entrypoint={"argv": ["python", "train.py"], "working_dir": "/workspace/source"},
+            dataset_mapping={},
+            hyperparameters=patch.get("hyperparameters", {}),
+            evaluation={"metrics": [], "gates": {}},
+            artifact_contract={},
+            resource_budget=revised_budget,
+            execution_policy={
+                "backend": "oci",
+                "network_allowlist": [],
+                "secret_scopes": [],
+            },
+        ).to_dict()
+        self.assertEqual(plan["resource_budget"], revised_budget)
+
+    @staticmethod
+    def reseal_report(record: dict) -> dict:
+        semantic = {
+            key: value
+            for key, value in record.items()
+            if key not in {"resource_fit_report_id", "report_sha256"}
+        }
+        record["resource_fit_report_id"] = (
+            f"fit_{canonical_sha256(semantic)[:24]}"
+        )
+        unsigned = {
+            key: value for key, value in record.items() if key != "report_sha256"
+        }
+        record["report_sha256"] = canonical_sha256(unsigned)
+        return record
+
     def evaluate(
         self,
         probe: ResourceProbe,
@@ -333,7 +388,7 @@ class ResourceFitReportTests(unittest.TestCase):
             )
             self.assertIn(probe.probe_sha256, reason["evidence_ref"])
 
-    def test_insufficient_resources_block_with_new_plan_suggestion(self) -> None:
+    def test_moderate_resource_gap_returns_directly_applicable_revision(self) -> None:
         probe = ResourceProbe.from_observations(
             probe_observations(ram_bytes=2_000, disk_bytes=3_000)
         )
@@ -352,13 +407,46 @@ class ResourceFitReportTests(unittest.TestCase):
             resource_probe=probe,
         ).to_dict()
 
-        self.assertEqual(report["decision"], "blocked_resources")
+        self.assertEqual(report["decision"], "fit_with_revision")
         self.assertEqual(budget, original)
         self.assertTrue(report["alternatives"])
-        self.assertTrue(report["alternatives"][0]["creates_new_plan"])
+        plan_alternative = next(
+            item for item in report["alternatives"] if item["creates_new_plan"]
+        )
+        self.assert_directly_applicable_plan_patch(
+            plan_alternative["changes"], original_budget=budget
+        )
+        self.assertLessEqual(
+            plan_alternative["changes"]["resource_budget"]["ram_bytes"],
+            2_000,
+        )
+        self.assertLessEqual(
+            plan_alternative["changes"]["resource_budget"]["disk_bytes"],
+            3_000,
+        )
         codes = {reason["code"] for reason in report["reasons"]}
         self.assertIn("insufficient_ram", codes)
         self.assertIn("insufficient_disk", codes)
+
+    def test_extreme_resource_gap_stays_blocked_with_external_remediation(self) -> None:
+        probe = ResourceProbe.from_observations(
+            probe_observations(ram_bytes=1_000, disk_bytes=100_000_000_000)
+        )
+        report = self.evaluate(probe, ram_bytes=4_000_000_000).to_dict()
+
+        self.assertEqual(report["decision"], "blocked_resources")
+        self.assertTrue(report["alternatives"])
+        self.assertTrue(
+            all(not item["creates_new_plan"] for item in report["alternatives"])
+        )
+        remediation = report["alternatives"][0]["changes"][
+            "external_remediation"
+        ]
+        self.assertEqual(
+            remediation["action"],
+            "use_larger_host_or_manually_reduce_training_scope",
+        )
+        self.assertIn(probe.probe_sha256, remediation["evidence_ref"])
 
     def test_missing_container_runtime_blocks_environment(self) -> None:
         probe = ResourceProbe.from_observations(
@@ -369,6 +457,15 @@ class ResourceFitReportTests(unittest.TestCase):
         self.assertIn(
             "container_runtime_unavailable",
             {reason["code"] for reason in report["reasons"]},
+        )
+        self.assertTrue(
+            all(not item["creates_new_plan"] for item in report["alternatives"])
+        )
+        remediation = report["alternatives"][0]["changes"][
+            "external_remediation"
+        ]
+        self.assertEqual(
+            remediation["action"], "install_or_start_approved_oci_runtime"
         )
 
     def test_platform_mismatch_blocks_platform(self) -> None:
@@ -383,6 +480,9 @@ class ResourceFitReportTests(unittest.TestCase):
         codes = {reason["code"] for reason in report["reasons"]}
         self.assertIn("platform_os_mismatch", codes)
         self.assertIn("platform_arch_mismatch", codes)
+        self.assertTrue(
+            all(not item["creates_new_plan"] for item in report["alternatives"])
+        )
 
     def test_unverified_os_sandbox_worker_blocks_environment(self) -> None:
         probe = ResourceProbe.from_observations(
@@ -398,17 +498,31 @@ class ResourceFitReportTests(unittest.TestCase):
             {reason["code"] for reason in report["reasons"]},
         )
 
-    def test_gpu_budget_is_blocked_even_when_accelerator_is_detected(self) -> None:
+    def test_gpu_budget_returns_cpu_only_typed_revision(self) -> None:
         probe = ResourceProbe.from_observations(
             probe_observations(detected=("cuda",))
         )
         report = self.evaluate(probe, vram_bytes=1_000_000).to_dict()
-        self.assertEqual(report["decision"], "blocked_platform")
+        self.assertEqual(report["decision"], "fit_with_revision")
         self.assertIn(
             "accelerator_forbidden_by_cpu_only_policy",
             {reason["code"] for reason in report["reasons"]},
         )
-        self.assertEqual(report["alternatives"][0]["changes"]["resource_budget"]["vram_bytes"], 0)
+        alternative = next(
+            item for item in report["alternatives"] if item["creates_new_plan"]
+        )
+        self.assertEqual(
+            alternative["changes"]["resource_budget"]["vram_bytes"], 0
+        )
+        self.assert_directly_applicable_plan_patch(
+            alternative["changes"],
+            original_budget={
+                "max_seconds": 300,
+                "ram_bytes": 8_000_000_000,
+                "disk_bytes": 10_000_000_000,
+                "vram_bytes": 1_000_000,
+            },
+        )
 
     def test_unavailable_measurement_blocks_instead_of_guessing(self) -> None:
         probe = ResourceProbe.from_observations(probe_observations(ram_bytes=None))
@@ -418,6 +532,59 @@ class ResourceFitReportTests(unittest.TestCase):
             item for item in report["reasons"] if item["code"] == "ram_observation_unavailable"
         )
         self.assertEqual(reason["observed"], "unavailable")
+        self.assertTrue(
+            all(not item["creates_new_plan"] for item in report["alternatives"])
+        )
+
+    def test_resealed_untyped_plan_patch_is_rejected(self) -> None:
+        probe = ResourceProbe.from_observations(
+            probe_observations(ram_bytes=2_000, disk_bytes=3_000)
+        )
+        record = self.evaluate(
+            probe, ram_bytes=4_000, disk_bytes=5_000
+        ).to_dict()
+        alternative = next(
+            item for item in record["alternatives"] if item["creates_new_plan"]
+        )
+        alternative["changes"]["resource_budget"]["ram_bytes"] = "reduce"
+        self.reseal_report(record)
+
+        with self.assertRaisesRegex(
+            ResourceFeasibilityError,
+            "resource_budget.ram_bytes must be a non-negative integer",
+        ):
+            ResourceFitReport.from_dict(record)
+
+    def test_fit_with_revision_requires_a_plan_revision_alternative(self) -> None:
+        probe = ResourceProbe.from_observations(
+            probe_observations(ram_bytes=2_000, disk_bytes=3_000)
+        )
+        record = self.evaluate(
+            probe, ram_bytes=4_000, disk_bytes=5_000
+        ).to_dict()
+        record["alternatives"] = [
+            {
+                "changes": {
+                    "external_remediation": {
+                        "action": "use_another_host",
+                        "required": 4_000,
+                        "observed": 2_000,
+                        "evidence_ref": (
+                            f"ResourceProbe:{probe.probe_sha256}#/ram/available_bytes"
+                        ),
+                    }
+                },
+                "expected_effect": "use another host",
+                "creates_new_plan": False,
+            }
+        ]
+        self.reseal_report(record)
+
+        with self.assertRaisesRegex(
+            ResourceFeasibilityError,
+            "fit_with_revision requires a typed plan revision alternative",
+        ):
+            ResourceFitReport.from_dict(record)
 
     def test_tampered_report_digest_is_rejected(self) -> None:
         probe = ResourceProbe.from_observations(probe_observations())

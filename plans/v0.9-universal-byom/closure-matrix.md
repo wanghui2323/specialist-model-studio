@@ -51,7 +51,7 @@
 
 ### L0 — 合同冻结
 
-- `requirements.md`、`object-model.md`、`closure-matrix.md` 中四项边界一致；
+- `requirements.md`、`object-model.md`、`closure-matrix.md` 中六项边界一致；
 - C01–C15 每行都有对象效果、守卫、负例和证据；
 - `baseline-evidence.json` 精确记录 branch、commit、测试和当前能力；
 - 创建 `l0-evidence.json` 后才可把 L0 标记 `verified`；用户确认该证据后才可标记 `accepted`。
@@ -61,14 +61,14 @@
 - HF 与 GitHub 各完成一个公开仓库正例；tag/branch 均解析为不可变 commit；
 - 进程重启、任务列表重入和上游分支漂移后，原 snapshot hash 不变；
 - 未知/拒绝许可、无效 revision、私库无权限、下载 hash mismatch 负例通过；
-- C01–C06 全部达到 6/6，保存 `l1-evidence.json`。
+- C01–C05 全部达到 6/6，保存 `l1-evidence.json`。V1 只追加 C01–C04，V2 追加 C05 后才允许 L1 退出。
 
 ### L2 — 环境与资源
 
 - 在验收机器产生真实 ResourceProbe、EnvironmentLock 和 ResourceFitReport；
 - 至少一个 fit 正例、一个资源不足阻断、一个缺隔离环境阻断；
 - 应用 batch/precision/LoRA 等建议后产生新计划 revision，旧批准失效；
-- C07、C15 达到 6/6，保存 `l2-evidence.json`。
+- C06、C07、C15 达到 6/6，保存 `l2-evidence.json`；训练计划审批属于 L2，不得由 V1/V2 的来源分析证据代替。
 
 ### L3 — 隔离构建与资格试跑
 

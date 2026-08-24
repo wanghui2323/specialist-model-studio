@@ -189,13 +189,15 @@ def runtime_event(rpc_id: str, payload: dict[str, Any]) -> str:
 def attach_queued_run(app: Any, task_id: str, run_id: str) -> Path:
     contract = deepcopy(DIGIT_CLASSIFICATION_TEMPLATE)
     contract["task_id"] = task_id
+    workspace = app.state.training_workspace
     run_dir = prepare_run(
         contract,
         app.state.run_service.runs_dir,
         run_id=run_id,
         registry=app.state.run_service.registry,
+        workspace_task_id=task_id,
+        workspace_root=workspace.root,
     )
-    workspace = app.state.training_workspace
     task_path = workspace.root / "tasks" / task_id / "task.json"
     task = read_json(task_path)
     task["current_run_id"] = run_id

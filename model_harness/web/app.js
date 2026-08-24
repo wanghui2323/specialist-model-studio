@@ -18,7 +18,7 @@ const EVENT_LABELS = {
 const ui = Object.fromEntries([
   "sidebar", "sidebarScrim", "menuButton", "newTaskButton", "refreshButton", "taskList", "taskEyebrow", "taskTitle", "runtimePill", "conversationMain",
   "taskPlan", "taskPlanTitle", "taskPlanProgress", "emptyState", "conversation", "conversationIntro", "messageList",
-  "workspaceToggleButton", "agentCheckpoint", "agentCheckpointStage", "agentCheckpointTitle", "agentCheckpointState", "agentCheckpointSummary", "agentCheckpointBody", "homeComposerSlot", "homeBoundary", "homeTrainingProof", "composerWrap",
+  "workspaceToggleButton", "agentCheckpoint", "agentCheckpointStage", "agentCheckpointTitle", "agentCheckpointState", "agentCheckpointSummary", "agentCheckpointBody", "agentCheckpointActions", "agentCheckpointWorkspaceButton", "agentCheckpointWorkspaceLabel", "agentCheckpointWorkspaceHint", "homeComposerSlot", "homeBoundary", "homeTrainingProof", "composerWrap",
   "runEventList", "pendingZone", "agentWorking", "cancelAgentButton", "composerForm", "composerNotice", "messageInput", "sendButton", "composerMode", "composerModeLabel",
   "datasetButton", "datasetInput", "recipeSampleInput", "inspectorDatasetButton", "inspectorEmpty", "inspectorContent", "taskStatus", "contextTabs",
   "stageList", "capabilityState", "capabilitySummary", "capabilityFacts", "datasetCard", "datasetCount", "datasetSummary", "contractCard", "contractState",
@@ -41,14 +41,15 @@ const ui = Object.fromEntries([
   "buildArtifactBundleButton", "artifactBundleList",
   "modelSourceCard", "modelSourceState", "modelSourceSummary", "modelSourceBlocker", "modelSourceBlockerTitle", "modelSourceBlockerMessage",
   "modelSourceRetryButton", "modelSourceBinding", "modelSourceFacts", "modelSourceFiles", "modelSourceFileList", "modelSourcePending",
-  "pendingSourceRepo", "pendingRequestedRevision", "pendingResolvedCommit", "pendingSourceLicense", "bindModelSourceButton", "modelSourceDiscovery",
+  "pendingSourceRepo", "pendingRequestedRevision", "pendingResolvedCommit", "pendingSourceLicense", "bindModelSourceButton", "cancelModelBindingButton", "modelSourceDiscovery",
   "modelSourceDiscoverySummary", "sourceModeTabs", "modelSourceSearchForm", "modelSourceSearchInput", "searchHfProvider", "searchGithubProvider",
   "modelSourceSearchButton", "modelSourceReferenceForm", "modelSourceReferenceInput", "modelSourceRevisionInput", "modelSourceResolveButton",
   "modelSourceHfToken", "modelSourceGithubToken", "modelSourceSearchEvidence", "modelSourceCandidates",
   "modelSourceCheckpointCard", "modelSourceCheckpointFacts", "modelSourceCheckpointBoundary", "modelSourceCheckpointCandidates", "viewAllModelSourceCandidatesButton",
   "repositoryAnalysisCard", "repositoryAnalysisState", "repositoryAnalysisSummary", "repositoryAnalysisFacts", "repositoryAnalysisEvidence",
-  "repositoryAnalysisEvidenceList", "trainingPlanCard", "trainingPlanState", "trainingPlanSummary", "manualEntrypointField",
-  "manualEntrypointInput", "trainingPlanFacts", "createTrainingPlanButton", "approveTrainingPlanButton",
+  "repositoryAnalysisEvidenceList", "repositoryAnalysisRiskPanel", "repositoryAnalysisRiskList", "repositoryManualMapping", "repositoryManualEntrypointInput",
+  "repositoryDatasetArgumentInput", "applyRepositoryManualMappingButton", "trainingPlanCard", "trainingPlanState", "trainingPlanSummary", "manualEntrypointField",
+  "manualEntrypointInput", "trainingPlanFacts", "createTrainingPlanButton", "approveTrainingPlanButton", "trainingPlanDecisionActions", "rejectTrainingPlanButton", "cancelTrainingPlanButton",
   "resourceFeasibilityCard", "resourceFeasibilityState", "resourceFeasibilitySummary", "resourceFeasibilityFacts", "baseImageDigestField",
   "baseImageDigestInput", "resourceFeasibilityReasons", "checkResourceFeasibilityButton",
 ].map((id) => [id, document.getElementById(id)]));
@@ -61,7 +62,7 @@ const state = {
   modelSourceProviders: [], modelSourceCandidates: [], modelSourceResolutions: [], modelSourceSearches: [], modelSourceSearch: null, modelSourceMode: "search", modelSourceOperationSeq: 0, modelSourceLoadedTaskId: null, modelSourceCandidateRenderKey: "", modelSourceCheckpointRenderKey: "", modelSourceSearchInFlight: false,
   checkpointCard: null, workspaceAutoKey: null, inspectorOpener: null, productRuntime: null, taskSpecFamilies: [], taskSpecFamiliesError: null, taskSpecRevisions: [], taskSpecDescriptionMode: false, taskSpecQuickReplyKey: "", taskSpecAlternativesOpen: false,
 };
-const checkpointCards = [ui.taskSpecCard, ui.capabilityCard, ui.modelSourceCheckpointCard, ui.modelSourceCard, ui.trainingPlanCard, ui.resourceFeasibilityCard, ui.datasetCard, ui.contractCard].filter(Boolean);
+const checkpointCards = [ui.taskSpecCard, ui.capabilityCard, ui.modelSourceCheckpointCard, ui.modelSourceCard, ui.repositoryAnalysisCard, ui.trainingPlanCard, ui.resourceFeasibilityCard, ui.datasetCard, ui.contractCard].filter(Boolean);
 const checkpointHomes = new Map();
 const planPanel = document.querySelector('[data-context-panel="plan"]');
 if (planPanel && ui.taskSpecCard) planPanel.prepend(ui.taskSpecCard);
@@ -91,6 +92,7 @@ const EVIDENCE_STATUS_LABELS = {
 };
 const INSPECTOR_FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), details > summary, [tabindex]:not([tabindex="-1"])';
 const inspectorMedia = window.matchMedia("(max-width:720px)");
+const dockedWorkspaceMedia = window.matchMedia("(min-width:1184px)");
 
 async function request(path, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -103,13 +105,36 @@ async function request(path, options = {}) {
 }
 function clear(element) { while (element?.firstChild) element.firstChild.remove(); }
 function formatTime(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(date); }
+function formatRelativeTime(value) {
+  const date = new Date(value); if (Number.isNaN(date.getTime())) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+  if (seconds < 60) return "刚刚";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
+  if (seconds < 86400 * 7) return `${Math.floor(seconds / 86400)} 天前`;
+  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(date);
+}
 function shortId(value) { return value && value.length > 24 ? `${value.slice(0, 12)}…${value.slice(-8)}` : value || "—"; }
 function showNotice(message, tone = "error") { ui.composerNotice.hidden = false; ui.composerNotice.dataset.tone = tone; ui.composerNotice.textContent = message; }
 function hideNotice() { ui.composerNotice.hidden = true; ui.composerNotice.textContent = ""; }
 function setButtonBusy(button, busy, busyText) { if (!button.dataset.label) button.dataset.label = button.textContent; button.disabled = busy; button.textContent = busy ? busyText : button.dataset.label; }
-function formatBytes(value) { if (!Number.isFinite(value)) return "大小未知"; if (value < 1024) return `${value} B`; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; return `${(value / 1024 ** 2).toFixed(1)} MB`; }
+function formatBytes(value) { if (!Number.isFinite(value)) return "大小未知"; if (value < 1024) return `${value} B`; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`; if (value < 1024 ** 4) return `${(value / 1024 ** 3).toFixed(1)} GB`; return `${(value / 1024 ** 4).toFixed(1)} TB`; }
 function fixedCommit(value) { return typeof value === "string" && IMMUTABLE_COMMIT.test(value.toLowerCase()); }
 function statusLabel(value) { return EVIDENCE_STATUS_LABELS[value] || String(value || "未知"); }
+function workflowStatus(task) {
+  if (["running", "completed", "failed", "cancelled", "interrupted"].includes(task.status)) return { label: STATUS_LABELS[task.status] || task.status, tone: task.status };
+  const stage = task.control?.current_stage; const blocked = task.control?.blocked_by?.[0]; const analysisStatus = task.repository_analysis?.status; const planStatus = task.training_plan?.effective_status;
+  if (stage === "task_understanding") return { label: task.capability_decision?.status === "needs_confirmation" ? "等待确认" : "等待澄清", tone: "needs_clarification" };
+  if (stage === "capability_resolution" || stage === "source_discovery") return { label: "选择模型来源", tone: "needs_recipe" };
+  if (stage === "source_resolution") return { label: "确认模型来源", tone: "needs_confirmation" };
+  if (stage === "source_snapshot") return { label: "读取来源清单", tone: "needs_confirmation" };
+  if (stage === "repository_analysis") return { label: analysisStatus === "blocked" ? "分析已阻断" : ["needs_input", "needs_manual_mapping"].includes(analysisStatus) ? "等待分析映射" : "审阅仓库分析", tone: analysisStatus === "blocked" ? "failed" : "needs_confirmation" };
+  if (stage === "training_plan") return { label: planStatus === "awaiting_approval" ? "等待计划批准" : planStatus === "approved" ? "计划已批准" : "生成训练计划", tone: "needs_confirmation" };
+  if (stage === "resource_probe") return { label: "等待资源检查", tone: "needs_confirmation" };
+  if (stage === "environment_lock") return { label: blocked ? "训练环境阻断" : "冻结训练环境", tone: blocked ? "failed" : "needs_confirmation" };
+  if (stage === "resource_fit") return { label: blocked ? "资源证据不足" : "静态预算匹配", tone: blocked ? "failed" : "ready" };
+  return { label: STATUS_LABELS[task.status] || task.status || "未知", tone: task.status || "draft" };
+}
 function statusTone(value) {
   if (["completed", "passed", "sufficient", "release_ready"].includes(value)) return "passed";
   if (["failed", "cancelled", "interrupted", "integrity_failed", "quality_failed"].includes(value)) return "failed";
@@ -134,7 +159,7 @@ function resetHfDiscovery({ clearToken = true } = {}) {
 }
 function resetModelSourceDiscovery({ clearTokens = true } = {}) {
   state.modelSourceCandidates = []; state.modelSourceResolutions = []; state.modelSourceSearches = []; state.modelSourceSearch = null; state.modelSourceMode = "search"; state.modelSourceOperationSeq += 1; state.modelSourceLoadedTaskId = null; state.modelSourceCandidateRenderKey = ""; state.modelSourceCheckpointRenderKey = ""; state.modelSourceSearchInFlight = false;
-  clear(ui.modelSourceCandidates); clear(ui.modelSourceCheckpointCandidates); ui.modelSourceCheckpointCard.hidden = true; ui.modelSourceSearchInput.value = ""; ui.modelSourceReferenceInput.value = ""; ui.modelSourceRevisionInput.value = ""; ui.manualEntrypointInput.value = ""; ui.baseImageDigestInput.value = "";
+  clear(ui.modelSourceCandidates); clear(ui.modelSourceCheckpointCandidates); ui.modelSourceCheckpointCard.hidden = true; ui.modelSourceSearchInput.value = ""; ui.modelSourceReferenceInput.value = ""; ui.modelSourceRevisionInput.value = ""; ui.manualEntrypointInput.value = ""; ui.baseImageDigestInput.value = ""; ui.repositoryManualEntrypointInput.value = ""; ui.repositoryDatasetArgumentInput.value = "";
   if (clearTokens) clearModelSourceTokens();
 }
 function resetRunEvidence(runId = null) {
@@ -208,13 +233,11 @@ function renderTaskList() {
     const button = document.createElement("button"); button.type = "button"; button.className = "task-item"; button.dataset.action = "select-task"; button.dataset.taskId = task.task_id; button.setAttribute("aria-current", String(task.task_id === state.selectedTaskId));
     const title = document.createElement("b"); title.textContent = task.name;
     const meta = document.createElement("span"); meta.className = "task-meta";
-    const status = document.createElement("span"); const dot = document.createElement("i"); dot.dataset.status = task.status; status.append(dot, document.createTextNode(STATUS_LABELS[task.status] || task.status));
-    const capability = task.recipe_id ? `Recipe ${shortId(task.recipe_id)}` : STATUS_LABELS[task.capability_status] || task.capability_status || "能力待确认";
-    const dataCount = task.dataset_report ? datasetDetail(task)[0] : "未导入数据";
-    const facts = document.createElement("span"); facts.className = "task-facts"; facts.textContent = `${capability} · ${dataCount}`; facts.title = `${task.recipe_id ? `Recipe ${task.recipe_id}` : capability} · ${dataCount}`;
-    const time = document.createElement("time"); time.textContent = formatTime(task.updated_at_utc); meta.append(status, facts, time);
-    const idHint = document.createElement("small"); idHint.className = "task-id-hint"; idHint.textContent = shortId(task.task_id); idHint.title = task.task_id;
-    button.append(title, meta, idHint);
+    const workflow = workflowStatus(task); const status = document.createElement("span"); const dot = document.createElement("i"); dot.dataset.status = workflow.tone; status.append(dot, document.createTextNode(workflow.label));
+    const capability = task.model_binding ? `已固定 ${modelSourceProviderLabel(task.model_binding.provider)} 来源` : task.recipe_id ? "已匹配本地训练方案" : "等待确认训练方案";
+    const facts = document.createElement("span"); facts.className = "task-facts"; facts.textContent = task.dataset_report ? `${capability} · 数据已导入` : capability;
+    const time = document.createElement("time"); time.dateTime = task.updated_at_utc || ""; time.textContent = formatRelativeTime(task.updated_at_utc); meta.append(status, time, facts);
+    button.append(title, meta);
     const archive = document.createElement("button"); archive.type = "button"; archive.className = "task-archive-button icon-button"; archive.dataset.action = "archive-task"; archive.dataset.taskId = task.task_id;
     archive.disabled = task.status === "running"; archive.title = archive.disabled ? "任务运行中，不能归档" : `归档任务：${task.name}`; archive.setAttribute("aria-label", archive.title);
     archive.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16v12H4zM3 4h18v3.5H3zM9 11h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -329,7 +352,7 @@ async function refreshSelected({ force = false, token = state.selectionToken } =
 }
 
 function renderTask(task) {
-  ui.taskEyebrow.textContent = `${stageLabel(stageKey(task))} · ${STATUS_LABELS[task.status] || task.status}`; ui.taskTitle.textContent = task.name; ui.taskStatus.textContent = STATUS_LABELS[task.status] || task.status; ui.taskStatus.dataset.status = task.status;
+  const workflow = workflowStatus(task); ui.taskEyebrow.textContent = `${stageLabel(stageKey(task))} · ${workflow.label}`; ui.taskTitle.textContent = task.name; ui.taskStatus.textContent = workflow.label; ui.taskStatus.dataset.status = workflow.tone;
   renderControl(task); renderTaskSpec(task); renderPlan(task); renderStages(task); renderCapability(task); renderModelSource(task); renderRepositoryAnalysis(task); renderTrainingPlan(task); renderResourceFeasibility(task); renderModelAsset(task); renderDataset(task); renderContract(task); renderResult(task); renderRunEvents(); renderRunControl(task);
   syncAgentCheckpoint(task); syncWorkspaceForTask(task);
   const actionLabel = ["clarify_task_spec", "confirm_task_spec"].includes(task.control?.next_action?.id) ? "确认任务理解" : task.control?.next_action?.label;
@@ -392,7 +415,8 @@ function renderTaskSpecQuickReplies(task, { showAlternatives = state.taskSpecAlt
   if (!force && key === state.taskSpecQuickReplyKey && ui.taskSpecQuickReplies.childElementCount) return;
   state.taskSpecQuickReplyKey = key; state.taskSpecAlternativesOpen = showAlternatives; clear(ui.taskSpecQuickReplies);
   if (decision.status === "resolved") { ui.taskSpecQuickReplies.hidden = true; return; }
-  ui.taskSpecQuickReplies.hidden = false; const candidates = (decision.candidates || []).slice(0, 4);
+  ui.taskSpecQuickReplies.hidden = false; const allCandidates = decision.candidates || []; const candidates = allCandidates.slice(0, 4); const customCandidate = allCandidates.find((item) => item.family === "custom");
+  if (customCandidate && !candidates.some((item) => item.family === "custom")) candidates.push(customCandidate);
   if (decision.status === "needs_confirmation") {
     const selected = candidates.find((item) => item.family === decision.selected_family) || candidates[0];
     if (selected) ui.taskSpecQuickReplies.append(taskSpecCandidateButton(selected, { featured: true, prefix: "就是这个：" }));
@@ -400,6 +424,19 @@ function renderTaskSpecQuickReplies(task, { showAlternatives = state.taskSpecAlt
     if (showAlternatives) candidates.filter((item) => item.family !== selected?.family).forEach((candidate) => ui.taskSpecQuickReplies.append(taskSpecCandidateButton(candidate)));
   } else candidates.forEach((candidate) => ui.taskSpecQuickReplies.append(taskSpecCandidateButton(candidate)));
   const describe = document.createElement("button"); describe.type = "button"; describe.className = "task-spec-describe"; describe.textContent = "我自己描述"; describe.addEventListener("click", startTaskSpecDescription); ui.taskSpecQuickReplies.append(describe);
+  if (!allCandidates.some((item) => item.family === "custom")) {
+    const reparse = document.createElement("button"); reparse.type = "button"; reparse.className = "task-spec-reparse"; reparse.textContent = "重新理解当前描述"; reparse.addEventListener("click", () => reparseTaskSpec(reparse)); ui.taskSpecQuickReplies.append(reparse);
+  }
+}
+async function reparseTaskSpec(button) {
+  const task = state.task; const spec = task?.task_spec; if (!task || !spec || task.status === "running") return;
+  setButtonBusy(button, true, "正在重新理解");
+  try {
+    const response = await request(`/tasks/${encodeURIComponent(task.task_id)}/spec`, { method: "PATCH", json: { base_revision: spec.revision, business_goal: spec.business_goal, reparse: true, user_note: "用户请求系统使用当前规则重新理解已保存描述" } });
+    state.taskSpecDescriptionMode = false; state.taskSpecQuickReplyKey = ""; state.taskSpecAlternativesOpen = false;
+    await refreshTaskSpecView(response.task); showNotice(`已在同一任务创建需求版本 v${response.task.current_spec_revision}；历史版本和原始描述仍然保留。`, "ok");
+  } catch (error) { showNotice(`重新理解失败：${error.message}`); }
+  finally { setButtonBusy(button, false, ""); }
 }
 async function patchTaskSpecChoice(candidate, { confirm = false } = {}) {
   const task = state.task; const spec = task?.task_spec; if (!task || !spec || !candidate?.family) return;
@@ -473,16 +510,36 @@ function checkpointCardFor(task) {
   if (stage === "task_understanding") return ui.taskSpecCard;
   if (["source_discovery", "source_resolution", "source_snapshot"].includes(stage) || sourceActions.has(action)) return sourceCard;
   if (stage === "capability_resolution") return action === "review_capability_gap" && task.capability_decision?.status === "resolved" ? sourceCard : ui.capabilityCard;
-  if (["repository_analysis", "training_plan"].includes(stage)) return stage === "repository_analysis" && !task.model_binding ? sourceCard : ui.trainingPlanCard;
+  if (stage === "repository_analysis") return task.model_binding ? ui.repositoryAnalysisCard : sourceCard;
+  if (stage === "training_plan") return ui.trainingPlanCard;
   if (["resource_probe", "environment_lock", "resource_fit"].includes(stage)) return ui.resourceFeasibilityCard;
   if (stage === "data_preparation") return ui.datasetCard;
   if (["contract_review", "ready_to_run"].includes(stage)) return ui.contractCard;
   return null;
 }
+function checkpointIsInline(card) { return card === ui.taskSpecCard || card === ui.modelSourceCheckpointCard; }
+function checkpointWorkspaceContext(task, card = checkpointCardFor(task)) {
+  if (card === ui.datasetCard || card === ui.contractCard) return "data";
+  if (task.current_result?.status === "completed") return "evaluation";
+  if (task.status === "running" || RUNNING_STATUSES.has(task.current_result?.status)) return "run";
+  return "plan";
+}
+function checkpointWorkspaceCopy(task, card, blocked) {
+  if (card === ui.modelSourceCard) return ["搜索并选择模型来源", "在右侧联网搜索、比较候选并确认固定版本"];
+  if (card === ui.capabilityCard) return ["查看训练方案", "在右侧核对能力匹配与尚未补齐的模块"];
+  if (card === ui.repositoryAnalysisCard) return [blocked ? "处理仓库分析阻断" : "查看仓库分析", "在右侧核对入口、依赖、许可证与静态风险证据"];
+  if (card === ui.trainingPlanCard) return ["核对训练计划", "在右侧检查入口、资源预算与不可变 Plan Digest"];
+  if (card === ui.resourceFeasibilityCard) return [blocked ? "查看当前电脑缺少什么" : "检查本机训练条件", "在右侧查看资源事实、环境阻断与恢复动作"];
+  if (card === ui.datasetCard) return ["准备训练数据", "在右侧查看数据体检结果与导入要求"];
+  if (card === ui.contractCard) return ["确认训练合同", "在右侧核对数据授权、标签与验收门槛"];
+  return ["打开任务工作区", "在右侧继续处理当前步骤"];
+}
 function syncAgentCheckpoint(task) {
   const card = checkpointCardFor(task);
-  if (!card || card.hidden) { restoreCheckpointCard(); ui.agentCheckpoint.hidden = true; return; }
-  if (card !== state.checkpointCard || card.parentNode !== ui.agentCheckpointBody) { restoreCheckpointCard(); state.checkpointCard = card; ui.agentCheckpointBody.append(card); }
+  if (!card || card.hidden) { restoreCheckpointCard(); clear(ui.agentCheckpointBody); ui.agentCheckpointActions.hidden = true; ui.agentCheckpoint.hidden = true; return; }
+  const inline = checkpointIsInline(card);
+  if (inline && (card !== state.checkpointCard || card.parentNode !== ui.agentCheckpointBody)) { restoreCheckpointCard(); clear(ui.agentCheckpointBody); state.checkpointCard = card; ui.agentCheckpointBody.append(card); }
+  if (!inline) { restoreCheckpointCard(); clear(ui.agentCheckpointBody); }
   const control = task.control || {}; const action = control.next_action || {}; const blocked = control.blocked_by?.[0];
   ui.agentCheckpoint.hidden = false;
   ui.agentCheckpointStage.textContent = stageLabel(control.current_stage);
@@ -491,16 +548,27 @@ function syncAgentCheckpoint(task) {
   ui.agentCheckpointState.textContent = blocked ? "需要处理" : sourceSummary ? "等待选择" : action.id ? "等待操作" : "仅供核对";
   ui.agentCheckpointState.dataset.state = blocked ? "blocked" : "ready";
   ui.agentCheckpointSummary.textContent = card === ui.taskSpecCard ? (task.capability_decision?.status === "needs_confirmation" ? "一次只确认一个会改变训练方案的问题。请选择最符合的一项，也可以直接补充。" : "请选择一个输出方向；如果都不符合，可以直接在下方输入框补充描述。") : sourceSummary ? "对话中只列出搜索排序靠前的 3 项；完整结果、临时 Token 和手动地址都在训练详情中。" : nextActionDescription(action, blocked);
+  ui.agentCheckpointActions.hidden = inline;
+  if (!inline) {
+    const [label, hint] = checkpointWorkspaceCopy(task, card, blocked);
+    ui.agentCheckpointWorkspaceLabel.textContent = label; ui.agentCheckpointWorkspaceHint.textContent = hint;
+    ui.agentCheckpointWorkspaceButton.dataset.context = checkpointWorkspaceContext(task, card);
+  }
 }
 function scrollToCheckpoint() {
   if (ui.agentCheckpoint.hidden) return;
   ui.agentCheckpoint.scrollIntoView({ behavior: "smooth", block: "center" });
 }
+function revealCurrentWorkspaceObject(task = state.task) {
+  const card = task ? checkpointCardFor(task) : null;
+  if (!card || checkpointIsInline(card) || card.hidden) return;
+  window.requestAnimationFrame(() => card.scrollIntoView({ block: "start", behavior: "smooth" }));
+}
 function syncWorkspaceForTask(task) {
-  const result = task.current_result;
-  const context = task.status === "running" || (result && RUNNING_STATUSES.has(result.status)) ? "run" : result?.status === "completed" ? "evaluation" : null;
-  const key = context ? `${task.task_id}:${context}:${task.current_run_id || result?.run_id || "current"}` : null;
-  if (key && state.workspaceAutoKey !== key) { state.workspaceAutoKey = key; openInspector(context); }
+  const stage = stageKey(task); const card = checkpointCardFor(task); const result = task.current_result;
+  const context = task.status === "running" || (result && RUNNING_STATUSES.has(result.status)) ? "run" : result?.status === "completed" ? "evaluation" : stage === "data_preparation" || ["contract_review", "ready_to_run"].includes(stage) ? "data" : stage === "task_understanding" ? null : "plan";
+  const key = context ? `${task.task_id}:${stage}:${context}:${task.current_run_id || result?.run_id || card?.id || "current"}` : null;
+  if (key && state.workspaceAutoKey !== key) { state.workspaceAutoKey = key; if (dockedWorkspaceMedia.matches) { openInspector(context); revealCurrentWorkspaceObject(task); } }
 }
 function addFact(label, value) { const row = document.createElement("div"); const name = document.createElement("span"); name.textContent = label; const selected = document.createElement("b"); selected.textContent = value === undefined || value === null || value === "" ? "—" : String(value); selected.title = selected.textContent; row.append(name, selected); ui.capabilityFacts.append(row); }
 function bindingAnalysisAttempt(task) { return task.repository_analysis_attempt || task.model_binding_attempt || null; }
@@ -515,7 +583,7 @@ function renderCapability(task) {
   else if (binding) {
     const analysisBlockers = analysis?.downstream_blockers || [];
     if (binding.status === "stale") { ui.capabilityState.textContent = "来源已过期"; ui.capabilitySummary.textContent = "需求版本已经变化，需要重新选择模型来源。"; }
-    else if (analysis) { ui.capabilityState.textContent = analysisBlockers.length ? "分析有阻断" : "来源已分析"; ui.capabilitySummary.textContent = analysisBlockers.length ? "固定版本已完成静态分析，但存在需要处理的证据阻断。" : "固定版本来源与静态仓库分析均已完成；尚未生成或批准训练计划。"; }
+    else if (analysis) { const analysisBlocked = analysis.status !== "complete" || analysisBlockers.length > 0; ui.capabilityState.textContent = analysisBlocked ? "分析有阻断" : "来源已分析"; ui.capabilitySummary.textContent = analysisBlocked ? "固定版本已完成静态分析，但存在需要处理的风险或证据阻断。" : "固定版本来源与静态仓库分析均已完成；尚未生成或批准训练计划。"; }
     else if (["queued", "running"].includes(analysisStatus)) { ui.capabilityState.textContent = "分析中"; ui.capabilitySummary.textContent = "固定版本来源已经绑定，正在读取受限文件清单并做静态分析；尚未执行仓库代码。"; }
     else if (["failed", "cancelled"].includes(analysisStatus)) { ui.capabilityState.textContent = analysisStatus === "failed" ? "分析失败" : "分析已取消"; ui.capabilitySummary.textContent = analysisFailure?.message || "固定版本已经绑定，但仓库静态分析没有完成；请按证据重试或调整来源。"; }
     else { ui.capabilityState.textContent = "模型已绑定"; ui.capabilitySummary.textContent = "固定版本来源已经建立，但尚无完成的仓库静态分析证据。"; }
@@ -592,6 +660,9 @@ function addSourceFact(label, value, { code = false } = {}) {
 function renderModelSource(task) {
   const resolvedSpec = task.capability_decision?.status === "resolved"; const binding = task.model_binding || null; const attempt = bindingAnalysisAttempt(task); const attemptStatus = attempt?.current_state?.status; const pending = latestPendingResolution(task); const blocker = modelSourceBlocker(task); const locked = task.status === "running";
   ui.modelSourceCard.hidden = false; ui.modelSourceBlocker.hidden = !blocker; ui.modelSourceBinding.hidden = !binding; ui.modelSourcePending.hidden = !pending;
+  const bindingActive = !binding && ["queued", "running"].includes(attemptStatus);
+  ui.cancelModelBindingButton.hidden = !bindingActive;
+  ui.cancelModelBindingButton.disabled = !bindingActive;
   if (blocker) { ui.modelSourceBlockerTitle.textContent = blocker.stage === "source_discovery" ? "官方目录搜索失败" : blocker.stage === "source_resolution" ? "模型地址解析失败" : blocker.stage === "source_snapshot" ? "仓库清单不完整" : "仓库分析被阻断"; ui.modelSourceBlockerMessage.textContent = blocker.message || blocker.code; }
   if (binding) {
     const stale = binding.status === "stale"; const summary = binding.snapshot_summary || {}; const license = binding.license_policy || {};
@@ -622,13 +693,108 @@ function renderModelSource(task) {
   if (state.modelSourceSearch) { const plan = state.modelSourceSearch.query_plan || {}; const errors = state.modelSourceSearch.provider_errors || []; ui.modelSourceSearchEvidence.textContent = `实际搜索词：${plan.effective_query || "—"}；${state.modelSourceCandidates.length} 个候选。${errors.length ? `部分 Provider 失败：${errors.map((item) => `${item.provider}（${item.reason || "未知原因"}）`).join("、")}` : "搜索来自官方 Provider API。"}`; }
   else ui.modelSourceSearchEvidence.textContent = blocker?.stage === "source_discovery" ? `本次搜索失败：${blocker.message || blocker.code}。旧候选已隐藏，请修改条件后重试。` : availableProviders.size ? "搜索只读取官方目录元数据，不代表模型已经适配本机。" : "官方 Provider 能力当前不可用，请检查后端依赖。";
 }
+
+async function cancelModelBindingAttempt() {
+  const attemptId = bindingAnalysisAttempt(state.task)?.attempt?.attempt_id;
+  if (!state.selectedTaskId || !attemptId) {
+    showNotice("当前没有可以取消的来源读取任务。");
+    return;
+  }
+  openSimpleDialog({
+    kicker: "取消来源读取",
+    title: "停止本次模型来源读取与静态分析？",
+    body: "取消会保留 Attempt 证据，但不会创建模型绑定、RepositoryAnalysis、Recipe 或训练 Run。之后可以在同一训练任务中重试。",
+    allowLabel: "确认取消",
+    onAllow: async () => {
+      const result = await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/model-binding-attempts/${encodeURIComponent(attemptId)}/cancel`, {
+        method: "POST",
+        json: { reason: "用户在来源卡片取消读取与分析" },
+      });
+      showNotice(result.cancelled ? "本次来源读取已取消，未建立模型绑定。" : "该来源读取已经结束，无需取消。", "ok");
+      await refreshSelected({ force: true });
+    },
+  });
+}
 function appendFact(container, label, value, { code = false } = {}) {
   const row = document.createElement("div"); const name = document.createElement("span"); const selected = document.createElement(code ? "code" : "b");
   name.textContent = label; selected.textContent = value === undefined || value === null || value === "" ? "—" : String(value); selected.title = selected.textContent; row.append(name, selected); container.append(row);
 }
+const REPOSITORY_ANALYSIS_STATUS_LABELS = {
+  complete: "分析完成",
+  needs_input: "需要补充信息",
+  needs_manual_mapping: "需要补充信息",
+  blocked: "已阻断",
+};
+function analysisItems(value) { return Array.isArray(value) ? value : []; }
+function analysisValue(item, keys) {
+  if (typeof item === "string") return item;
+  for (const key of keys) if (item?.[key] !== undefined && item[key] !== null && item[key] !== "") return String(item[key]);
+  return "未命名结论";
+}
+function entrypointValue(item) {
+  const path = analysisValue(item, ["path", "name"]); const confidence = Number(item?.confidence);
+  return Number.isFinite(confidence) ? `${path} (${Math.round(confidence * 100)}%)` : path;
+}
+function parseLegacyAnalysisEvidence(reference) {
+  const text = /^(.+):L([1-9][0-9]*)#sha256=([0-9a-f]{64})$/.exec(reference || "");
+  if (text) return { kind: "text_line", ref: reference, path: text[1], line: Number(text[2]), document_sha256: text[3] };
+  const manifest = /^manifest:([0-9a-f]{64}):(.+)#basis=([^#]+)$/.exec(reference || "");
+  if (manifest) return { kind: "manifest_entry", ref: reference, manifest_entry: { tree_manifest_sha256: manifest[1], path: manifest[2], basis: manifest[3] } };
+  return { kind: "unknown", ref: reference };
+}
+function findingEvidence(item) {
+  if (Array.isArray(item?.evidence) && item.evidence.length) return item.evidence;
+  return analysisItems(item?.evidence_refs).map(parseLegacyAnalysisEvidence);
+}
+function findingTitle(item, fallback) {
+  const value = analysisValue(item, ["code", "model_id", "task", "path", "name"]);
+  return value === "未命名结论" ? fallback : value;
+}
+function appendRepositoryEvidence(target, label, items, analysis) {
+  analysisItems(items).forEach((item) => {
+    const article = document.createElement("article"); const heading = document.createElement("b"); const evidenceList = findingEvidence(item);
+    heading.textContent = `${label} · ${findingTitle(item, "分析结论")}`; article.append(heading);
+    if (item?.severity) { const severity = document.createElement("code"); severity.textContent = `风险级别：${item.severity}`; article.append(severity); }
+    if (item?.message) { const message = document.createElement("code"); message.textContent = item.message; article.append(message); }
+    if (!evidenceList.length) { const missing = document.createElement("code"); missing.textContent = "该结论没有可逐行打开的文本证据。"; article.append(missing); }
+    evidenceList.forEach((evidence) => {
+      if (evidence.kind === "text_line" && evidence.path && Number.isInteger(Number(evidence.line))) {
+        const button = document.createElement("button"); button.type = "button"; button.className = "text-button";
+        button.textContent = `${evidence.path}:L${evidence.line} · 查看固定 Commit 的精确摘录`;
+        button.title = evidence.resolved_commit || analysis.resolved_commit || "查看静态分析证据";
+        button.addEventListener("click", () => openRepositoryEvidenceExcerpt(analysis, evidence, button)); article.append(button); return;
+      }
+      const manifest = evidence.manifest_entry; const code = document.createElement("code");
+      if (evidence.kind === "manifest_entry" || manifest) {
+        code.textContent = `Manifest 清单证据：${manifest?.path || evidence.ref || "未知路径"}${manifest?.basis ? ` · ${manifest.basis}` : ""}。该证据来自文件清单，不伪造源码行号，不能逐行打开。`;
+      } else code.textContent = evidence.ref || "不可定位的快照元数据证据";
+      article.append(code);
+    });
+    target.append(article);
+  });
+}
+async function openRepositoryEvidenceExcerpt(analysis, evidence, button) {
+  const taskId = state.selectedTaskId; const analysisId = analysis?.analysis_id; if (!taskId || !analysisId) { showNotice("当前分析缺少可追溯的 task 或 analysis ID。"); return; }
+  setButtonBusy(button, true, "正在读取精确摘录");
+  try {
+    const query = new URLSearchParams({ path: evidence.path, line: String(evidence.line), context_lines: "3" });
+    const response = await request(`/tasks/${encodeURIComponent(taskId)}/repository-analyses/${encodeURIComponent(analysisId)}/evidence?${query.toString()}`);
+    if (state.selectedTaskId !== taskId || state.task?.repository_analysis?.analysis_id !== analysisId) return;
+    const excerpt = response.evidence || {};
+    const expectedCommit = evidence.resolved_commit || analysis.resolved_commit;
+    if ((evidence.document_sha256 && excerpt.document_sha256 !== evidence.document_sha256) || (expectedCommit && excerpt.resolved_commit !== expectedCommit)) {
+      showNotice("后端返回的摘录与当前分析证据不一致，已停止展示。"); return;
+    }
+    clear(ui.dialogBody); clear(ui.dialogActions); ui.dialogKicker.textContent = "固定仓库证据"; ui.dialogTitle.textContent = `${excerpt.path || evidence.path}:L${excerpt.requested_line || evidence.line}`;
+    const meta = document.createElement("p"); meta.textContent = `Commit ${excerpt.resolved_commit || analysis.resolved_commit || "未知"} · Snapshot ${excerpt.snapshot_id || analysis.source_snapshot_id || "未知"} · SHA-256 ${excerpt.document_sha256 || "未知"}`;
+    const source = document.createElement("pre"); source.textContent = analysisItems(excerpt.lines).map((item) => `${Number(item.line) === Number(excerpt.requested_line) ? ">" : " "} ${String(item.line).padStart(4, " ")}  ${item.text}`).join("\n") || "后端没有返回摘录行。";
+    ui.dialogBody.append(meta, source); const close = document.createElement("button"); close.type = "button"; close.className = "allow"; close.textContent = "关闭"; close.addEventListener("click", () => ui.decisionDialog.close()); ui.dialogActions.append(close); ui.decisionDialog.showModal();
+  } catch (error) { showNotice(`证据读取失败：${error.message}`); }
+  finally { setButtonBusy(button, false, ""); }
+}
 function renderRepositoryAnalysis(task) {
   const binding = task.model_binding; const analysis = task.repository_analysis; const attempt = bindingAnalysisAttempt(task); ui.repositoryAnalysisCard.hidden = !binding && !attempt; if (!binding && !attempt) return;
-  clear(ui.repositoryAnalysisFacts); clear(ui.repositoryAnalysisEvidenceList);
+  clear(ui.repositoryAnalysisFacts); clear(ui.repositoryAnalysisEvidenceList); clear(ui.repositoryAnalysisRiskList); ui.repositoryAnalysisRiskPanel.hidden = true; ui.repositoryManualMapping.hidden = true; ui.repositoryAnalysisCard.dataset.state = "pending";
   if (!analysis) {
     const status = attempt?.current_state?.status; const failure = attempt?.current_state?.failure; const attemptId = attempt?.attempt?.attempt_id;
     ui.repositoryAnalysisState.textContent = status === "queued" ? "已排队" : status === "running" ? "分析中" : status === "failed" ? "失败" : status === "cancelled" ? "已取消" : binding ? "待分析" : "状态异常";
@@ -638,28 +804,48 @@ function renderRepositoryAnalysis(task) {
     else ui.repositoryAnalysisEvidence.open = false;
     return;
   }
-  const entrypoints = analysis.training_entrypoints || []; const frameworks = analysis.frameworks || []; const manifests = analysis.dependency_manifests || []; const risks = analysis.risks || []; const blockers = analysis.downstream_blockers || [];
-  ui.repositoryAnalysisState.textContent = blockers.length ? "有阻断" : analysis.status === "complete" ? "已完成" : "需人工映射";
-  ui.repositoryAnalysisSummary.textContent = entrypoints.length ? `从固定快照识别到 ${entrypoints.length} 个训练入口；请核对证据后生成计划。` : "未自动识别训练入口。你仍可从固定文件清单中人工指定，系统不会猜测执行命令。";
-  appendFact(ui.repositoryAnalysisFacts, "Analysis Attempt", attempt ? `${attempt.current_state?.status || "未知"} · ${shortId(attempt.attempt?.attempt_id)}` : "旧快照，无生命周期记录"); appendFact(ui.repositoryAnalysisFacts, "框架", frameworks.map((item) => item.name).join("、") || "未识别"); appendFact(ui.repositoryAnalysisFacts, "训练入口", entrypoints.map((item) => `${item.path} (${Math.round(Number(item.confidence || 0) * 100)}%)`).join("、") || "需人工指定"); appendFact(ui.repositoryAnalysisFacts, "依赖清单", manifests.map((item) => item.path).join("、") || "未发现"); appendFact(ui.repositoryAnalysisFacts, "执行策略", analysis.execution_policy || "static_only_never_execute");
-  [...risks, ...blockers].forEach((item) => { const article = document.createElement("article"); const heading = document.createElement("b"); const evidence = document.createElement("code"); heading.textContent = item.code || item.name || "分析信号"; evidence.textContent = (item.evidence_refs || []).join(" · ") || item.message || "无文件引用"; article.append(heading, evidence); ui.repositoryAnalysisEvidenceList.append(article); });
-  ui.repositoryAnalysisEvidence.open = blockers.length > 0;
+  const contractEntries = analysisItems(analysis.entrypoints); const trainingEntries = analysisItems(analysis.training_entrypoints).length ? analysisItems(analysis.training_entrypoints) : contractEntries.filter((item) => item.kind === "train"); const inferenceEntries = analysisItems(analysis.inference_entrypoints).length ? analysisItems(analysis.inference_entrypoints) : contractEntries.filter((item) => item.kind === "inference");
+  const contractDependencies = analysisItems(analysis.dependency_files); const legacyDependencies = analysisItems(analysis.dependency_manifests); const dependencies = contractDependencies.some((item) => typeof item === "object") ? contractDependencies : legacyDependencies.length ? legacyDependencies : contractDependencies;
+  const frameworks = analysisItems(analysis.frameworks); const tasks = analysisItems(analysis.task_candidates); const dataContracts = analysisItems(analysis.data_contract_candidates).length ? analysisItems(analysis.data_contract_candidates) : analysisItems(analysis.data_contract_hints); const metrics = analysisItems(analysis.metrics); const artifacts = analysisItems(analysis.artifacts); const weights = analysisItems(analysis.weight_formats); const baseModels = analysisItems(analysis.base_model_candidates); const risks = analysisItems(analysis.risk_findings).length ? analysisItems(analysis.risk_findings) : analysisItems(analysis.risks); const blockers = analysisItems(analysis.downstream_blockers);
+  const selectedStatus = analysis.status || (blockers.length ? "blocked" : "complete"); ui.repositoryAnalysisState.textContent = REPOSITORY_ANALYSIS_STATUS_LABELS[selectedStatus] || statusLabel(selectedStatus); ui.repositoryAnalysisCard.dataset.state = selectedStatus === "blocked" || blockers.length ? "blocked" : selectedStatus === "complete" ? "active" : "pending";
+  ui.repositoryAnalysisSummary.textContent = selectedStatus === "blocked" || blockers.length ? `静态分析状态为“${REPOSITORY_ANALYSIS_STATUS_LABELS[selectedStatus] || selectedStatus}”；发现 ${risks.length} 项风险、${blockers.length} 项下游阻断，系统不会把它描述成可执行。` : selectedStatus === "needs_input" || selectedStatus === "needs_manual_mapping" ? "固定快照中没有足够证据确认训练入口，需要补充映射后重新分析；系统不会猜测执行命令。" : `已从固定快照识别 ${trainingEntries.length} 个训练入口和 ${inferenceEntries.length} 个推理入口；请逐项核对证据。`;
+  appendFact(ui.repositoryAnalysisFacts, "分析状态", REPOSITORY_ANALYSIS_STATUS_LABELS[selectedStatus] || selectedStatus); appendFact(ui.repositoryAnalysisFacts, "Analyzer", analysis.analyzer_version, { code: true }); appendFact(ui.repositoryAnalysisFacts, "Analysis Digest", analysis.analysis_digest || analysis.content_digest, { code: true }); appendFact(ui.repositoryAnalysisFacts, "Snapshot Digest", analysis.snapshot_digest, { code: true }); appendFact(ui.repositoryAnalysisFacts, "固定 Commit", analysis.resolved_commit || binding?.resolved_commit, { code: true }); appendFact(ui.repositoryAnalysisFacts, "Snapshot", analysis.source_snapshot_id || binding?.snapshot_id, { code: true }); appendFact(ui.repositoryAnalysisFacts, "Analysis Attempt", attempt ? `${attempt.current_state?.status || "未知"} · ${shortId(attempt.attempt?.attempt_id)}` : "旧快照，无生命周期记录");
+  appendFact(ui.repositoryAnalysisFacts, "框架", frameworks.map((item) => analysisValue(item, ["name"])).join("、") || "未识别"); appendFact(ui.repositoryAnalysisFacts, "任务候选", tasks.map((item) => analysisValue(item, ["task", "name"])).join("、") || "未识别"); appendFact(ui.repositoryAnalysisFacts, "训练入口", trainingEntries.map(entrypointValue).join("、") || "需要补充"); appendFact(ui.repositoryAnalysisFacts, "推理入口", inferenceEntries.map(entrypointValue).join("、") || "未识别"); appendFact(ui.repositoryAnalysisFacts, "基础模型", baseModels.map((item) => analysisValue(item, ["model_id", "name"])).join("、") || "未识别"); appendFact(ui.repositoryAnalysisFacts, "数据契约", dataContracts.map((item) => analysisValue(item, ["name", "schema", "path"])).join("、") || "未识别"); appendFact(ui.repositoryAnalysisFacts, "依赖文件", dependencies.map((item) => analysisValue(item, ["path", "name"])).join("、") || "未发现"); appendFact(ui.repositoryAnalysisFacts, "指标", metrics.map((item) => analysisValue(item, ["name"])).join("、") || "未识别"); appendFact(ui.repositoryAnalysisFacts, "产物", artifacts.map((item) => analysisValue(item, ["name", "path"])).join("、") || "未识别"); appendFact(ui.repositoryAnalysisFacts, "权重格式", weights.map((item) => analysisValue(item, ["name"])).join("、") || "未识别"); appendFact(ui.repositoryAnalysisFacts, "执行策略", analysis.execution_policy || "static_only_never_execute");
+  [["框架", frameworks], ["任务", tasks], ["训练入口", trainingEntries], ["推理入口", inferenceEntries], ["基础模型", baseModels], ["数据契约", dataContracts], ["依赖", dependencies], ["指标", metrics], ["产物", artifacts], ["权重", weights]].forEach(([label, items]) => appendRepositoryEvidence(ui.repositoryAnalysisEvidenceList, label, items, analysis));
+  if (risks.length || blockers.length) { ui.repositoryAnalysisRiskPanel.hidden = false; appendRepositoryEvidence(ui.repositoryAnalysisRiskList, "风险", risks, analysis); appendRepositoryEvidence(ui.repositoryAnalysisRiskList, "阻断", blockers, analysis); }
+  ui.repositoryManualMapping.hidden = !["needs_input", "needs_manual_mapping"].includes(selectedStatus);
+  ui.repositoryAnalysisEvidence.open = selectedStatus !== "complete";
+}
+async function applyRepositoryManualMapping(event) {
+  event.preventDefault();
+  const analysis = state.task?.repository_analysis; const entrypoint = ui.repositoryManualEntrypointInput.value.trim(); const datasetArgument = ui.repositoryDatasetArgumentInput.value.trim();
+  if (!analysis?.analysis_id) { showNotice("当前没有可修订的仓库分析。"); return; }
+  if (!entrypoint) { showNotice("请填写当前固定快照中的训练入口路径。"); ui.repositoryManualEntrypointInput.focus(); return; }
+  setButtonBusy(ui.applyRepositoryManualMappingButton, true, "正在创建分析 revision");
+  try {
+    const result = await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/repository-analyses/${encodeURIComponent(analysis.analysis_id)}/manual-mappings`, { method: "POST", json: { training_entrypoint: entrypoint, dataset_argument: datasetArgument || null } });
+    ui.repositoryManualEntrypointInput.value = ""; ui.repositoryDatasetArgumentInput.value = "";
+    showNotice(`已创建新的 RepositoryAnalysis 与 Binding revision：${shortId(result.analysis?.analysis_id)}。`, "ok");
+    await refreshSelected({ force: true });
+  } catch (error) { showNotice(`映射未生效：${error.message}`); await refreshSelected({ force: true }); }
+  finally { setButtonBusy(ui.applyRepositoryManualMappingButton, false, ""); }
 }
 function renderTrainingPlan(task) {
   const binding = task.model_binding; const analysis = task.repository_analysis; const view = task.training_plan; ui.trainingPlanCard.hidden = !binding; if (!binding) return;
-  const blockedLicense = (task.blockers || []).some((item) => item.active !== false && item.stage === "training_plan" && item.code === "blocked_license"); const entries = analysis?.training_entrypoints || [];
-  clear(ui.trainingPlanFacts); ui.manualEntrypointField.hidden = view ? !(view.stale && entries.length === 0) : entries.length > 0; ui.createTrainingPlanButton.hidden = Boolean(view && !view.stale); ui.createTrainingPlanButton.disabled = blockedLicense; ui.createTrainingPlanButton.textContent = view?.stale ? "基于当前来源生成新 revision" : "生成不可变计划草案"; ui.approveTrainingPlanButton.hidden = true;
-  if (!view) { ui.trainingPlanState.textContent = blockedLicense ? "许可证阻断" : "未生成"; ui.trainingPlanSummary.textContent = blockedLicense ? "静态分析可以查看，但当前许可证策略未放行训练计划、环境或执行。" : entries.length ? `将以 ${entries[0].path} 作为计划入口；生成后仍需你核对并批准 digest。` : "请从固定文件清单中填写训练入口。系统不会执行这个文件，当前仅生成待审批计划。"; return; }
+  const blockedLicense = (task.blockers || []).some((item) => item.active !== false && item.stage === "training_plan" && item.code === "blocked_license"); const entries = analysis?.training_entrypoints || []; const needsMapping = ["needs_input", "needs_manual_mapping"].includes(analysis?.status); const blockedAnalysis = Boolean(analysis) && analysis.status !== "complete" && !needsMapping;
+  clear(ui.trainingPlanFacts); ui.manualEntrypointField.hidden = true; ui.createTrainingPlanButton.hidden = Boolean(view && !view.stale); ui.createTrainingPlanButton.disabled = blockedLicense || needsMapping || blockedAnalysis; ui.createTrainingPlanButton.textContent = view?.stale ? "基于当前来源生成新 revision" : "生成不可变计划草案"; ui.approveTrainingPlanButton.hidden = true; ui.trainingPlanDecisionActions.hidden = true;
+  if (!view) { ui.trainingPlanState.textContent = blockedLicense ? "许可证阻断" : needsMapping ? "等待入口映射" : blockedAnalysis ? "分析风险阻断" : "未生成"; ui.trainingPlanSummary.textContent = blockedLicense ? "静态分析可以查看，但当前许可证策略未放行训练计划、环境或执行。" : needsMapping ? "请先在仓库静态分析中确认训练入口；系统会创建新的可追溯分析 revision，再允许生成计划。" : blockedAnalysis ? "仓库静态分析仍有未解决风险；请先审阅证据或更换来源，不能绕过分析生成计划。" : entries.length ? `将以 ${entries[0].path} 作为计划入口；生成后仍需你核对并批准 digest。` : "当前分析没有可用训练入口，不能生成计划。"; return; }
   const plan = view.plan || {}; const status = view.stale ? "已过期" : view.effective_status === "approved" ? "已批准" : view.effective_status === "awaiting_approval" ? "待批准" : statusLabel(view.effective_status);
   ui.trainingPlanState.textContent = status; ui.trainingPlanSummary.textContent = view.stale ? "任务规格或模型来源已经变化，旧计划和审批仍保留但不能继续使用。" : "计划已绑定当前来源和分析；批准只对下面显示的精确 digest 生效。";
   appendFact(ui.trainingPlanFacts, "Revision", `r${plan.revision || "—"} · ${shortId(plan.training_plan_revision_id)}`); appendFact(ui.trainingPlanFacts, "入口", (plan.entrypoint?.argv || []).join(" "), { code: true }); appendFact(ui.trainingPlanFacts, "资源预算", `${formatBytes(plan.resource_budget?.ram_bytes)} RAM · ${formatBytes(plan.resource_budget?.disk_bytes)} 磁盘`); appendFact(ui.trainingPlanFacts, "执行边界", `${plan.execution_policy?.backend || "—"} · CPU-only`); appendFact(ui.trainingPlanFacts, "Plan Digest", plan.plan_sha256, { code: true });
-  ui.approveTrainingPlanButton.hidden = view.effective_status !== "awaiting_approval" || view.stale; ui.approveTrainingPlanButton.disabled = view.stale;
+  ui.approveTrainingPlanButton.hidden = view.effective_status !== "awaiting_approval" || view.stale; ui.approveTrainingPlanButton.disabled = view.stale; ui.trainingPlanDecisionActions.hidden = view.effective_status !== "awaiting_approval" || view.stale;
 }
 async function createTrainingPlan() {
   if (!state.task?.model_binding) { showNotice("请先选择并绑定模型来源。"); return; }
   if (state.task.training_plan?.stale) { reviseTrainingPlan(); return; }
-  const entrypoint = ui.manualEntrypointField.hidden ? null : ui.manualEntrypointInput.value.trim(); if (!ui.manualEntrypointField.hidden && !entrypoint) { showNotice("静态分析没有识别入口，请填写固定清单中的训练文件路径。"); return; }
-  setButtonBusy(ui.createTrainingPlanButton, true, "正在生成计划"); try { await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/training-plans`, { method: "POST", json: { base_spec_revision: state.task.current_spec_revision, entrypoint_path: entrypoint } }); showNotice("训练计划草案已生成；请核对入口、资源预算和 digest。", "ok"); await refreshSelected({ force: true }); } catch (error) { showNotice(`计划生成失败：${error.message}`); await refreshSelected({ force: true }); } finally { setButtonBusy(ui.createTrainingPlanButton, false, ""); }
+  if (["needs_input", "needs_manual_mapping"].includes(state.task.repository_analysis?.status)) { showNotice("请先完成仓库分析入口映射。"); return; }
+  if (state.task.repository_analysis?.status !== "complete") { showNotice("仓库静态分析仍有未解决风险，不能生成训练计划。"); return; }
+  setButtonBusy(ui.createTrainingPlanButton, true, "正在生成计划"); try { await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/training-plans`, { method: "POST", json: { base_spec_revision: state.task.current_spec_revision } }); showNotice("训练计划草案已生成；请核对入口、资源预算和 digest。", "ok"); await refreshSelected({ force: true }); } catch (error) { showNotice(`计划生成失败：${error.message}`); await refreshSelected({ force: true }); } finally { setButtonBusy(ui.createTrainingPlanButton, false, ""); }
 }
 function reviseTrainingPlan(changes = {}) {
   const view = state.task?.training_plan; const parent = view?.plan;
@@ -689,14 +875,19 @@ function approveTrainingPlan() {
   const plan = state.task?.training_plan?.plan; if (!plan) { showNotice("当前没有可批准的训练计划。"); return; }
   openSimpleDialog({ kicker: "批准不可变训练计划", title: "确认批准当前 Plan Digest？", body: `你批准的是 ${plan.plan_sha256}。任何入口、参数、资源或权限变化都会生成新 revision，并使本次批准失效。批准后只进行本机资源检查，不会执行仓库代码。`, allowLabel: "批准当前 Digest", onAllow: async () => { await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/training-plans/${encodeURIComponent(plan.training_plan_revision_id)}/decisions`, { method: "POST", json: { decision: "approve", expected_plan_sha256: plan.plan_sha256, reason: "用户在产品界面确认" } }); showNotice("当前训练计划 digest 已批准；下一步检查本机资源。", "ok"); await refreshSelected({ force: true }); } });
 }
+function decideTrainingPlan(decision) {
+  const plan = state.task?.training_plan?.plan; if (!plan) { showNotice("当前没有可处理的训练计划。"); return; }
+  const rejected = decision === "reject";
+  openSimpleDialog({ kicker: "训练计划决策", title: rejected ? "拒绝当前训练计划？" : "取消当前训练计划？", body: `该决策只绑定当前 digest ${plan.plan_sha256}，不会删除历史证据。后续必须创建或重新批准有效 revision 才能继续。`, allowLabel: rejected ? "确认拒绝" : "确认取消", onAllow: async () => { await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/training-plans/${encodeURIComponent(plan.training_plan_revision_id)}/decisions`, { method: "POST", json: { decision, expected_plan_sha256: plan.plan_sha256, reason: rejected ? "用户在产品界面拒绝当前计划" : "用户在产品界面取消当前计划" } }); showNotice(rejected ? "当前计划已拒绝，未授权后续资源检查。" : "当前计划已取消，未授权后续资源检查。", "ok"); await refreshSelected({ force: true }); } });
+}
 function renderResourceFeasibility(task) {
   const planView = task.training_plan; const feasibility = task.resource_feasibility || {}; const probe = feasibility.resource_probe; const lock = feasibility.environment_lock; const report = feasibility.resource_fit_report; const blockers = feasibility.blockers || [];
   ui.resourceFeasibilityCard.hidden = !planView || planView.effective_status !== "approved" || planView.stale; if (ui.resourceFeasibilityCard.hidden) return;
   clear(ui.resourceFeasibilityFacts); clear(ui.resourceFeasibilityReasons); const decision = report?.decision || (blockers.length ? feasibility.decision : "not_checked");
-  ui.resourceFeasibilityState.textContent = decision === "fit" ? "可进入隔离构建" : decision === "not_checked" ? "未检查" : "已阻断";
-  ui.resourceFeasibilitySummary.textContent = decision === "fit" ? "当前计划在已冻结环境与真实资源探测下通过；本版本仍停在第三方代码执行之前。" : blockers.length ? blockers[0].message : "点击后读取本机资源事实。探测不会安装依赖、下载权重或执行仓库代码。";
-  if (probe) { appendFact(ui.resourceFeasibilityFacts, "系统", `${probe.os?.name || "未知"} · ${probe.arch?.name || "未知"}`); appendFact(ui.resourceFeasibilityFacts, "CPU / RAM", `${probe.cpu?.logical_count || "未知"} 线程 · ${formatBytes(probe.ram?.available_bytes)}`); appendFact(ui.resourceFeasibilityFacts, "可用磁盘", formatBytes(probe.disk?.free_bytes)); appendFact(ui.resourceFeasibilityFacts, "容器", probe.container_runtime?.available ? `${probe.container_runtime.runtime} 可用` : probe.container_runtime?.reason || "不可用"); appendFact(ui.resourceFeasibilityFacts, "加速器口径", `${probe.accelerator_policy?.mode || "cpu_only"} · ${(probe.accelerator_policy?.detected || []).join("、") || "未检测到"}`); appendFact(ui.resourceFeasibilityFacts, "Probe Digest", probe.probe_sha256, { code: true }); }
-  if (lock) appendFact(ui.resourceFeasibilityFacts, "Environment", lock.lock_sha256, { code: true }); if (report) appendFact(ui.resourceFeasibilityFacts, "Fit Report", report.report_sha256, { code: true });
+  ui.resourceFeasibilityState.textContent = decision === "fit" ? "静态预算匹配" : decision === "fit_with_revision" ? "建议调整静态预算" : decision === "not_checked" ? "未检查" : "已阻断";
+  ui.resourceFeasibilitySummary.textContent = decision === "fit" ? "当前只证明计划预算与本机资源探测相匹配，可以进入环境构建验证；镜像与依赖尚未拉取，环境尚未构建，不能据此认定本机可训练。" : decision === "fit_with_revision" ? "当前静态预算需要降级。采纳建议会创建新 revision，旧批准立即失效，新计划必须重新批准；仍需后续环境构建验证。" : blockers.length ? blockers[0].message : "点击后读取本机资源事实。探测不会安装依赖、下载权重、构建环境或执行仓库代码。";
+  if (probe) { appendFact(ui.resourceFeasibilityFacts, "系统", `${probe.os?.name || "未知"} · ${probe.arch?.name || "未知"}`); appendFact(ui.resourceFeasibilityFacts, "CPU / RAM", `${probe.cpu?.logical_count || "未知"} 线程 · ${formatBytes(probe.ram?.available_bytes)}`); appendFact(ui.resourceFeasibilityFacts, "可用磁盘", formatBytes(probe.disk?.free_bytes)); appendFact(ui.resourceFeasibilityFacts, "Python / Node", `${probe.python?.version || "不可用"} · ${probe.node?.version || "不可用"}`); appendFact(ui.resourceFeasibilityFacts, "容器", probe.container_runtime?.available ? `${probe.container_runtime.runtime} 可用` : probe.container_runtime?.reason || "不可用"); appendFact(ui.resourceFeasibilityFacts, "加速器口径", `${probe.accelerator_policy?.mode || "cpu_only"} · ${(probe.accelerator_policy?.detected || []).join("、") || "未检测到"}`); appendFact(ui.resourceFeasibilityFacts, "Probe Digest", probe.probe_sha256, { code: true }); }
+  if (lock) { appendFact(ui.resourceFeasibilityFacts, "基础镜像", lock.base_image_digest, { code: true }); appendFact(ui.resourceFeasibilityFacts, "依赖锁", `${lock.packages?.length || 0} 个 Python 包 · ${lock.system_dependencies?.length || 0} 个系统依赖`); appendFact(ui.resourceFeasibilityFacts, "网络范围", (lock.network_allowlist || []).join("、") || "构建时默认断网"); appendFact(ui.resourceFeasibilityFacts, "Environment", lock.lock_sha256, { code: true }); } if (report) appendFact(ui.resourceFeasibilityFacts, "Fit Report", report.report_sha256, { code: true });
   const needsDigest = blockers.some((item) => item.details?.detector === "base_image_digest_validator"); ui.baseImageDigestField.hidden = !needsDigest;
   blockers.forEach((blocker) => {
     const details = blocker.details || {}; const row = document.createElement("article"); const title = document.createElement("b"); const detail = document.createElement("span");
@@ -709,13 +900,13 @@ function renderResourceFeasibility(task) {
     detail.textContent = evidence.join(" · ") || blocker.message || "后端未返回更多资源事实"; row.append(title, detail); ui.resourceFeasibilityReasons.append(row);
   });
   const reasons = report?.reasons || blockers.flatMap((item) => item.details?.reasons || []); reasons.forEach((reason) => { const row = document.createElement("article"); const title = document.createElement("b"); const detail = document.createElement("span"); title.textContent = reason.code || "资源事实"; detail.textContent = `需要 ${reason.required ?? "—"}，实测 ${reason.observed ?? "—"} ${reason.unit || ""}`; row.append(title, detail); ui.resourceFeasibilityReasons.append(row); });
-  const alternatives = report?.alternatives || blockers.flatMap((item) => item.details?.alternatives || []); alternatives.forEach((alternative) => { const row = document.createElement("article"); const title = document.createElement("b"); const detail = document.createElement("span"); const apply = document.createElement("button"); title.textContent = "可选降级方案"; detail.textContent = alternative.expected_effect || JSON.stringify(alternative.changes || {}); apply.type = "button"; apply.className = "text-button"; apply.textContent = "用此建议生成新 revision"; apply.addEventListener("click", () => reviseTrainingPlan(alternative.changes || {})); row.append(title, detail, apply); ui.resourceFeasibilityReasons.append(row); });
+  const alternatives = report?.alternatives || blockers.flatMap((item) => item.details?.alternatives || []); alternatives.forEach((alternative) => { const row = document.createElement("article"); const title = document.createElement("b"); const detail = document.createElement("span"); title.textContent = alternative.creates_new_plan ? "可执行降级方案" : "外部恢复动作"; detail.textContent = alternative.expected_effect || JSON.stringify(alternative.changes || {}); row.append(title, detail); if (alternative.creates_new_plan) { const apply = document.createElement("button"); apply.type = "button"; apply.className = "text-button"; apply.textContent = "用此建议生成新 revision"; apply.addEventListener("click", () => reviseTrainingPlan(alternative.changes || {})); row.append(apply); } ui.resourceFeasibilityReasons.append(row); });
   ui.checkResourceFeasibilityButton.textContent = blockers.length || probe ? "重新探测并检查" : "检查这台机器";
 }
 async function checkResourceFeasibility() {
   const plan = state.task?.training_plan?.plan; if (!plan || state.task.training_plan.effective_status !== "approved") { showNotice("请先批准当前训练计划 digest。"); return; }
   const digest = ui.baseImageDigestField.hidden ? null : ui.baseImageDigestInput.value.trim() || null; if (digest && !/^sha256:[0-9a-f]{64}$/.test(digest)) { showNotice("基础镜像必须填写 sha256: 开头的 64 位小写十六进制 digest，不能填写 tag。"); return; }
-  setButtonBusy(ui.checkResourceFeasibilityButton, true, "正在读取本机事实"); try { const response = await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/resource-feasibility-checks`, { method: "POST", json: { training_plan_revision_id: plan.training_plan_revision_id, expected_plan_sha256: plan.plan_sha256, base_image_digest: digest } }); const decision = response.resource_feasibility?.decision; showNotice(decision === "fit" ? "本机资源检查通过；第三方代码仍未执行。" : "资源检查形成了真实阻断，请按事实和恢复动作处理。", decision === "fit" ? "ok" : "error"); await refreshSelected({ force: true }); } catch (error) { showNotice(`资源检查失败：${error.message}`); await refreshSelected({ force: true }); } finally { setButtonBusy(ui.checkResourceFeasibilityButton, false, ""); }
+  setButtonBusy(ui.checkResourceFeasibilityButton, true, "正在读取本机事实"); try { const response = await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/resource-feasibility-checks`, { method: "POST", json: { training_plan_revision_id: plan.training_plan_revision_id, expected_plan_sha256: plan.plan_sha256, base_image_digest: digest } }); const decision = response.resource_feasibility?.decision; showNotice(decision === "fit" ? "静态资源预算匹配；下一步仍需拉取镜像、构建环境并做资格验证。" : decision === "fit_with_revision" ? "静态检查给出了降级建议；采纳后需重新批准计划并继续环境验证。" : "资源检查形成了真实阻断，请按事实和恢复动作处理。", decision === "fit" ? "ok" : decision === "fit_with_revision" ? "warn" : "error"); await refreshSelected({ force: true }); } catch (error) { showNotice(`资源检查失败：${error.message}`); await refreshSelected({ force: true }); } finally { setButtonBusy(ui.checkResourceFeasibilityButton, false, ""); }
 }
 function renderSourceMode() {
   ui.sourceModeTabs.querySelectorAll("[data-source-mode]").forEach((button) => { const active = button.dataset.sourceMode === state.modelSourceMode; button.classList.toggle("active", active); button.setAttribute("aria-selected", String(active)); });
@@ -981,11 +1172,11 @@ async function loadRunEvidence(task) {
   if (evaluation.status === "fulfilled") { state.evaluationReport = evaluation.value.evaluation_report; delete state.evidenceErrors.evaluation; } else state.evidenceErrors.evaluation = [404, 405].includes(evaluation.reason.status) ? "capability_unavailable" : evaluation.reason.message;
   if (samples.status === "fulfilled") { state.sampleInferences = samples.value.sample_inferences || []; delete state.evidenceErrors.samples; } else state.evidenceErrors.samples = [404, 405].includes(samples.reason.status) ? "capability_unavailable" : samples.reason.message;
   if (bundles.status === "fulfilled") { state.artifactBundles = bundles.value.artifact_bundles || []; delete state.evidenceErrors.bundles; } else state.evidenceErrors.bundles = [404, 405].includes(bundles.reason.status) ? "capability_unavailable" : bundles.reason.message;
-  state.evidenceLoaded = true; if (state.task) renderResult(state.task);
+  state.evidenceLoaded = true; if (state.task) { renderResult(state.task); renderConversation(true); }
 }
 async function refreshEvaluation() {
   const taskId = state.selectedTaskId; const runId = state.task?.current_run_id; if (!taskId || !runId) return; setButtonBusy(ui.refreshEvaluationButton, true, "正在复核");
-  try { const response = await request(`/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}/evaluation-report`); state.evaluationReport = response.evaluation_report; delete state.evidenceErrors.evaluation; renderResult(state.task); showNotice("可信评测报告已按当前运行证据重新读取。", "ok"); }
+  try { const response = await request(`/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}/evaluation-report`); state.evaluationReport = response.evaluation_report; delete state.evidenceErrors.evaluation; renderResult(state.task); renderConversation(true); showNotice("可信评测报告已按当前运行证据重新读取。", "ok"); }
   catch (error) { state.evidenceErrors.evaluation = [404, 405].includes(error.status) ? "capability_unavailable" : error.message; renderResult(state.task); showNotice(`评测报告不可用：${error.message}`); }
   finally { setButtonBusy(ui.refreshEvaluationButton, false, ""); if (state.task) renderResult(state.task); }
 }
@@ -1059,7 +1250,7 @@ function taskEvidenceTimeline(task) {
   const binding = task.model_binding;
   if (binding) timeline.push({ kind: "tool", status: binding.status === "stale" ? "failed" : "completed", evidenceKey: binding.binding_revision_id || binding.resolution_id, label: "固定模型来源", detail: `${binding.repository} @ ${shortId(binding.resolved_commit)} · ${binding.status === "stale" ? "已因新规格失效" : "不可变版本已绑定"}`, time: binding.created_at });
   const analysis = task.repository_analysis; const analysisAttempt = bindingAnalysisAttempt(task);
-  if (analysis) timeline.push({ kind: "tool", status: (analysis.downstream_blockers || []).length ? "failed" : "completed", evidenceKey: analysis.content_digest || analysis.analysis_id, label: "仓库静态分析", detail: `${(analysis.training_entrypoints || []).length} 个训练入口 · ${analysis.execution_policy || "static_only_never_execute"} · digest ${shortId(analysis.content_digest || analysis.analysis_digest)}`, time: analysis.created_at || analysisAttempt?.current_state?.updated_at || binding?.created_at });
+  if (analysis) timeline.push({ kind: "tool", status: analysis.status === "complete" && !(analysis.downstream_blockers || []).length ? "completed" : "failed", evidenceKey: analysis.analysis_digest || analysis.analysis_id, label: "仓库静态分析", detail: `${REPOSITORY_ANALYSIS_STATUS_LABELS[analysis.status] || analysis.status || "未知状态"} · ${(analysis.training_entrypoints || []).length} 个训练入口 · digest ${shortId(analysis.analysis_digest)}`, time: analysis.created_at || analysisAttempt?.current_state?.updated_at || binding?.created_at });
   else if (analysisAttempt) {
     const attemptStatus = analysisAttempt.current_state?.status || "queued"; const failure = analysisAttempt.current_state?.failure; const attemptId = analysisAttempt.attempt?.attempt_id;
     timeline.push({ kind: "tool", status: ["failed", "cancelled"].includes(attemptStatus) ? "failed" : attemptStatus === "completed" ? "completed" : "running", evidenceKey: attemptId, label: "绑定并分析模型来源", detail: `${attemptStatus} · attempt ${shortId(attemptId)}${failure ? ` · ${failure.code || "unknown_failure"}: ${failure.message || "没有错误详情"}` : " · 尚未执行第三方代码"}`, time: analysisAttempt.current_state?.updated_at || analysisAttempt.attempt?.created_at });
@@ -1072,12 +1263,36 @@ function taskEvidenceTimeline(task) {
   const feasibility = task.resource_feasibility || {}; const probe = feasibility.resource_probe; const report = feasibility.resource_fit_report; const blockers = feasibility.blockers || [];
   if (probe) timeline.push({ kind: "tool", status: "completed", evidenceKey: probe.probe_sha256, label: "本机资源探测", detail: `${probe.cpu?.logical_count || "未知"} 线程 · ${formatBytes(probe.ram?.available_bytes)} 可用内存 · digest ${shortId(probe.probe_sha256)}`, time: probe.captured_at });
   if (report || blockers.length) timeline.push({ kind: "tool", status: report?.decision === "fit" ? "completed" : "failed", evidenceKey: report?.report_sha256 || blockers[0]?.blocker_id || `resource:${plan?.training_plan_revision_id}`, label: "训练资源可行性", detail: report ? `${report.decision} · report ${shortId(report.report_sha256)}` : `${feasibility.decision || "blocked"} · ${blockers[0]?.message || blockers[0]?.code || "资源阻断"}`, time: report?.created_at || probe?.captured_at });
+  const result = task.current_result; const evaluation = state.evidenceRunId === result?.run_id ? state.evaluationReport || result?.evaluation_report : result?.evaluation_report;
+  if (result?.status === "completed" && evaluation) {
+    const metrics = metricEntries(result).filter(([value]) => typeof value === "number").map(([value, label]) => `${label} ${value.toFixed(3)}`).join(" · ") || "当前报告没有可展示的核心指标";
+    const failure = result.failure_samples?.[0]; const [failureName, failureDetail] = failure ? failureSummary(failure) : ["无", "独立测试集没有记录可展示的失败样本"];
+    const conclusion = statusLabel(evaluation.conclusion || result.evaluation_conclusion || "not_evaluated");
+    const reasons = [...(evaluation.evidence_reasons || []), ...(evaluation.integrity_errors || [])];
+    const gap = reasons.join("；") || (evaluation.release_ready ? "运行、产物、指标与证据充分性均通过" : result.offline_gates_passed ? "离线指标已通过，但交付证据仍未全部满足" : "至少一个离线指标未达到训练合同门槛");
+    const next = evaluation.release_ready ? "用一份未参与训练的新样本试跑，确认后生成 Artifact Bundle。" : "在右侧评测报告查看失败样本和门槛差距，再决定补数据、调参数或创建新 Run。";
+    const evaluationDigest = evaluation.report_sha256 || evaluation.evaluation_report_id || evaluation.evaluation_id || evaluation.content_sha256 || "embedded-report";
+    timeline.push({ kind: "message", role: "assistant", evidenceKey: `result-summary:${result.run_id}:${evaluationDigest}`, text: `本轮真实训练已完成。\n\n结论：${conclusion}\n核心指标：${metrics}\n主要失败样本：${failureName}（${failureDetail}）\n与验收门槛的差距：${gap}\n建议下一步：${next}`, time: evaluation.created_at || result.completed_at || result.updated_at });
+  }
   return timeline;
 }
 function conversationWithEvidence(task, remoteConversation) {
   const base = remoteConversation?.session_id ? remoteConversation : localConversation(task); const items = [...(base.items || [])]; const serialized = JSON.stringify(items);
   taskEvidenceTimeline(task).forEach((item) => { if ((!item.evidenceKey || !serialized.includes(item.evidenceKey)) && (!item.text || !items.some((existing) => existing.text === item.text))) items.push(item); });
   return { ...base, items };
+}
+function compactConversationItems(items) {
+  const compact = []; let completedTools = [];
+  const flush = () => {
+    if (completedTools.length >= 3) compact.push({ kind: "tool_group", items: completedTools });
+    else compact.push(...completedTools);
+    completedTools = [];
+  };
+  items.forEach((item) => {
+    if (item.kind === "tool" && item.status === "completed") completedTools.push(item);
+    else { flush(); compact.push(item); }
+  });
+  flush(); return compact;
 }
 function renderConversation(force = false) {
   const conversation = conversationWithEvidence(state.task, state.conversation);
@@ -1086,8 +1301,17 @@ function renderConversation(force = false) {
   if (!force && renderKey === state.lastRenderKey) return; state.lastRenderKey = renderKey;
   const nearBottom = ui.conversation.scrollHeight - ui.conversation.scrollTop - ui.conversation.clientHeight < 120; clear(ui.messageList);
   const items = [...(conversation.items || [])]; if (optimistic && !items.some((item) => item.role === "user" && item.text === optimistic.text)) items.push({ kind: "message", role: "user", text: optimistic.text, time: optimistic.time, optimistic: true });
-  items.forEach((item) => item.kind === "tool" ? renderTool(item) : renderMessage(item)); ui.conversationIntro.hidden = items.length > 0; renderPending(conversation.pending || []); ui.agentWorking.hidden = !conversation.running && !optimistic;
+  compactConversationItems(items).forEach((item) => item.kind === "tool_group" ? renderToolGroup(item.items) : item.kind === "tool" ? renderTool(item) : renderMessage(item)); ui.conversationIntro.hidden = items.length > 0; renderPending(conversation.pending || []); ui.agentWorking.hidden = !conversation.running && !optimistic;
   if (force || nearBottom) requestAnimationFrame(() => { ui.conversation.scrollTop = ui.conversation.scrollHeight; });
+}
+function renderToolGroup(items) {
+  const details = document.createElement("details"); details.className = "tool-history";
+  const summary = document.createElement("summary"); const mark = document.createElement("span"); mark.textContent = "✓";
+  const copy = document.createElement("span"); const title = document.createElement("b"); title.textContent = `已完成 ${items.length} 个准备步骤`; const hint = document.createElement("small"); hint.textContent = `${items[0]?.label || "开始准备"} → ${items.at(-1)?.label || "准备完成"}`; copy.append(title, hint);
+  const action = document.createElement("em"); action.textContent = "查看记录"; summary.append(mark, copy, action); details.append(summary);
+  const list = document.createElement("div"); list.className = "tool-history-list";
+  items.forEach((item) => { const row = document.createElement("div"); const label = document.createElement("b"); label.textContent = item.label; const detail = document.createElement("small"); detail.textContent = item.detail || "真实工具调用已完成"; const time = document.createElement("time"); time.textContent = formatTime(item.time); row.append(label, detail, time); list.append(row); });
+  details.append(list); ui.messageList.append(details);
 }
 function renderMessage(item) {
   const row = document.createElement("article"); row.className = "message"; row.dataset.role = item.role; const avatar = document.createElement("span"); avatar.className = "message-avatar"; avatar.textContent = item.role === "user" ? "你" : "MH";
@@ -1234,8 +1458,8 @@ function performNextAction() {
   if (action === "stage_recipe_samples") { ui.recipeSampleInput.click(); return; }
   if (action === "start_recipe_build") { startRecipeBuild(); return; }
   if (action === "approve_recipe_registration") { approveRecipeRegistration(); return; }
-  if (["review_capability_gap", "search_model_sources", "approve_model_source_binding", "replace_model_source", "review_repository_analysis", "retry_model_source_search", "edit_or_retry_model_source", "retry_model_source_binding", "review_or_retry_repository_analysis", "create_training_plan", "approve_training_plan", "revise_training_plan", "create_revised_training_plan", "map_training_entrypoint", "check_resource_feasibility", "review_resource_feasibility", "provide_base_image_digest", "install_or_start_oci_runtime_then_retry"].includes(action)) { scrollToCheckpoint(); return; }
-  if (action === "confirm_training_contract") { scrollToCheckpoint(); return; }
+  if (["review_capability_gap", "search_model_sources", "approve_model_source_binding", "replace_model_source", "review_repository_analysis", "retry_model_source_search", "edit_or_retry_model_source", "retry_model_source_binding", "review_or_retry_repository_analysis", "create_training_plan", "approve_training_plan", "revise_training_plan", "create_revised_training_plan", "map_training_entrypoint", "check_resource_feasibility", "review_resource_feasibility", "provide_base_image_digest", "install_or_start_oci_runtime_then_retry"].includes(action)) { openInspector("plan"); return; }
+  if (action === "confirm_training_contract") { openInspector("data"); return; }
   if (action === "start_training_run") { startRunDirect(); return; }
   if (action === "retry_training_run") { retryRunDirect(); return; }
   if (action === "view_run_progress" || action === "inspect_run_failure") { openInspector("run"); return; }
@@ -1281,8 +1505,9 @@ async function confirmContract() {
 function activateContext(name) { const selected = name === "capability" ? "plan" : name; document.querySelectorAll("[data-context]").forEach((button) => button.classList.toggle("active", button.dataset.context === selected)); document.querySelectorAll("[data-context-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.contextPanel === selected)); ui.inspectorSheetTitle.textContent = ({ plan: "任务方案", data: "数据检查", run: "训练现场", evaluation: "评测报告", artifacts: "交付产物" })[selected] || "训练详情"; }
 function setMobileView(name) { [ui.mobileConversationButton, ui.mobileContextButton, ui.mobileResultButton].forEach((button) => { const active = button.dataset.mobileView === name; button.classList.toggle("active", active); button.setAttribute("aria-pressed", String(active)); }); }
 function mobileWorkspace() { return inspectorMedia.matches; }
+function overlayWorkspace() { return !dockedWorkspaceMedia.matches; }
 function syncInspectorIsolation() {
-  const isolated = mobileWorkspace() && ui.inspector.dataset.open === "true";
+  const isolated = overlayWorkspace() && ui.inspector.dataset.open === "true";
   ui.sidebar.inert = isolated; ui.conversationMain.inert = isolated; ui.mobileViewNav.inert = isolated;
   if (isolated) { ui.inspector.setAttribute("role", "dialog"); ui.inspector.setAttribute("aria-modal", "true"); }
   else { ui.inspector.removeAttribute("role"); ui.inspector.removeAttribute("aria-modal"); }
@@ -1291,7 +1516,7 @@ function inspectorFocusables() {
   return [...ui.inspector.querySelectorAll(INSPECTOR_FOCUSABLE)].filter((element) => !element.hidden && !element.disabled && element.getClientRects().length > 0);
 }
 function handleInspectorKeydown(event) {
-  if (ui.inspector.dataset.open !== "true" || !mobileWorkspace() || ui.decisionDialog.open) return;
+  if (ui.inspector.dataset.open !== "true" || !overlayWorkspace() || ui.decisionDialog.open) return;
   if (event.key === "Escape") { event.preventDefault(); closeInspector(); return; }
   if (event.key !== "Tab") return;
   const focusable = inspectorFocusables();
@@ -1303,13 +1528,13 @@ function handleInspectorKeydown(event) {
 function openInspector(context = "plan") {
   if (!state.selectedTaskId) return; const opening = ui.inspector.dataset.open !== "true";
   if (opening && document.activeElement instanceof HTMLElement && document.activeElement !== document.body && !ui.inspector.contains(document.activeElement)) state.inspectorOpener = document.activeElement;
-  ui.inspector.hidden = false; ui.inspector.inert = false; ui.inspector.setAttribute("aria-hidden", "false"); activateContext(context); ui.inspector.dataset.open = "true"; ui.inspectorScrim.hidden = false; ui.workspaceToggleButton.setAttribute("aria-expanded", "true"); ui.workspaceToggleButton.setAttribute("aria-label", "关闭训练工作区"); setMobileView(["evaluation", "artifacts"].includes(context) ? "result" : "context");
+  ui.inspector.hidden = false; ui.inspector.inert = false; ui.inspector.setAttribute("aria-hidden", "false"); activateContext(context); ui.inspector.dataset.open = "true"; document.body.dataset.workspace = "open"; ui.inspectorScrim.hidden = dockedWorkspaceMedia.matches; ui.workspaceToggleButton.setAttribute("aria-expanded", "true"); ui.workspaceToggleButton.setAttribute("aria-label", "关闭任务工作区"); setMobileView(["evaluation", "artifacts"].includes(context) ? "result" : "context");
   syncInspectorIsolation();
-  if (opening && mobileWorkspace()) window.requestAnimationFrame(() => ui.closeInspectorButton.focus());
+  if (opening && overlayWorkspace()) window.requestAnimationFrame(() => ui.closeInspectorButton.focus());
 }
 function closeInspector() {
   const wasOpen = ui.inspector.dataset.open === "true"; const opener = state.inspectorOpener; state.inspectorOpener = null;
-  ui.inspector.dataset.open = "false"; ui.inspector.inert = true; ui.inspector.setAttribute("aria-hidden", "true"); ui.inspectorScrim.hidden = true; ui.workspaceToggleButton.setAttribute("aria-expanded", "false"); ui.workspaceToggleButton.setAttribute("aria-label", "打开训练工作区"); setMobileView("conversation");
+  ui.inspector.dataset.open = "false"; document.body.dataset.workspace = "closed"; ui.inspector.inert = true; ui.inspector.setAttribute("aria-hidden", "true"); ui.inspectorScrim.hidden = true; ui.workspaceToggleButton.setAttribute("aria-expanded", "false"); ui.workspaceToggleButton.setAttribute("aria-label", "打开任务工作区"); setMobileView("conversation");
   syncInspectorIsolation();
   const restoreTarget = opener?.isConnected && !opener.disabled ? opener : ui.workspaceToggleButton;
   if (wasOpen && restoreTarget?.isConnected && !restoreTarget.disabled) window.requestAnimationFrame(() => restoreTarget.focus());
@@ -1327,9 +1552,10 @@ ui.newTaskButton.addEventListener("click", openNewTask); ui.refreshButton.addEve
 ui.menuButton.addEventListener("click", openSidebar); ui.sidebarScrim.addEventListener("click", closeSidebar);
 ui.datasetButton.addEventListener("click", () => state.selectedTaskId ? ui.datasetInput.click() : showNotice("先用一句话创建训练任务，再导入数据。")); ui.inspectorDatasetButton.addEventListener("click", () => ui.datasetInput.click()); ui.datasetInput.addEventListener("change", () => uploadDataset(ui.datasetInput.files?.[0])); ui.recipeSampleInput.addEventListener("change", () => stageRecipeSamples(ui.recipeSampleInput.files?.[0]));
 ui.confirmContractButton.addEventListener("click", confirmContract);
-ui.modelSourceSearchForm.addEventListener("submit", searchModelSources); ui.modelSourceReferenceForm.addEventListener("submit", resolveModelSourceReference); ui.bindModelSourceButton.addEventListener("click", bindPendingModelSource);
+ui.modelSourceSearchForm.addEventListener("submit", searchModelSources); ui.modelSourceReferenceForm.addEventListener("submit", resolveModelSourceReference); ui.bindModelSourceButton.addEventListener("click", bindPendingModelSource); ui.cancelModelBindingButton.addEventListener("click", cancelModelBindingAttempt);
 ui.viewAllModelSourceCandidatesButton.addEventListener("click", openAllModelSourceCandidates);
-ui.createTrainingPlanButton.addEventListener("click", createTrainingPlan); ui.approveTrainingPlanButton.addEventListener("click", approveTrainingPlan);
+ui.repositoryManualMapping.addEventListener("submit", applyRepositoryManualMapping);
+ui.createTrainingPlanButton.addEventListener("click", createTrainingPlan); ui.approveTrainingPlanButton.addEventListener("click", approveTrainingPlan); ui.rejectTrainingPlanButton.addEventListener("click", () => decideTrainingPlan("reject")); ui.cancelTrainingPlanButton.addEventListener("click", () => decideTrainingPlan("cancel"));
 ui.checkResourceFeasibilityButton.addEventListener("click", checkResourceFeasibility);
 ui.sourceModeTabs.addEventListener("click", (event) => { const button = event.target.closest("[data-source-mode]"); if (!button) return; state.modelSourceMode = button.dataset.sourceMode; renderSourceMode(); (state.modelSourceMode === "search" ? ui.modelSourceSearchInput : ui.modelSourceReferenceInput).focus(); });
 ui.modelSourceRetryButton.addEventListener("click", () => { if (retryFailedModelSourceBinding()) return; ui.modelSourceDiscovery.open = true; if (modelSourceBlocker(state.task)?.stage === "source_resolution") { state.modelSourceMode = "reference"; renderSourceMode(); ui.modelSourceReferenceInput.focus(); } else { state.modelSourceMode = "search"; renderSourceMode(); ui.modelSourceSearchInput.focus(); } });
@@ -1337,6 +1563,7 @@ ui.hfSearchForm.addEventListener("submit", searchHfModels); ui.hfAttachButton.ad
 ui.refreshEvaluationButton.addEventListener("click", refreshEvaluation); ui.sampleTrialSelectButton.addEventListener("click", () => ui.sampleTrialInput.click());
 ui.sampleTrialInput.addEventListener("change", () => state.task && renderResult(state.task)); ui.sampleTrialRunButton.addEventListener("click", runSampleTrial); ui.buildArtifactBundleButton.addEventListener("click", buildArtifactBundle);
 ui.nextActionButton.addEventListener("click", performNextAction); ui.taskBlockerActionButton.addEventListener("click", performNextAction);
+ui.agentCheckpointWorkspaceButton.addEventListener("click", () => { openInspector(ui.agentCheckpointWorkspaceButton.dataset.context || "plan"); revealCurrentWorkspaceObject(); });
 ui.confirmTaskSpecButton.addEventListener("click", () => openTaskSpecDialog()); ui.editTaskSpecButton.addEventListener("click", () => openTaskSpecDialog({ editing: true }));
 ui.scaffoldRecipeButton.addEventListener("click", async () => {
   setButtonBusy(ui.scaffoldRecipeButton, true, "正在生成");
@@ -1361,6 +1588,12 @@ ui.workspaceToggleButton.addEventListener("click", () => ui.inspector.dataset.op
 ui.mobileConversationButton.addEventListener("click", closeInspector); ui.mobileContextButton.addEventListener("click", () => openInspector("plan")); ui.mobileResultButton.addEventListener("click", () => openInspector("evaluation"));
 document.addEventListener("keydown", handleInspectorKeydown);
 inspectorMedia.addEventListener("change", () => { syncInspectorIsolation(); if (mobileWorkspace() && ui.inspector.dataset.open === "true") window.requestAnimationFrame(() => ui.closeInspectorButton.focus()); });
+dockedWorkspaceMedia.addEventListener("change", () => {
+  if (ui.inspector.dataset.open === "true") ui.inspectorScrim.hidden = dockedWorkspaceMedia.matches;
+  syncInspectorIsolation();
+  if (dockedWorkspaceMedia.matches && state.task) { state.workspaceAutoKey = null; syncWorkspaceForTask(state.task); }
+  else if (ui.inspector.dataset.open === "true") window.requestAnimationFrame(() => ui.closeInspectorButton.focus());
+});
 document.querySelectorAll("[data-prompt]").forEach((button) => button.addEventListener("click", () => { ui.messageInput.value = button.dataset.prompt; resizeComposer(); ui.messageInput.focus(); }));
 
 async function boot() { restoreDraft(null); await Promise.all([loadRuntime(), loadHfCapability(), loadModelSourceProviders(), loadTaskSpecFamilies(), loadTasks({ selectFromUrl: true })]); if (!state.selectedTaskId) enterHomeState({ focusComposer: false }); resizeComposer(); }

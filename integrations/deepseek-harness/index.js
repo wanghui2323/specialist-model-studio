@@ -37,9 +37,7 @@ const APPROVAL_REQUIRED_TOOLS = new Set([
   "model_harness_confirm_contract",
   "model_harness_hf_attach",
   "model_harness_start_task_run",
-  "model_harness_start_run",
   "model_harness_apply_task_strategy",
-  "model_harness_apply_strategy",
   "model_harness_cancel_run",
   "model_harness_run_sample_inference",
   "model_harness_build_artifact_bundle",
@@ -843,37 +841,10 @@ Never use the teaching digit run as a substitute for a user's OCR, speech, forec
 
   ctx.tools.register(
     defineTool({
-      name: "model_harness_start_run",
-      description: "Start an auditable specialist-model training run from an implemented Recipe. This creates a persistent run and returns its run_id.",
-      parameters: {
-        recipe: {
-          type: "string",
-          enum: ["digit-classification"],
-          description: "Implemented Recipe id. The current built-in Recipe is teaching-only.",
-        },
-        business_goal: { type: "string", description: "Optional user-visible goal copied into the frozen task contract." },
-        task_id: { type: "string", description: "Optional stable task label." },
-        run_id: { type: "string", description: "Optional caller-selected run id." },
-      },
-      output: jsonOutput,
-      async execute(args, exec) {
-        return client.startRun({
-          recipe: args.recipe,
-          businessGoal: args.business_goal,
-          taskId: args.task_id,
-          runId: args.run_id,
-          signal: exec.signal,
-        });
-      },
-    }),
-  );
-
-  ctx.tools.register(
-    defineTool({
       name: "model_harness_get_run",
       description: "Get canonical state, metrics, optimization history and lineage for one persistent training run.",
       parameters: {
-        run_id: { type: "string", required: true, description: "Run id returned by model_harness_start_run." },
+        run_id: { type: "string", required: true, description: "Run id returned by model_harness_start_task_run." },
       },
       output: jsonOutput,
       async execute(args, exec) {
@@ -1075,32 +1046,6 @@ Never use the teaching digit run as a substitute for a user's OCR, speech, forec
       output: jsonOutput,
       async execute(args, exec) {
         return client.strategies(args.run_id, exec.signal);
-      },
-    }),
-  );
-
-  ctx.tools.register(
-    defineTool({
-      name: "model_harness_apply_strategy",
-      description: "Apply one actionable optimization strategy by creating a child run. Call only after the user explicitly approves the named strategy.",
-      parameters: {
-        run_id: { type: "string", required: true, description: "Completed parent run id." },
-        strategy_id: { type: "string", required: true, description: "Exact strategy id returned by model_harness_get_strategies." },
-        approval_confirmed: {
-          type: "boolean",
-          const: true,
-          required: true,
-          description: "Must be true only after explicit user approval.",
-        },
-      },
-      output: jsonOutput,
-      async execute(args, exec) {
-        return client.applyStrategy(
-          args.run_id,
-          args.strategy_id,
-          args.approval_confirmed,
-          exec.signal,
-        );
       },
     }),
   );

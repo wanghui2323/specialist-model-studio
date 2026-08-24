@@ -6,7 +6,7 @@
     <meta name="description" content="Specialist Model Studio：从需求与证据到可验收的专业模型" />
     <title>Specialist Model Studio · 专业模型智能工作台</title>
     <link rel="icon" href="/app/static/model-harness-mark.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/app/static/styles.css" />
+    <link rel="stylesheet" href="/app/static/styles.css?v=0.9-v3-workbench" />
   </head>
   <body data-view="home">
     <a class="skip-link" href="#conversationMain">跳到对话区</a>
@@ -29,8 +29,8 @@
             <button class="menu-button" id="menuButton" type="button" aria-label="打开任务列表"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#menu"></use></svg></button>
             <div><span id="taskEyebrow">SPECIALIST MODEL STUDIO</span><h1 id="taskTitle">开始一个训练任务</h1></div>
           </div>
-          <button class="workspace-toggle" id="workspaceToggleButton" type="button" aria-label="打开训练工作区" aria-controls="inspector" aria-expanded="false" hidden>
-            <svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#panel"></use></svg><span>训练详情</span>
+          <button class="workspace-toggle" id="workspaceToggleButton" type="button" aria-label="打开任务工作区" aria-controls="inspector" aria-expanded="false" hidden>
+            <svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#panel"></use></svg><span>任务工作区</span>
           </button>
         </header>
 
@@ -116,6 +116,12 @@
             </header>
             <p id="agentCheckpointSummary">这里显示当前任务唯一需要处理的真实对象。</p>
             <div class="agent-checkpoint-body" id="agentCheckpointBody"></div>
+            <div class="agent-checkpoint-actions" id="agentCheckpointActions" hidden>
+              <button class="checkpoint-workspace-button" id="agentCheckpointWorkspaceButton" type="button">
+                <span><b id="agentCheckpointWorkspaceLabel">打开任务工作区</b><small id="agentCheckpointWorkspaceHint">在右侧继续处理当前步骤</small></span>
+                <svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#panel"></use></svg>
+              </button>
+            </div>
           </section>
           <div class="run-event-list" id="runEventList"></div>
           <div class="pending-zone" id="pendingZone"></div>
@@ -139,7 +145,7 @@
 
       <aside class="inspector" id="inspector" aria-label="训练工作区" hidden>
         <div class="inspector-sheet-bar">
-          <span id="inspectorSheetTitle">训练详情</span>
+          <span id="inspectorSheetTitle">任务工作区</span>
           <button class="icon-button" id="closeInspectorButton" type="button" aria-label="关闭工作区"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#close"></use></svg></button>
         </div>
         <div class="inspector-empty" id="inspectorEmpty"><span>训练进度会出现在这里</span><p>创建任务后，你可以随时看到数据、合同、运行和验收状态。</p></div>
@@ -190,6 +196,7 @@
                 </dl>
                 <button class="primary-button full-button" id="bindModelSourceButton" type="button">批准读取清单并绑定</button>
               </div>
+              <button class="secondary-button full-button" id="cancelModelBindingButton" type="button" hidden>取消本次读取与分析</button>
               <details class="model-source-discovery" id="modelSourceDiscovery" open>
                 <summary id="modelSourceDiscoverySummary">联网查找候选</summary>
                 <div class="source-mode-tabs" id="sourceModeTabs" role="tablist" aria-label="模型来源方式">
@@ -228,8 +235,24 @@
               <div class="card-heading"><span>仓库静态分析</span><b id="repositoryAnalysisState">待分析</b></div>
               <p id="repositoryAnalysisSummary">模型来源绑定后，系统会读取有限文本文件并识别训练入口、依赖与风险；不会执行仓库代码。</p>
               <div class="analysis-facts" id="repositoryAnalysisFacts"></div>
+              <form class="manual-entrypoint" id="repositoryManualMapping" hidden>
+                <b>补充静态分析映射</b>
+                <span>只允许选择当前固定快照中的文件；提交后会创建新的 Analysis 与 Binding revision。</span>
+                <label>训练入口
+                  <input id="repositoryManualEntrypointInput" type="text" maxlength="512" placeholder="例如 scripts/train.py" autocomplete="off" spellcheck="false" />
+                </label>
+                <label>数据参数（可选）
+                  <input id="repositoryDatasetArgumentInput" type="text" maxlength="200" placeholder="例如 --dataset-dir" autocomplete="off" spellcheck="false" />
+                </label>
+                <button class="secondary-button full-button" id="applyRepositoryManualMappingButton" type="submit">确认映射并重新分析</button>
+              </form>
+              <section class="model-source-blocker" id="repositoryAnalysisRiskPanel" hidden>
+                <b>执行风险与阻断</b>
+                <p>这些结论来自固定快照的静态证据。风险未解决前，系统不会把仓库描述成可执行。</p>
+                <div class="analysis-evidence-list" id="repositoryAnalysisRiskList"></div>
+              </section>
               <details id="repositoryAnalysisEvidence">
-                <summary>查看证据与风险</summary>
+                <summary>查看全部分析证据</summary>
                 <div class="analysis-evidence-list" id="repositoryAnalysisEvidenceList"></div>
               </details>
             </section>
@@ -242,6 +265,10 @@
               <div class="training-plan-facts" id="trainingPlanFacts"></div>
               <button class="secondary-button full-button" id="createTrainingPlanButton" type="button">生成不可变计划草案</button>
               <button class="primary-button full-button" id="approveTrainingPlanButton" type="button" hidden>批准当前计划 Digest</button>
+              <div class="plan-decision-actions" id="trainingPlanDecisionActions" hidden>
+                <button class="text-button" id="rejectTrainingPlanButton" type="button">拒绝此计划</button>
+                <button class="text-button" id="cancelTrainingPlanButton" type="button">取消此计划</button>
+              </div>
             </section>
             <section class="inspector-card resource-card" id="resourceFeasibilityCard" hidden>
               <div class="card-heading"><span>本机训练可行性</span><b id="resourceFeasibilityState">未检查</b></div>
@@ -384,7 +411,7 @@
         <div class="dialog-actions" id="dialogActions"></div>
       </form>
     </dialog>
-    <script src="/app/static/draft-store.js" defer></script>
-    <script src="/app/static/app.js" defer></script>
+    <script src="/app/static/draft-store.js?v=0.9-v3-workbench" defer></script>
+    <script src="/app/static/app.js?v=0.9-v3-workbench" defer></script>
   </body>
 </html>

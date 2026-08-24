@@ -18,7 +18,7 @@
         </a>
         <div class="topbar-context">
           <span class="branch">codex/v0.9-universal-byom</span>
-          <span class="live-state" id="headerState" data-state="implementing"><i></i><b>L0 架构冻结中</b></span>
+          <span class="live-state" id="headerState" data-state="implemented"><i></i><b>L2 / V3 · 状态读取中</b></span>
         </div>
       </header>
 
@@ -44,7 +44,7 @@
             <h1 id="loopTitle">正在读取迭代账本</h1>
             <p id="loopOutcome">工作台只读取仓库内的任务与证据状态，不把计划展示成已经完成。</p>
           </div>
-          <div class="progress-card" aria-label="当前层级进度">
+          <div class="progress-card" aria-label="所选层级证据进度">
             <div><span>证据进度</span><strong id="progressValue">0 / 0</strong></div>
             <div class="progress-track"><i id="progressBar"></i></div>
             <small id="progressDetail">等待任务账本</small>
@@ -52,7 +52,7 @@
         </section>
 
         <section class="flow-section" aria-labelledby="flowTitle">
-          <header class="section-head"><div><span>目标运行链</span><h2 id="flowTitle">从模型来源到可信交付</h2></div><small>TrainingTask 始终是唯一主对象</small></header>
+          <header class="section-head"><div><span>目标运行链</span><h2 id="flowTitle">从模型来源到可信交付</h2></div><small>目标路径；各阶段事实以任务账本为准</small></header>
           <div class="flow-rail" aria-label="Universal BYOM 八阶段">
             <div><i>01</i><b>任务定义</b><span>TaskSpec</span></div>
             <div><i>02</i><b>模型来源</b><span>HF / GitHub</span></div>
@@ -73,22 +73,22 @@
 
       <aside class="inspector" aria-label="决策与验收上下文">
         <section class="inspector-section">
-          <header><span>已确认决策</span><b>4 / 4</b></header>
+          <header><span>已确认决策</span><b id="decisionCount">0 / 0</b></header>
           <ol class="decision-list" id="decisionList"></ol>
         </section>
         <section class="inspector-section">
-          <header><span>当前事实基线</span><b id="baselineHead">—</b></header>
+          <header><span>历史起点基线</span><b id="baselineHead">—</b></header>
           <dl class="facts" id="baselineFacts"></dl>
         </section>
         <section class="inspector-section gate-section">
-          <header><span>本层验收</span><b>6/6 闭环</b></header>
+          <header><span>本层验收</span><b id="gateTarget">目标 6/6 · 未证实</b></header>
           <p id="gateCopy">只有对象效果、持久化、同一身份、重入、状态守卫和错误/取消均有证据，才允许进入下一层。</p>
           <button id="copyGate" type="button">复制本层验收清单</button>
           <small id="copyFeedback" aria-live="polite">状态只分 planned、implemented、verified、accepted。</small>
         </section>
         <section class="truth-note">
           <b>真实性边界</b>
-          <p>当前工作台是需求与证据控制面。L5 通过前，不对外宣称任意模型已可训练；GitHub push、PR、CI、Tag 和 Release 另行定级。</p>
+          <p>当前工作台是需求与证据控制面。右侧基线是 2026-08-23 的历史起点，不是当前测试结果。L5 通过前，不对外宣称任意模型已可训练；GitHub push、PR、CI、Tag 和 Release 另行定级。</p>
         </section>
       </aside>
     </div>

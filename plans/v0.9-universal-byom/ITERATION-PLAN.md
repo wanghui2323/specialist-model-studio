@@ -1,8 +1,11 @@
-# Specialist Model Studio v0.9 Universal BYOM 迭代方案（纵向切片版）
+# Specialist Model Studio v0.9 Universal BYOM 迭代方案（历史纵向施工基线）
 
-本文件是给**执行型 AI 编码代理**的施工单。设计已完成，代理只实现，不决定范围、门槛或架构。
+本文件记录基于 `49e0073` 编写的**历史施工方案**。它保留纵向切片的设计理由和原始任务拆分，但不再是当前实现状态或可直接续跑的代理指令。
+
+> **2026-08-24 真值说明：**下文的工时、代码行数、测试数量、逐步命令和“停下/继续”指令都是当时的规划估算。当前阶段、阻断与检查结果以 `loop-tasks.json.current_status_snapshot`、`VERTICAL-EXECUTION-PLAN.md` 和本地 `CURRENT_WORK.md` 为准；执行任何旧命令前必须对照当前源码与合同重新确认。历史估算不能作为实现、验证、验收或发布时间承诺。
 
 - 计划基线 commit：`49e0073`
+- 纵向版本/Loop 映射：`VERTICAL-EXECUTION-PLAN.md`
 - 权威 schema：`plans/v0.9-universal-byom/object-model.md` §3。**字段以该文件为准，不得自行发明。**
 - 权威验收矩阵：`closure-matrix.md`（C01–C15）
 - 权威需求：`requirements.md`
@@ -27,12 +30,12 @@
 
 ## 版本路线图
 
-| 版本 | 用户能看到什么 | 闭环流程 | 预估 | 累计 |
+| 版本 | 用户能看到什么 | 闭环流程 | 历史预估 | 历史累计 |
 | --- | --- | --- | ---: | ---: |
 | **V0** | 无（合同修订） | — | 1–1.5h | 1.5h |
 | **V1** | 粘贴 HF/GitHub 地址 → 看到不可变 commit、许可、文件清单 | C01–C04 | 5–8h | 9.5h |
 | **V2** | 看到仓库分析：框架、训练入口、数据格式、危险动作，每条带文件引用 | C05 | 4–6h | 15.5h |
-| **V3** | 看到"这台机器能不能训练它"+ 降级建议 → **首个完整可交付产品** | C06、C07、C15 | 8–12h | 27.5h |
+| **V3** | 看到"这台机器能不能训练它"+ 降级建议 → **首个分析型可交付版本** | C06、C07、C15 | 8–12h | 27.5h |
 | **V4** | 看到隔离自检结果：容器可用性、7 项隔离检查 | C07 扩展 | 8–14h | 41.5h |
 | **V5** | 看到容器里真实跑出来的日志流 | C08 | 10–16h | 57.5h |
 | **V6** | 看到"隔离验证报告"：7 类越权全部被拦截 | C08 负例 | 8–12h | 69.5h |
@@ -41,9 +44,37 @@
 | **V9** | 完整正式训练、评测、推理、交付包 | C12–C14 | 15–25h | 120h |
 | **V10** | 盲测第三个模型 + 冷克隆 + 发布 | 全部复验 | 10–20h | 140h |
 
-**V3 是第一个可以停下来对外交付的版本**（累计 ~28 小时，三到四个工作日）。到那时产品能回答"我能不能训练这个模型、需要什么条件"，全程零不可信代码执行。V4 之后才进入执行不可信代码的领域，风险和成本都跃升一个量级。
+**V3 是第一个可以停下来交付审阅的分析型版本**（历史估算累计约 28 小时）。到那时产品能回答"我能不能训练这个模型、需要什么条件"，全程零不可信代码执行；它不是完整 BYOM 训练验证或 release-ready 结论。V4 之后才进入执行不可信代码的领域，风险和成本都跃升一个量级。
 
-### 本文件的详细程度是刻意递减的
+### 纵向版本与 L0–L5 的唯一映射
+
+版本是用户可见的交付顺序，Loop 是机器退出门；两者不能共用一个完成状态：
+
+| 纵向版本 | 所属 Loop | 关闭的流程 | 对 Loop 状态的影响 |
+| --- | --- | --- | --- |
+| V0 | L0 | 合同与事实基线 | 只有当前精确 commit 的 L0 证据仍有效时，L0 才可为 `verified` |
+| V1 | L1 的第一段 | C01–C04 | 只证明来源链实现/局部验证，不单独把 L1 标为 `verified` |
+| V2 | L1 的第二段 | C05 | 与 V1 的有效证据合并后，C01–C05 全部 6/6 才关闭 L1 |
+| V3 | L2 | C06、C07、C15 | 三条全部 6/6 才关闭 L2；不得把 V3 推断为完整 BYOM 已验证 |
+| V4–V7 | L3 | C08–C10、C15 | 关闭隔离构建与资格试跑 |
+| V8–V9 | L4 | C11–C14 | 关闭动态注册后的正式训练与交付 |
+| V10 | L5 + release 独立门 | 全部复验 | 本地盲测、GitHub CI、GitHub Release 分别登记 |
+
+`l1-evidence.json` 是 **Loop L1** 的累积证据文件：V1 只追加 C01–C04，V2 再追加 C05。V1 完成不等于 L1 verified。`l2-evidence.json` 只由 V3 的 C06、C07、C15 组成。
+
+### 当前状态快照（2026-08-24，只读审计）
+
+| 版本/Loop | 实现事实 | 当前机器检查 | 允许状态 |
+| --- | --- | --- | --- |
+| L0/V0 | 合同与工作台存在 | 既有 `l0-evidence.json` 缺 `owned_paths`，且多个被哈希文件已变化 | `implemented`，不得保留当前 `verified` 结论 |
+| V1 / L1 第一段 | 双来源、不可变快照、来源界面和 live 脚本已进入工作树 | 来源/分析测试已纳入外部新 wheel 的 388/388 完整 suite；未运行冻结 commit 的正式联网和 L1 evidence 门 | `implemented`，L1 不得 verified |
+| V2 / L1 第二段 | 静态分析、证据查看、手工映射、风险与取消/恢复已进入工作树 | 定向测试通过；无真实仓库浏览器证据，C05 仍无 6/6 证据 | `implemented`，L1 不得 verified |
+| V3 / L2 | 计划、审批、资源探测、环境锁、资源门禁、BlockerEvidence v0.2、状态检查器与 WorkBuddy 式工作区已实现 | 新 wheel 仓库外 Python 388/388、Node 29/29、生产 wheel CLI/服务、任务重启和 task-owned 授权负例通过；全局 create/cancel/resume/strategy/chat 写入口 fail-closed；源码旧 editable `.venv` 因 macOS hidden `.pth` 仍仅有 3 个 installed-CLI 测试失败，生产 wheel CLI 不受影响；provisional budget 不生成 ResourceFitReport/Run，只返回 `retryable=false` 的 `continue_to_l3_qualification`；dirty candidate 的 1440/1024/390 smoke 通过但不是 C06/C07/C15 证据 | `implemented`，analysis-only，L2 不得 verified；资格试跑/训练属于 L3+ |
+| L3–L5 | 仍是后续范围 | 未执行对应机器门 | `planned` |
+
+补充事实：当前审计基线 HEAD 为 `ce8130d58250c25ee991ca192104de37bf7b2468`，工作树尚未冻结；新 wheel 外部环境已通过完整 Python、CLI、服务和重启检查，但联网、冻结 commit 的 L1/L2 证据与用户验收仍未完成。
+
+### 历史施工单的详细程度是刻意递减的
 
 V0–V2 给完整施工细节。V3 给结构和门禁。V4–V10 只给目标、验收动作和已定门禁。
 
@@ -59,9 +90,9 @@ V0–V2 给完整施工细节。V3 给结构和门禁。V4–V10 只给目标、
 
 ---
 
-## 0. 给执行代理的硬性规则
+## 0. 历史代理指令（禁止脱离当前快照直接复用）
 
-优先级高于任何单个任务描述。违反任何一条即视为本次改动失败。
+以下规则记录原施工阶段的执行约束。安全、真值和证据原则继续有效；其中任务顺序、基线数字、命令和停等要求必须以当前任务及当前快照重新确认。
 
 1. **一次只做一个任务。** 做完、跑通验收门、按第 8 条格式报告，然后**停下等指令**。
 2. **一次只做一个版本。** 一个版本内的所有任务完成并经用户浏览器验收后，才能开始下一个版本。
@@ -87,9 +118,9 @@ V0–V2 给完整施工细节。V3 给结构和门禁。V4–V10 只给目标、
 
 # V0 · 合同修订（1–1.5h）
 
-L0 当前标记 `verified`，但 `49e0073` 只改了 `plans/` 和一个脚本，没修订 `AGENTS.md`。`AGENTS.md` 是每次代理会话强制注入的规则，现在与 v0.9 合同直接冲突——后续任何执行代理都会同时收到计划和禁止该计划的指令。
+L0 的合同与工作台已经实现，因此当前状态为 `implemented`；历史 `verified` 结论已失效，因为原 `l0-evidence.json` 缺少 `owned_paths`，且其绑定文件已经变化。`AGENTS.md` 冲突已修订，但这只能证明代码与合同存在，不能恢复机器验收结论。
 
-**先把 `loop-tasks.json` 的 L0 状态从 `verified` 改回 `implementing`**，V0 全部完成后再改回。
+**在新的冻结 commit 完成 owned-path 状态检查、全量回归和浏览器复验之前，L0 必须保持 `implemented`。** 只有新证据通过后才能标 `verified`；`accepted` 仍需用户确认。
 
 ---
 
@@ -162,7 +193,7 @@ rg -c 'patch_origin|accelerator_policy' plans/v0.9-universal-byom/object-model.m
 .venv/bin/python scripts/verify_v09_l0.py; echo "exit=$?"                   # 期望 0
 ```
 
-完成后把 `loop-tasks.json` 的 L0 改回 `verified`（**不是 `accepted`**，那需要用户确认证据），重新生成 `l0-evidence.json` 写入新 commit，提交。
+完成实现后先保持 `implemented`。在干净冻结 commit 重新生成 `l0-evidence.json`，并由 `check_v09_status.py` 确认 owned paths 无 committed、staged、unstaged 或 untracked 漂移；机器门通过后才能改为 `verified`（**不是 `accepted`**，后者需要用户确认证据）。
 
 ---
 
@@ -170,7 +201,7 @@ rg -c 'patch_origin|accelerator_policy' plans/v0.9-universal-byom/object-model.m
 
 **用户可见结果**：在界面上粘贴一个 Hugging Face 或 GitHub 地址，看到系统真实解析出的不可变 commit、许可判定、文件清单和仓库大小。粘一个不存在的或私有的仓库，看到明确的阻断原因和重试入口。
 
-**为什么这是第一个版本**：L1 后端代码已经写完了（`model_sources.py` 457 行、`model_source_store.py` 1638 行、`github_source.py` 388 行、`huggingface_source.py` 293 行），194 个单测通过。缺的只有两件事——真实联网证据和界面。所以这是投入产出比最高的一刀。
+**为什么这是第一个版本**：来源后端已有较完整基础，先把真实 Provider、不可变快照和同任务界面闭合，投入产出比最高。文件行数和测试总数会随实现变化，不再把历史快照数字写成当前完成证据。
 
 对应 C01–C04。
 
@@ -213,7 +244,7 @@ MH_LIVE_ACCEPTANCE=1 .venv/bin/python scripts/verify_v09_l1_live.py; echo "exit=
 2. **私有仓库无权限** → 401/404，产生 `blocked_repository`，错误信息**不泄露凭据**。
 3. **无效 revision** → 产生 `blocked_repository`，**不得静默回落到默认分支**。这条最重要：静默回落到 `main` 是最危险的失败模式，用户会以为训练的是自己指定的版本。
 4. **限流** → GitHub 未认证配额 60 次/小时，故意打满，断言得到 403/429 后产生 `retryable: true` 的 blocker，而不是伪装成"仓库不存在"。
-5. **未知许可** → 找一个无 LICENSE 的公开仓库，断言 `license.decision` 为 `review` 或 `deny`，且**阻断后续分析**（`object-model.md` §6 状态守卫要求"许可不是 deny"才能分析）。
+5. **未知许可** → 找一个无 LICENSE 的公开仓库，断言 `license.decision` 为 `review`；允许保留只读静态分析供审阅，但必须阻断训练计划批准、环境准备与执行。明确 `deny` 的许可不得产生 `Analysis complete`。
 6. **hash mismatch** → 下载后人为改一个字节再校验，断言检测到并阻断。
 
 **限流负例放最后跑**——打满配额后一小时内无法再做联网验收。
@@ -281,7 +312,7 @@ rg -n 'font-size:(6|7|8|9|10|11)px' model_harness/web/styles.css
 1. C01–C04 按 `closure-matrix.md` §5 模板写入 `l1-evidence.json`，含 `source_commit`、六个布尔项、`score`。
 2. **`score` 必须由脚本从六个布尔项算出，禁止手写 6**（矩阵 §5 明文要求）。
 3. 更新矩阵"当前"列——**只改 C01–C04**，其余保持原值。
-4. `loop-tasks.json` 的 MH-910、MH-912 改 `verified`。**不写 `accepted`**，那要用户确认。
+4. `loop-tasks.json` 的 MH-910、MH-912 只能改为 `implemented`；V2 补齐 C05 且 L1 整层机器门通过后，MH-910–MH-913 才能一起改为 `verified`。**不写 `accepted`**，那要用户确认。
 
 ### 验收门
 
@@ -304,7 +335,7 @@ print('C01-C04 score 与布尔项一致')
 
 **用户可见结果**：来源绑定后，界面展示系统对仓库的静态分析——用什么框架、训练入口在哪个文件、需要什么数据格式、有哪些危险动作。每一条都带**具体文件和 commit 引用**，不是自然语言猜测。
 
-`repository_analysis.py` 已有 609 行，`test_repository_analysis.py` 已有 207 行。这一版主要是补全分析维度和接界面。
+这一版主要补全分析维度、证据入口和界面。不得用文件行数或单测文件长度代替 C05 的闭环证据。
 
 对应 C05。
 
@@ -323,13 +354,20 @@ print('C01-C04 score 与布尔项一致')
 3. 绑定一个无训练代码的仓库（如纯权重仓库）→ 看到 `needs_input` 或明确阻断，不是假装分析成功
 4. 刷新和重启后分析结果一致
 
+## V2-4 · 关闭 L1 证据
+
+1. 把 C05 的六点证据追加到 `l1-evidence.json`，不得覆盖 V1 的 C01–C04 历史。
+2. 重新检查 C01–C05 的 `source_commit`、对象 ID、浏览器、重启与负例证据仍属于同一冻结 commit。
+3. 只有 C01–C05 全部 6/6，才更新矩阵对应行，并将 L1、MH-910、MH-911、MH-912、MH-913 标记为 `verified`。
+4. 任一行不满 6/6 时，L1 保持 `implemented` 或 `implementing`，不得用 V1/V2 的“版本完成”替代 Loop 退出门。
+
 ---
 
 # V3 · 这台机器能不能训练它（8–12h）
 
 **用户可见结果**：看到本机真实资源（CPU、内存、磁盘、加速器、容器运行时可用性）、这个训练计划需要什么、以及结论——可训练 / 可训练但需调整（附具体降级方案）/ 阻断（附检测值和原因）。
 
-**V3 完成时产品就可独立交付了。** 它回答"我能不能训练这个模型、需要什么条件"，全程零不可信代码执行。对目标用户（有业务目标和数据、没有训练工程能力）来说这可能是价值最高的问题。
+**V3 完成时分析型产品能力可独立交付审阅。** 它回答"我能不能训练这个模型、需要什么条件"，全程零不可信代码执行。对目标用户（有业务目标和数据、没有训练工程能力）来说这可能是价值最高的问题，但不得把它表述为任意仓库已经完成真实训练。
 
 对应 C06、C07、C15。
 
@@ -345,7 +383,14 @@ print('C01-C04 score 与布尔项一致')
 
 **V3-5 界面 + C15 阻断呈现**：把上述三份报告做成用户能读懂的页面。阻断必须显示 detector、事实值、阈值、恢复动作、能否重试。**沿用 v0.8 已确立的原则：结论徽章由真实状态驱动，不许指标门槛冒充结论。**
 
-**V3-6 `verified` 失效机制**：`requirements.md` §6 声明"代码变化使受影响层 `verified` 失效"，但目前没有任何东西执行这条——它只是一次性写死的字符串。新建 `scripts/check_v09_status.py`：每个 `lN-evidence.json` 记 `source_commit` 与 `owned_paths`，用 `git diff --name-only <commit>..HEAD -- <paths>` 检查；有变化则该层必须降级，脚本非零退出。**只报告，不自动改** `loop-tasks.json`（状态变更是人工动作）。到 V3 已有三层证据，这个机制开始有实际作用。
+**V3-6 `verified` 失效机制**：`requirements.md` §6 声明"代码变化使受影响层 `verified` 失效"。`scripts/check_v09_status.py` 必须要求每个 `lN-evidence.json` 保存 `source_commit` 与 `owned_paths`，并同时检查：`source_commit..HEAD` 的已提交变化、index 暂存变化、工作树未暂存变化、owned paths 下的未跟踪文件。任一变化或证据缺字段都必须非零退出。**只报告，不自动改** `loop-tasks.json`（状态变更是人工动作）。现有 L0 证据也必须先补齐 `owned_paths` 并重新取证，不能只让新证据兼容检查器。
+
+## V3-7 · 关闭 L2 证据
+
+1. `l2-evidence.json` 必须包含 C06、C07、C15，以及每层 `owned_paths`、完整 source commit 和浏览器/重启证据。
+2. C06 证明计划 revision、digest 审批、篡改/过期/拒绝；C07 证明真实 probe、环境锁、fit/降级/阻断；C15 证明规范化 blocker 与恢复链。
+3. 完整 Python、Node、CLI 仓库外调用、双视口和后端重启必须在同一冻结 commit 通过。
+4. 只有 C06、C07、C15 全部 6/6，才把 L2 与 MH-920–MH-924 标为 `verified`。
 
 ### 用户浏览器验收
 
@@ -361,9 +406,9 @@ print('C01-C04 score 与布尔项一致')
 
 ---
 
-# V4–V10 · 待前一版验收后细化
+# V4–V10 · 历史后续切片（当前仍为 planned）
 
-以下只给目标、验收动作和已定门禁。**不要现在开始做。**
+以下只保留当时拟定的目标、验收动作和门禁，不构成当前执行授权或工期承诺。
 
 ## V4 · 隔离自检（8–14h）
 
@@ -417,9 +462,9 @@ print('C01-C04 score 与布尔项一致')
 
 ---
 
-## 附录 · 单测基线
+## 附录 · 历史单测数量估算
 
-| 时点 | 期望测试数 |
+| 历史规划时点 | 当时预计测试数 |
 | --- | ---: |
 | 起点（`49e0073` + L1 工作树） | 194 |
 | V0 完成 | 194（只改文档） |
@@ -430,4 +475,4 @@ print('C01-C04 score 与布尔项一致')
 | V6 完成 | 约 260 |
 | V7 完成 | 约 280 |
 
-数字只能增加。任何一步测试数下降或出现失败，停下汇报，不要继续。
+这些数字是基于 `49e0073` 的历史预测，已被当前快照中的实际检查结果取代。测试数量本身不是退出门；应检查当前测试清单、结果、证据绑定与失败原因。
