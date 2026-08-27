@@ -11,6 +11,8 @@ except ImportError:  # pragma: no cover - optional dependency
     TestClient = None  # type: ignore[assignment]
 
 from model_harness.server import create_app
+from tests.contract_confirmation import contract_confirmation_payload
+from tests.run_authorization import request_task_run_authorization
 
 
 @unittest.skipIf(TestClient is None, "server extra is not installed")
@@ -33,6 +35,44 @@ class TaskArchiveTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()["task"]
+
+    def _create_ready_task(self) -> dict[str, object]:
+        response = self.client.post(
+            "/tasks",
+            json={
+                "name": "待归档房价预测任务",
+                "business_goal": "根据面积和卧室数预测房价",
+                "capability_request": {
+                    "modality": "tabular",
+                    "objective": "regression",
+                    "target_kind": "numeric",
+                    "target_column": "price",
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = str(response.json()["task"]["task_id"])
+        rows = ["area_sqm,bedrooms,price"]
+        rows.extend(
+            f"{60 + index},{1 + index % 4},{180 + index * 3}"
+            for index in range(36)
+        )
+        uploaded = self.client.post(
+            f"/tasks/{task_id}/dataset",
+            content=("\n".join(rows) + "\n").encode("utf-8"),
+            headers={
+                "Content-Type": "text/csv",
+                "X-Filename": "houses.csv",
+                "X-Target-Column": "price",
+            },
+        )
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        confirmed = self.client.post(
+            f"/tasks/{task_id}/confirm",
+            json=contract_confirmation_payload(self.client, task_id),
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.text)
+        return confirmed.json()["task"]
 
     def _raw_task_path(self, task_id: str) -> Path:
         return self.app.state.training_workspace.tasks_dir / task_id / "task.json"
@@ -86,10 +126,14 @@ class TaskArchiveTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404, response.text)
 
     def test_archived_task_cannot_start_new_run(self) -> None:
-        task = self._create_task()
+        task = self._create_ready_task()
         task_id = str(task["task_id"])
         self.assertEqual(self.client.post(f"/tasks/{task_id}/archive").status_code, 200)
-        response = self.client.post(f"/tasks/{task_id}/runs")
+        response = request_task_run_authorization(
+            self.client,
+            task_id,
+            checkpoint_id="native-run:archived-task",
+        )
         self.assertEqual(response.status_code, 409, response.text)
         self.assertIn("归档", response.json()["detail"])
 

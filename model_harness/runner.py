@@ -17,6 +17,7 @@ from .contracts import load_contract, validate_contract
 from .errors import ContractError, RunCancelled
 from .evidence import EvaluationReport
 from .io_utils import read_json, sha256_file, write_json
+from .launch_preflight import evaluate_launch_resource_preflight
 from .optimization import attach_provenance, propose_strategies_with_provenance
 from .plugins import PluginRegistry, default_registry
 from .state import RunState
@@ -166,6 +167,24 @@ def execute_run(
         _check_cancel(state, cancel_check)
         stage_started = time.perf_counter()
         state.transition("preflight")
+        launch_resource_preflight = evaluate_launch_resource_preflight(
+            raw,
+            disk_path=resolved,
+        )
+        state.event(
+            "preflight.launch_resources_checked",
+            launch_resource_preflight,
+        )
+        if launch_resource_preflight["decision"] == "blocked":
+            failed_checks = [
+                str(item.get("code"))
+                for item in launch_resource_preflight["checks"]
+                if item.get("passed") is not True
+            ]
+            raise ContractError(
+                "launch resource preflight blocked training: "
+                + ", ".join(failed_checks)
+            )
         timings_ms["preflight"] = (time.perf_counter() - stage_started) * 1000
         state.event(
             "preflight.completed",
@@ -173,6 +192,9 @@ def execute_run(
                 "recipe": raw["recipe"],
                 "mode": raw["interaction"]["mode"],
                 "candidate_count": len(raw["model_selection"]["candidates"]),
+                "launch_resource_decision": launch_resource_preflight[
+                    "decision"
+                ],
                 "duration_ms": timings_ms["preflight"],
             },
         )

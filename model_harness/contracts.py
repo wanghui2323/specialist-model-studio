@@ -1,17 +1,290 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .errors import ContractError, PluginError
+from .launch_preflight import validate_launch_resource_policy
 from .plugins import PluginRegistry, default_registry
 
 SUPPORTED_MODES = {"delegate", "guided"}
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+CONTRACT_REVISION_SCHEMA_VERSION = "0.1"
+CONTRACT_REVISION_SUBJECT_TYPE = "contract_revision"
+
+
+class ContractRevisionConflictError(ContractError):
+    """Raised when a confirmation does not target the current exact revision."""
+
+
+class ContractRevisionIntegrityError(ContractError):
+    """Raised when an immutable contract revision changed after persistence."""
+
+
+class ApprovalDecisionIntegrityError(ContractError):
+    """Raised when an immutable contract approval changed after persistence."""
+
+
+def _canonical_json(value: Any) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ContractError(f"value is not canonical JSON: {exc}") from exc
+
+
+def _canonical_sha256(value: Any) -> str:
+    return hashlib.sha256(_canonical_json(value)).hexdigest()
+
+
+def _json_bytes(value: Any) -> bytes:
+    """Serialize without reordering nested contract fields."""
+
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _persisted_json_sha256(value: Any) -> str:
+    """Match the stable JSON representation written by ``io_utils.write_json``."""
+
+    payload = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _copy_json(value: Any) -> Any:
+    try:
+        return json.loads(
+            json.dumps(value, ensure_ascii=False, allow_nan=False)
+        )
+    except (TypeError, ValueError) as exc:
+        raise ContractError(f"value is not JSON serializable: {exc}") from exc
+
+
+def _nonempty(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ContractError(f"{label} must be non-empty text")
+    return value.strip()
+
+
+def _safe_record_id(value: Any, label: str) -> str:
+    selected = _nonempty(value, label)
+    if Path(selected).name != selected or selected in {".", ".."} or "\\" in selected:
+        raise ContractError(f"invalid {label}: {selected!r}")
+    return selected
+
+
+def _sha256(value: Any, label: str) -> str:
+    selected = _nonempty(value, label)
+    if not _SHA256_PATTERN.fullmatch(selected):
+        raise ContractError(f"{label} must be a lowercase sha256 hex digest")
+    return selected
+
+
+def _record_sha256(record: Mapping[str, Any], digest_field: str) -> str:
+    return _canonical_sha256(
+        {key: value for key, value in record.items() if key != digest_field}
+    )
+
+
+CONTRACT_REVISION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "contract_revision_id",
+        "contract_sha256",
+        "task_id",
+        "spec_revision_id",
+        "dataset_id",
+        "dataset_fingerprint_sha256",
+        "created_at_utc",
+        "contract_snapshot",
+        "revision_sha256",
+    }
+)
+
+
+APPROVAL_DECISION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "approval_decision_id",
+        "task_id",
+        "subject_type",
+        "contract_revision_id",
+        "contract_sha256",
+        "decision",
+        "actor",
+        "checkpoint_id",
+        "confirmations",
+        "created_at_utc",
+        "decision_sha256",
+    }
+)
+
+
+@dataclass(frozen=True)
+class ContractRevision:
+    """An immutable contract snapshot bound to TaskSpec and dataset identities."""
+
+    _record: bytes
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        contract_revision_id: str,
+        task_id: str,
+        spec_revision_id: str,
+        dataset_id: str,
+        dataset_fingerprint_sha256: str,
+        contract_snapshot: Mapping[str, Any],
+        created_at_utc: str | None = None,
+    ) -> ContractRevision:
+        snapshot = _copy_json(contract_snapshot)
+        record: dict[str, Any] = {
+            "schema_version": CONTRACT_REVISION_SCHEMA_VERSION,
+            "contract_revision_id": contract_revision_id,
+            "contract_sha256": _persisted_json_sha256(snapshot),
+            "task_id": task_id,
+            "spec_revision_id": spec_revision_id,
+            "dataset_id": dataset_id,
+            "dataset_fingerprint_sha256": dataset_fingerprint_sha256,
+            "created_at_utc": created_at_utc or datetime.now(UTC).isoformat(),
+            "contract_snapshot": snapshot,
+        }
+        record["revision_sha256"] = _record_sha256(record, "revision_sha256")
+        return cls.from_record(record)
+
+    @classmethod
+    def from_record(cls, value: Mapping[str, Any]) -> ContractRevision:
+        record = _copy_json(value)
+        if not isinstance(record, dict):
+            raise ContractRevisionIntegrityError("contract revision must be an object")
+        if set(record) != CONTRACT_REVISION_FIELDS:
+            raise ContractRevisionIntegrityError("contract revision schema changed")
+        if record["schema_version"] != CONTRACT_REVISION_SCHEMA_VERSION:
+            raise ContractRevisionIntegrityError("unsupported contract revision schema")
+        _safe_record_id(record["contract_revision_id"], "contract revision id")
+        _safe_record_id(record["task_id"], "task id")
+        _nonempty(record["spec_revision_id"], "spec_revision_id")
+        _safe_record_id(record["dataset_id"], "dataset id")
+        _sha256(record["dataset_fingerprint_sha256"], "dataset fingerprint")
+        _nonempty(record["created_at_utc"], "created_at_utc")
+        snapshot = record["contract_snapshot"]
+        if not isinstance(snapshot, dict):
+            raise ContractRevisionIntegrityError("contract_snapshot must be an object")
+        if snapshot.get("task_id") != record["task_id"]:
+            raise ContractRevisionIntegrityError(
+                "contract snapshot belongs to another task"
+            )
+        _sha256(record["contract_sha256"], "contract_sha256")
+        if _persisted_json_sha256(snapshot) != record["contract_sha256"]:
+            raise ContractRevisionIntegrityError("contract snapshot digest changed")
+        _sha256(record["revision_sha256"], "revision_sha256")
+        if _record_sha256(record, "revision_sha256") != record["revision_sha256"]:
+            raise ContractRevisionIntegrityError("contract revision digest changed")
+        return cls(_json_bytes(record))
+
+    def to_dict(self) -> dict[str, Any]:
+        return json.loads(self._record.decode("utf-8"))
+
+    def identity(self) -> dict[str, str]:
+        record = self.to_dict()
+        return {
+            key: str(record[key])
+            for key in (
+                "contract_revision_id",
+                "contract_sha256",
+                "task_id",
+                "spec_revision_id",
+                "dataset_id",
+                "dataset_fingerprint_sha256",
+            )
+        }
+
+
+@dataclass(frozen=True)
+class ApprovalDecision:
+    """An append-only human decision bound to one exact ContractRevision."""
+
+    _record: bytes
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        approval_decision_id: str,
+        revision: Mapping[str, Any],
+        actor: str,
+        checkpoint_id: str,
+        confirmations: Mapping[str, Any],
+        created_at_utc: str | None = None,
+    ) -> ApprovalDecision:
+        selected_revision = ContractRevision.from_record(revision).to_dict()
+        record: dict[str, Any] = {
+            "schema_version": CONTRACT_REVISION_SCHEMA_VERSION,
+            "approval_decision_id": approval_decision_id,
+            "task_id": selected_revision["task_id"],
+            "subject_type": CONTRACT_REVISION_SUBJECT_TYPE,
+            "contract_revision_id": selected_revision["contract_revision_id"],
+            "contract_sha256": selected_revision["contract_sha256"],
+            "decision": "approved",
+            "actor": actor,
+            "checkpoint_id": checkpoint_id,
+            "confirmations": _copy_json(confirmations),
+            "created_at_utc": created_at_utc or datetime.now(UTC).isoformat(),
+        }
+        record["decision_sha256"] = _record_sha256(record, "decision_sha256")
+        return cls.from_record(record)
+
+    @classmethod
+    def from_record(cls, value: Mapping[str, Any]) -> ApprovalDecision:
+        record = _copy_json(value)
+        if not isinstance(record, dict):
+            raise ApprovalDecisionIntegrityError("approval decision must be an object")
+        if set(record) != APPROVAL_DECISION_FIELDS:
+            raise ApprovalDecisionIntegrityError("approval decision schema changed")
+        if record["schema_version"] != CONTRACT_REVISION_SCHEMA_VERSION:
+            raise ApprovalDecisionIntegrityError("unsupported approval decision schema")
+        _safe_record_id(record["approval_decision_id"], "approval decision id")
+        _safe_record_id(record["task_id"], "task id")
+        if record["subject_type"] != CONTRACT_REVISION_SUBJECT_TYPE:
+            raise ApprovalDecisionIntegrityError("approval subject must be contract_revision")
+        _safe_record_id(record["contract_revision_id"], "contract revision id")
+        _sha256(record["contract_sha256"], "contract_sha256")
+        if record["decision"] != "approved":
+            raise ApprovalDecisionIntegrityError("contract confirmation must be approved")
+        _nonempty(record["actor"], "approval actor")
+        _nonempty(record["checkpoint_id"], "checkpoint_id")
+        confirmations = record["confirmations"]
+        if not isinstance(confirmations, dict):
+            raise ApprovalDecisionIntegrityError("confirmations must be an object")
+        required = ("data_authorized", "labels_reviewed", "gates_reviewed")
+        if any(confirmations.get(field) is not True for field in required):
+            raise ApprovalDecisionIntegrityError(
+                "approval decision is missing required confirmations"
+            )
+        _nonempty(record["created_at_utc"], "created_at_utc")
+        _sha256(record["decision_sha256"], "decision_sha256")
+        if _record_sha256(record, "decision_sha256") != record["decision_sha256"]:
+            raise ApprovalDecisionIntegrityError("approval decision digest changed")
+        return cls(_json_bytes(record))
+
+    def to_dict(self) -> dict[str, Any]:
+        return json.loads(self._record.decode("utf-8"))
 
 
 @dataclass(frozen=True)
@@ -94,6 +367,8 @@ def validate_contract(
             raise ContractError(
                 "diagnostics.minimum_test_samples must be an integer >= 20"
             )
+
+    validate_launch_resource_policy(data.get("launch_resource_policy"))
 
     model_binding = data.get("model_binding")
     if model_binding is not None:

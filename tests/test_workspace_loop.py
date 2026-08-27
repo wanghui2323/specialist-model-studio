@@ -17,6 +17,11 @@ except ImportError:  # pragma: no cover
 from model_harness.server import create_app
 from model_harness.errors import HarnessError
 from model_harness.io_utils import read_json, sha256_file, write_json
+from tests.contract_confirmation import contract_confirmation_payload
+from tests.run_authorization import (
+    request_task_run_authorization,
+    start_authorized_task_run,
+)
 
 
 def build_image_dataset_zip() -> bytes:
@@ -57,26 +62,29 @@ class WorkspaceLoopTests(unittest.TestCase):
             app = create_app(runs_dir)
             with TestClient(app) as client:  # type: ignore[misc]
                 workspace = app.state.training_workspace
-                task = workspace.create_task(
-                    "restart resume guard",
-                    "resume only through the owning task",
-                    recipe_id="digit-classification",
+                created = client.post(
+                    "/tasks",
+                    json={
+                        "name": "restart resume guard",
+                        "business_goal": "resume only through the owning task",
+                        "recipe_id": "image-folder-classification",
+                    },
                 )
-                task_id = task["task_id"]
-                contract = app.state.run_service.registry.get_recipe(
-                    "digit-classification"
-                ).template()
-                contract["task_id"] = task_id
-                contract_path = workspace._contract_path(task_id)
-                write_json(contract_path, contract)
+                self.assertEqual(created.status_code, 201, created.text)
+                task_id = created.json()["task"]["task_id"]
+                uploaded = client.post(
+                    f"/tasks/{task_id}/dataset",
+                    content=build_image_dataset_zip(),
+                    headers={"X-Filename": "restart-resume.zip"},
+                )
+                self.assertEqual(uploaded.status_code, 201, uploaded.text)
+                confirmed = client.post(
+                    f"/tasks/{task_id}/confirm",
+                    json=contract_confirmation_payload(client, task_id),
+                )
+                self.assertEqual(confirmed.status_code, 200, confirmed.text)
+                contract = read_json(workspace._contract_path(task_id))
                 record = read_json(workspace._task_path(task_id))
-                record["contract_confirmed"] = True
-                record["confirmed_contract_sha256"] = sha256_file(contract_path)
-                record["confirmations"] = {
-                    "data_authorized": True,
-                    "labels_reviewed": True,
-                    "gates_reviewed": True,
-                }
                 parent = app.state.run_service.submit(
                     contract,
                     workspace_task_id=task_id,
@@ -130,11 +138,7 @@ class WorkspaceLoopTests(unittest.TestCase):
                 self.assertEqual(uploaded.status_code, 201, uploaded.text)
                 confirmed = client.post(
                     f"/tasks/{task_id}/confirm",
-                    json={
-                        "data_authorized": True,
-                        "labels_reviewed": True,
-                        "gates_reviewed": True,
-                    },
+                    json=contract_confirmation_payload(client, task_id),
                 )
                 self.assertEqual(confirmed.status_code, 200, confirmed.text)
                 before = set(runs_dir.glob("*"))
@@ -143,7 +147,11 @@ class WorkspaceLoopTests(unittest.TestCase):
                     "authorize_v09_execution",
                     side_effect=HarnessError("blocked_resources fixture"),
                 ):
-                    response = client.post(f"/tasks/{task_id}/runs")
+                    response = request_task_run_authorization(
+                        client,
+                        task_id,
+                        checkpoint_id="native-run:v09-blocked",
+                    )
                 self.assertEqual(response.status_code, 409, response.text)
                 self.assertIn("blocked_resources", response.json()["detail"])
                 self.assertEqual(set(runs_dir.glob("*")), before)
@@ -170,11 +178,7 @@ class WorkspaceLoopTests(unittest.TestCase):
                 self.assertEqual(uploaded.status_code, 201, uploaded.text)
                 confirmed = client.post(
                     f"/tasks/{task_id}/confirm",
-                    json={
-                        "data_authorized": True,
-                        "labels_reviewed": True,
-                        "gates_reviewed": True,
-                    },
+                    json=contract_confirmation_payload(client, task_id),
                 )
                 self.assertEqual(confirmed.status_code, 200, confirmed.text)
                 workspace = app.state.training_workspace
@@ -237,11 +241,7 @@ class WorkspaceLoopTests(unittest.TestCase):
                 self.assertEqual(uploaded.status_code, 201, uploaded.text)
                 confirmed = client.post(
                     f"/tasks/{task_id}/confirm",
-                    json={
-                        "data_authorized": True,
-                        "labels_reviewed": True,
-                        "gates_reviewed": True,
-                    },
+                    json=contract_confirmation_payload(client, task_id),
                 )
                 self.assertEqual(confirmed.status_code, 200, confirmed.text)
                 workspace = app.state.training_workspace
@@ -255,9 +255,13 @@ class WorkspaceLoopTests(unittest.TestCase):
                 write_json(task_path, task)
 
                 before = {item["run_id"] for item in app.state.run_service.list_runs()}
-                rejected = client.post(f"/tasks/{task_id}/runs")
+                rejected = request_task_run_authorization(
+                    client,
+                    task_id,
+                    checkpoint_id="native-run:wrong-contract-owner",
+                )
                 self.assertEqual(rejected.status_code, 409, rejected.text)
-                self.assertIn("task_id", rejected.json()["detail"])
+                self.assertIn("重新确认", rejected.json()["detail"])
                 self.assertEqual(
                     {item["run_id"] for item in app.state.run_service.list_runs()},
                     before,
@@ -306,16 +310,12 @@ class WorkspaceLoopTests(unittest.TestCase):
                 self.assertEqual(updated.status_code, 200, updated.text)
                 confirmed = client.post(
                     f"/tasks/{task_id}/confirm",
-                    json={
-                        "data_authorized": True,
-                        "labels_reviewed": True,
-                        "gates_reviewed": True,
-                    },
+                    json=contract_confirmation_payload(client, task_id),
                 )
                 self.assertEqual(confirmed.status_code, 200, confirmed.text)
                 self.assertEqual(confirmed.json()["task"]["status"], "ready")
 
-                started = client.post(f"/tasks/{task_id}/runs")
+                started = start_authorized_task_run(client, task_id)
                 self.assertEqual(started.status_code, 202, started.text)
                 run_id = started.json()["task"]["current_run_id"]
                 app.state.run_service.wait(run_id, timeout=30)
@@ -412,7 +412,7 @@ class WorkspaceLoopTests(unittest.TestCase):
                     json={"approval_confirmed": True},
                 )
                 self.assertEqual(stale_parent.status_code, 409, stale_parent.text)
-                self.assertIn("当前已确认训练合同", stale_parent.text)
+                self.assertIn("重新确认", stale_parent.text)
                 self.assertEqual(
                     {item["run_id"] for item in app.state.run_service.list_runs()},
                     before_children,

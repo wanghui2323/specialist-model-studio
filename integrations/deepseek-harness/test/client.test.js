@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, beforeEach, test } from "node:test";
@@ -10,6 +10,25 @@ import { ModelHarnessClient, publicProjection } from "../client.js";
 const baseUrl = "http://127.0.0.1:8765";
 const requests = [];
 const originalFetch = globalThis.fetch;
+const CONTRACT_REVISION = Object.freeze({
+  contract_revision_id: "contract-revision-1",
+  contract_sha256: "a".repeat(64),
+  task_id: "real-task-123",
+  spec_revision_id: "real-task-123:spec:r3",
+  dataset_id: "dataset-1",
+  dataset_fingerprint_sha256: "b".repeat(64),
+});
+const CONTRACT_TASK = Object.freeze({
+  task_id: "real-task-123",
+  contract_stale: false,
+  current_contract_revision_id: CONTRACT_REVISION.contract_revision_id,
+  contract_revision: CONTRACT_REVISION,
+  task_spec: { revision_id: CONTRACT_REVISION.spec_revision_id },
+  dataset_id: CONTRACT_REVISION.dataset_id,
+  dataset_report: {
+    fingerprint_sha256: CONTRACT_REVISION.dataset_fingerprint_sha256,
+  },
+});
 
 beforeEach(() => {
   requests.length = 0;
@@ -27,6 +46,8 @@ beforeEach(() => {
       ? { contract: { recipe: "digit-classification", task_id: "default", business_goal: "default" } }
       : requestUrl.pathname === "/tasks" && (options.method || "GET") === "POST"
         ? { task: { task_id: "real-task-123" } }
+        : requestUrl.pathname === "/tasks/real-task-123" && (options.method || "GET") === "GET"
+          ? { task: CONTRACT_TASK }
         : { ok: true, request_body: body && isJson ? JSON.parse(body) : null };
     return new Response(JSON.stringify(value), {
       status: 200,
@@ -48,8 +69,25 @@ test("client exposes no global run-creation or strategy-write methods", () => {
   assert.equal(requests.length, 0);
 });
 
+test("delivery authorization cannot be requested without the protected bridge token", () => {
+  const client = new ModelHarnessClient(baseUrl, "");
+  assert.throws(
+    () => client.authorizeArtifactBundleBuild(
+      "task-one",
+      "run-one",
+      {
+        evaluationReportId: "evaluation-1",
+        evaluationReportSha256: "a".repeat(64),
+        approvalCheckpointId: "native-call-1",
+      },
+    ),
+    /verified agent-bridge approval channel is unavailable/,
+  );
+  assert.equal(requests.length, 0);
+});
+
 test("task lifecycle methods preserve canonical task routes and confirmations", async () => {
-  const client = new ModelHarnessClient(baseUrl);
+  const client = new ModelHarnessClient(baseUrl, "bridge-test-token");
   const created = await client.createTask("parts", "classify parts");
   assert.equal(created.task.task_id, "real-task-123");
   assert.equal(requests.at(-1).url, "/tasks");
@@ -88,20 +126,66 @@ test("task lifecycle methods preserve canonical task routes and confirmations", 
     recipe_options: { image_size: 32 },
   });
 
-  assert.throws(
+  await assert.rejects(
     () => client.confirmContract("real-task-123", { data_authorized: true }),
     /three human confirmations/,
   );
-  await client.confirmContract("real-task-123", {
+  const confirmations = {
     data_authorized: true,
     labels_reviewed: true,
     gates_reviewed: true,
-  });
+  };
+  await assert.rejects(
+    () => client.confirmContract("real-task-123", confirmations),
+    /exact expected contract revision/,
+  );
+  await client.confirmContract(
+    "real-task-123",
+    confirmations,
+    CONTRACT_REVISION,
+    { actor: "user", checkpoint_id: "dsh-confirm-call-1" },
+  );
+  assert.equal(requests.at(-2).url, "/tasks/real-task-123");
+  assert.equal(requests.at(-2).method, "GET");
   assert.equal(requests.at(-1).url, "/tasks/real-task-123/confirm");
+  assert.deepEqual(JSON.parse(requests.at(-1).body), {
+    ...confirmations,
+    expected_contract_revision: CONTRACT_REVISION,
+    approval: { actor: "user", checkpoint_id: "dsh-confirm-call-1" },
+  });
 
-  await client.startTaskRun("real-task-123");
+  await client.authorizeTaskRunStart("real-task-123", {
+    contractSha256: "a".repeat(64),
+    datasetId: "dataset-1",
+    datasetFingerprintSha256: "b".repeat(64),
+    specRevision: 3,
+    approvalCheckpointId: "native-run-call-1",
+  });
+  assert.equal(requests.at(-1).url, "/tasks/real-task-123/run-authorizations");
+  assert.equal(
+    requests.at(-1).headers["x-model-harness-agent-token"],
+    "bridge-test-token",
+  );
+  assert.deepEqual(JSON.parse(requests.at(-1).body), {
+    contract_sha256: "a".repeat(64),
+    dataset_id: "dataset-1",
+    dataset_fingerprint_sha256: "b".repeat(64),
+    spec_revision: 3,
+    approval: { actor: "user", checkpoint_id: "native-run-call-1" },
+  });
+
+  await client.startTaskRun("real-task-123", {
+    authorizationId: "delivery-authorization-run-1",
+    authorizationToken: "run-token",
+    runRequestSha256: "c".repeat(64),
+  });
   assert.equal(requests.at(-1).url, "/tasks/real-task-123/runs");
   assert.equal(requests.at(-1).method, "POST");
+  assert.deepEqual(JSON.parse(requests.at(-1).body), {
+    run_authorization_id: "delivery-authorization-run-1",
+    authorization_token: "run-token",
+    run_request_sha256: "c".repeat(64),
+  });
 
   await client.applyTaskStrategy("real-task-123", "parent-run", "balance", true);
   assert.equal(
@@ -111,6 +195,37 @@ test("task lifecycle methods preserve canonical task routes and confirmations", 
 
   await client.cancelTaskRun("real-task-123", "parent-run");
   assert.equal(requests.at(-1).url, "/tasks/real-task-123/runs/parent-run/cancel");
+});
+
+test("contract confirmation fails closed before POST when canonical identity drifts", async () => {
+  const client = new ModelHarnessClient(baseUrl);
+  const confirmations = {
+    data_authorized: true,
+    labels_reviewed: true,
+    gates_reviewed: true,
+  };
+  await assert.rejects(
+    () => client.confirmContract(
+      "real-task-123",
+      confirmations,
+      { ...CONTRACT_REVISION, dataset_fingerprint_sha256: "c".repeat(64) },
+      { actor: "user", checkpoint_id: "dsh-confirm-call-stale" },
+    ),
+    /Canonical contract revision changed/,
+  );
+  assert.deepEqual(requests.map((request) => request.url), ["/tasks/real-task-123"]);
+
+  requests.length = 0;
+  await assert.rejects(
+    () => client.confirmContract(
+      "real-task-123",
+      confirmations,
+      CONTRACT_REVISION,
+      { actor: "assistant", checkpoint_id: "dsh-confirm-call-invalid-actor" },
+    ),
+    /user ApprovalDecision/,
+  );
+  assert.equal(requests.length, 0);
 });
 
 test("conversation-native BYOM methods preserve revision, digest, and approval seams", async () => {
@@ -328,12 +443,10 @@ test("L3 Hugging Face methods use fixed-commit task APIs and explicit approval",
   assert.equal(requests.at(-1).url, "/tasks/task-one/model-assets/current/verify");
 });
 
-test("L4 evidence methods preserve task ownership and raw sample headers", async () => {
+test("L4 evidence methods preserve task ownership and opaque inference input grants", async () => {
   const temp = await mkdtemp(join(tmpdir(), "model-harness-evidence-"));
   try {
-    const samplePath = join(temp, "new-row.json");
-    await writeFile(samplePath, JSON.stringify({ temperature: 21.5 }));
-    const client = new ModelHarnessClient(baseUrl);
+    const client = new ModelHarnessClient(baseUrl, "bridge-test-token");
 
     await client.evaluationReport("task-one", "run-one");
     assert.equal(
@@ -341,18 +454,48 @@ test("L4 evidence methods preserve task ownership and raw sample headers", async
       "/tasks/task-one/runs/run-one/evaluation-report",
     );
 
-    await client.runSampleInference(
-      "task-one",
-      "run-one",
-      samplePath,
-      "tabular",
-    );
+    await client.getInferenceInput("task-one", "run-one", "inference-input-1");
     let submitted = requests.at(-1);
-    assert.equal(submitted.url, "/tasks/task-one/runs/run-one/sample-inferences");
+    assert.equal(
+      submitted.url,
+      "/tasks/task-one/runs/run-one/inference-inputs/inference-input-1",
+    );
+
+    await client.authorizeSampleInference("task-one", "run-one", {
+      inferenceInputId: "inference-input-1",
+      inferenceInputSha256: "e".repeat(64),
+      approvalCheckpointId: "native-inference-call-1",
+    });
+    submitted = requests.at(-1);
+    assert.equal(
+      submitted.url,
+      "/tasks/task-one/runs/run-one/sample-inference-authorizations",
+    );
     assert.equal(submitted.method, "POST");
-    assert.equal(submitted.headers["x-sample-type"], "tabular");
-    assert.equal(decodeURIComponent(submitted.headers["x-filename"]), "new-row.json");
-    assert.equal(Buffer.from(submitted.body).toString(), JSON.stringify({ temperature: 21.5 }));
+    assert.equal(submitted.headers["x-model-harness-agent-token"], "bridge-test-token");
+    assert.deepEqual(JSON.parse(submitted.body), {
+      inference_input_id: "inference-input-1",
+      inference_input_sha256: "e".repeat(64),
+      approval: { actor: "user", checkpoint_id: "native-inference-call-1" },
+    });
+
+    await client.runSampleInference("task-one", "run-one", {
+      inferenceInputId: "inference-input-1",
+      authorizationId: "delivery-authorization-inference-1",
+      authorizationToken: "one-time-inference-token",
+      requestSha256: "f".repeat(64),
+    });
+    submitted = requests.at(-1);
+    assert.equal(
+      submitted.url,
+      "/tasks/task-one/runs/run-one/inference-inputs/inference-input-1/execute",
+    );
+    assert.equal(submitted.method, "POST");
+    assert.deepEqual(JSON.parse(submitted.body), {
+      sample_inference_authorization_id: "delivery-authorization-inference-1",
+      authorization_token: "one-time-inference-token",
+      sample_inference_request_sha256: "f".repeat(64),
+    });
 
     await client.listSampleInferences("task-one", "run-one");
     assert.equal(requests.at(-1).url, "/tasks/task-one/runs/run-one/sample-inferences");
@@ -362,12 +505,37 @@ test("L4 evidence methods preserve task ownership and raw sample headers", async
       "/tasks/task-one/runs/run-one/sample-inferences/sample-1",
     );
 
+    await client.authorizeArtifactBundleBuild("task-one", "run-one", {
+      evaluationReportId: "evaluation-1",
+      evaluationReportSha256: "a".repeat(64),
+      approvalCheckpointId: "native-build-call-1",
+      sampleInferenceCheckId: "sample-1",
+    });
+    submitted = requests.at(-1);
+    assert.equal(
+      submitted.url,
+      "/tasks/task-one/runs/run-one/artifact-bundle-authorizations",
+    );
+    assert.equal(submitted.headers["x-model-harness-agent-token"], "bridge-test-token");
+    assert.deepEqual(JSON.parse(submitted.body), {
+      evaluation_report_id: "evaluation-1",
+      evaluation_report_sha256: "a".repeat(64),
+      approval: { actor: "user", checkpoint_id: "native-build-call-1" },
+      sample_inference_check_id: "sample-1",
+    });
+
     await client.buildArtifactBundle("task-one", "run-one", {
+      authorizationId: "delivery-authorization-1",
+      authorizationToken: "one-time-token",
+      bundleRequestSha256: "b".repeat(64),
       sampleInferenceCheckId: "sample-1",
     });
     submitted = requests.at(-1);
     assert.equal(submitted.url, "/tasks/task-one/runs/run-one/artifact-bundles");
     assert.deepEqual(JSON.parse(submitted.body), {
+      artifact_bundle_authorization_id: "delivery-authorization-1",
+      authorization_token: "one-time-token",
+      bundle_request_sha256: "b".repeat(64),
       sample_inference_check_id: "sample-1",
     });
     await client.listArtifactBundles("task-one", "run-one");
@@ -377,6 +545,27 @@ test("L4 evidence methods preserve task ownership and raw sample headers", async
       requests.at(-1).url,
       "/tasks/task-one/runs/run-one/artifact-bundles/bundle-1",
     );
+    await client.authorizeArtifactBundleDownload(
+      "task-one",
+      "run-one",
+      "bundle-1",
+      {
+        manifestSha256: "c".repeat(64),
+        archiveSha256: "d".repeat(64),
+        approvalCheckpointId: "native-download-call-1",
+      },
+    );
+    submitted = requests.at(-1);
+    assert.equal(
+      submitted.url,
+      "/tasks/task-one/runs/run-one/artifact-bundles/bundle-1/download-authorizations",
+    );
+    assert.equal(submitted.headers["x-model-harness-agent-token"], "bridge-test-token");
+    assert.deepEqual(JSON.parse(submitted.body), {
+      manifest_sha256: "c".repeat(64),
+      archive_sha256: "d".repeat(64),
+      approval: { actor: "user", checkpoint_id: "native-download-call-1" },
+    });
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
@@ -388,34 +577,153 @@ test("Artifact Bundle download verifies SHA-256 and returns no host path", async
   const sha256 = createHash("sha256").update(bundleBytes).digest("hex");
   const destination = join(temp, "delivery.zip");
   try {
-    globalThis.fetch = async (url) => {
+    globalThis.fetch = async (url, options = {}) => {
       const path = new URL(url).pathname;
       if (path.endsWith("/download")) {
+        assert.equal(options.method, "POST");
+        assert.deepEqual(JSON.parse(options.body), {
+          artifact_bundle_download_authorization_id: "delivery-authorization-download-1",
+          authorization_token: "download-token",
+          download_request_sha256: "c".repeat(64),
+        });
         return new Response(bundleBytes, {
           status: 200,
-          headers: { "Content-Type": "application/zip" },
+          headers: {
+            "Content-Type": "application/zip",
+            "X-Delivery-Authorization-Id": "delivery-authorization-download-1",
+            "X-Delivery-Request-Sha256": "c".repeat(64),
+          },
         });
       }
       return new Response(JSON.stringify({
-        artifact_bundle: { archive: { sha256 }, report_path: `${temp}/bundle.json` },
+        artifact_bundle: {
+          manifest_sha256: "b".repeat(64),
+          archive: { sha256 },
+          report_path: `${temp}/bundle.json`,
+        },
       }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
     };
 
-    const client = new ModelHarnessClient(baseUrl);
+    const client = new ModelHarnessClient(baseUrl, "bridge-test-token");
     const result = await client.downloadArtifactBundle(
       "task-one",
       "run-one",
       "bundle-one",
       destination,
+      {
+        authorizationId: "delivery-authorization-download-1",
+        authorizationToken: "download-token",
+        downloadRequestSha256: "c".repeat(64),
+        manifestSha256: "b".repeat(64),
+        archiveSha256: sha256,
+      },
     );
     assert.deepEqual(await readFile(destination), bundleBytes);
     assert.equal(result.status, "downloaded");
     assert.equal(result.filename, "delivery.zip");
     assert.equal(result.sha256, sha256);
     assert.equal(JSON.stringify(result).includes(temp), false);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("Artifact Bundle download never overwrites an existing destination or leaves a partial file", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "model-harness-bundle-existing-"));
+  const bundleBytes = Buffer.from("new-bundle-bytes");
+  const sha256 = createHash("sha256").update(bundleBytes).digest("hex");
+  const destination = join(temp, "delivery.zip");
+  await writeFile(destination, Buffer.from("keep-existing"));
+  try {
+    globalThis.fetch = async (url) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/download")) {
+        return new Response(bundleBytes, {
+          status: 200,
+          headers: {
+            "Content-Type": "application/zip",
+            "X-Delivery-Authorization-Id": "download-auth-existing",
+            "X-Delivery-Request-Sha256": "e".repeat(64),
+          },
+        });
+      }
+      return new Response(JSON.stringify({
+        artifact_bundle: {
+          manifest_sha256: "f".repeat(64),
+          archive: { sha256 },
+        },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+    const client = new ModelHarnessClient(baseUrl);
+    await assert.rejects(
+      client.downloadArtifactBundle(
+        "task-one",
+        "run-one",
+        "bundle-one",
+        destination,
+        {
+          authorizationId: "download-auth-existing",
+          authorizationToken: "download-token",
+          downloadRequestSha256: "e".repeat(64),
+          manifestSha256: "f".repeat(64),
+          archiveSha256: sha256,
+        },
+      ),
+      /destination is unavailable/,
+    );
+    assert.equal((await readFile(destination)).toString(), "keep-existing");
+    assert.deepEqual(await readdir(temp), ["delivery.zip"]);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("Artifact Bundle download rejects response headers outside the approved scope", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "model-harness-bundle-scope-"));
+  const bundleBytes = Buffer.from("bundle-scope-bytes");
+  const sha256 = createHash("sha256").update(bundleBytes).digest("hex");
+  const destination = join(temp, "delivery.zip");
+  try {
+    globalThis.fetch = async (url) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/download")) {
+        return new Response(bundleBytes, {
+          status: 200,
+          headers: {
+            "Content-Type": "application/zip",
+            "X-Delivery-Authorization-Id": "wrong-authorization",
+            "X-Delivery-Request-Sha256": "0".repeat(64),
+          },
+        });
+      }
+      return new Response(JSON.stringify({
+        artifact_bundle: {
+          manifest_sha256: "a".repeat(64),
+          archive: { sha256 },
+        },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+    const client = new ModelHarnessClient(baseUrl);
+    await assert.rejects(
+      client.downloadArtifactBundle(
+        "task-one",
+        "run-one",
+        "bundle-one",
+        destination,
+        {
+          authorizationId: "download-auth-scope",
+          authorizationToken: "download-token",
+          downloadRequestSha256: "b".repeat(64),
+          manifestSha256: "a".repeat(64),
+          archiveSha256: sha256,
+        },
+      ),
+      /does not match the approved request/,
+    );
+    assert.deepEqual(await readdir(temp), []);
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
@@ -444,7 +752,7 @@ test("Recipe Factory methods preserve staging, digest approval and task-scoped r
   try {
     const samplePath = join(temp, "关键词样例.zip");
     await writeFile(samplePath, Buffer.from("recipe-sample-payload"));
-    const client = new ModelHarnessClient(baseUrl);
+    const client = new ModelHarnessClient(baseUrl, "bridge-test-token");
 
     await client.stageRecipeSamples("audio-task", samplePath, 2);
     let submitted = requests.at(-1);
@@ -464,23 +772,37 @@ test("Recipe Factory methods preserve staging, digest approval and task-scoped r
       () => client.registerRecipeBuild("audio-task", "attempt-1", {
         candidateDigest: "candidate",
         validationDigest: "validation",
-        actor: "local-user",
         approvalConfirmed: false,
       }),
       /Explicit user approval/,
     );
+    assert.throws(
+      () => client.registerRecipeBuild("audio-task", "attempt-1", {
+        candidateDigest: "candidate",
+        validationDigest: "validation",
+        approvalConfirmed: true,
+      }),
+      /approval_checkpoint_id/,
+    );
     await client.registerRecipeBuild("audio-task", "attempt-1", {
       candidateDigest: "candidate",
       validationDigest: "validation",
-      actor: "local-user",
+      approvalCheckpointId: "native-recipe-approval-call",
       reason: "reviewed",
       approvalConfirmed: true,
     });
     submitted = requests.at(-1);
     assert.equal(submitted.url, "/tasks/audio-task/recipe-builds/attempt-1/register");
+    assert.equal(
+      submitted.headers["x-model-harness-agent-token"],
+      "bridge-test-token",
+    );
     assert.deepEqual(JSON.parse(submitted.body), {
       decision: "approved",
-      actor: "local-user",
+      approval: {
+        actor: "user",
+        checkpoint_id: "native-recipe-approval-call",
+      },
       reason: "reviewed",
       candidate_digest: "candidate",
       validation_digest: "validation",

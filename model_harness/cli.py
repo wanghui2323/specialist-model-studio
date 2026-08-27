@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -79,7 +81,20 @@ def build_parser(*, prog: str = "specialist-model-studio") -> argparse.ArgumentP
     verify.add_argument("run_dir")
     verify.add_argument("--deep", action="store_true")
 
-    serve = sub.add_parser("serve", help="Start the optional local HTTP/SSE API.")
+    start = sub.add_parser(
+        "start",
+        help="Start the complete local Studio with its real multi-agent runtime.",
+    )
+    start.add_argument("--runs-dir")
+    start.add_argument("--host")
+    start.add_argument("--port", type=int)
+    start.add_argument("--agent-host")
+    start.add_argument("--agent-port", type=int)
+
+    serve = sub.add_parser(
+        "serve",
+        help="Advanced: start only the local backend HTTP/SSE API.",
+    )
     serve.add_argument("--runs-dir", default="runs")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
@@ -95,6 +110,43 @@ def _read_events(path: Path, after_seq: int) -> list[dict[str, Any]]:
             if int(record["seq"]) > after_seq:
                 records.append(record)
     return records
+
+
+def _start_studio(args: argparse.Namespace) -> int:
+    """Run the audited source-checkout launcher without weakening its gates."""
+
+    repository_root = Path(__file__).resolve().parents[1]
+    launcher = repository_root / "scripts" / "start_conversation_harness.sh"
+    if not launcher.is_file():
+        raise RuntimeError(
+            "The complete Studio launcher is not present in this installation. "
+            "Run `specialist-model-studio start` from a Specialist Model Studio "
+            "source checkout; `serve` remains available for backend-only use."
+        )
+
+    environment = dict(os.environ)
+    environment["SPECIALIST_MODEL_STUDIO_PUBLIC_START"] = "1"
+    environment["MODEL_HARNESS_PYTHON"] = sys.executable
+    for argument, variable in (
+        (args.runs_dir, "MODEL_HARNESS_RUNS_DIR"),
+        (args.host, "MODEL_HARNESS_HOST"),
+        (args.port, "MODEL_HARNESS_PORT"),
+        (args.agent_host, "MODEL_HARNESS_AGENT_HOST"),
+        (args.agent_port, "MODEL_HARNESS_AGENT_PORT"),
+    ):
+        if argument is not None:
+            environment[variable] = str(argument)
+
+    try:
+        completed = subprocess.run(
+            ["bash", str(launcher)],
+            cwd=repository_root,
+            env=environment,
+            check=False,
+        )
+    except KeyboardInterrupt:
+        return 130
+    return int(completed.returncode)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -210,6 +262,8 @@ def main(argv: list[str] | None = None) -> int:
             result = verify_run(args.run_dir, args.deep, registry=registry)
             _print_json(result)
             return 0 if result["ok"] else 1
+        if args.command == "start":
+            return _start_studio(args)
         if args.command == "serve":
             from .server import serve
 

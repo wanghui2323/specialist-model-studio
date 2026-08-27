@@ -103,6 +103,15 @@ class CapabilityDecisionCandidateTests(unittest.TestCase):
                 },
             ),
             (
+                "模糊时序模型",
+                "我想训练一个时序模型",
+                {
+                    "time_series_forecasting",
+                    "anomaly_detection",
+                    "custom",
+                },
+            ),
+            (
                 "模糊文本模型",
                 "我想训练一个文本模型",
                 {
@@ -126,6 +135,26 @@ class CapabilityDecisionCandidateTests(unittest.TestCase):
                 self.assertLessEqual(len(candidates), 5)
                 self.assertIsInstance(decision["question"], str)
                 self.assertIn("请选择", decision["question"])
+
+    def test_time_series_language_cannot_silently_become_tabular_regression(
+        self,
+    ) -> None:
+        decision = capability_decision(
+            "销量时序模型",
+            "根据历史销量预测未来一个月的数值",
+            {"family": "tabular_regression"},
+        )
+
+        self.assertEqual(decision["status"], "needs_clarification")
+        self.assertIsNone(decision["selected_family"])
+        self.assertEqual(
+            {item["family"] for item in decision["candidates"]},
+            {"tabular_regression", "time_series_forecasting", "custom"},
+        )
+        self.assertIn(
+            "explicit_family_conflicts_with_text",
+            decision["reason_codes"],
+        )
 
     def test_unknown_modality_retains_generic_fallback(self) -> None:
         decision = capability_decision(
@@ -263,6 +292,51 @@ class CapabilityFamilyMigrationTests(unittest.TestCase):
 
 @unittest.skipIf(TestClient is None, "server extra is not installed")
 class TaskSpecRevisionTests(unittest.TestCase):
+    def test_vague_time_series_revision_cannot_enter_tabular_recipe(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = create_app(Path(temp_dir) / "runs")
+            with TestClient(app) as client:  # type: ignore[misc]
+                created = client.post(
+                    "/tasks",
+                    json={
+                        "name": "训练一个时序模型",
+                        "business_goal": "帮我训练一个时序模型",
+                    },
+                ).json()["task"]
+
+                self.assertEqual(created["status"], "needs_clarification")
+                self.assertEqual(
+                    {
+                        item["family"]
+                        for item in created["capability_decision"]["candidates"]
+                    },
+                    {
+                        "time_series_forecasting",
+                        "anomaly_detection",
+                        "custom",
+                    },
+                )
+
+                response = client.patch(
+                    f"/tasks/{created['task_id']}/spec",
+                    json={
+                        "base_revision": 1,
+                        "selected_family": "tabular_regression",
+                        "business_goal": (
+                            "帮我训练一个时序模型，输出一个数值预测（回归）"
+                        ),
+                    },
+                )
+
+                self.assertEqual(response.status_code, 200, response.text)
+                revised = response.json()["task"]
+                self.assertEqual(revised["status"], "needs_clarification")
+                self.assertIsNone(revised["recipe_id"])
+                self.assertEqual(
+                    revised["capability_decision"]["reason_codes"][-1],
+                    "explicit_family_conflicts_with_text",
+                )
+
     def test_resumed_legacy_custom_description_can_be_reparsed_in_same_task(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             runs_dir = Path(temp_dir) / "runs"

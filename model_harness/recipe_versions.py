@@ -56,6 +56,74 @@ def validation_report_digest(report: Mapping[str, Any]) -> str:
     return content_digest(payload)
 
 
+def _verified_registration_approval(
+    approval: Mapping[str, Any],
+) -> dict[str, Any]:
+    actor = str(approval.get("actor") or "").strip()
+    checkpoint_id = str(approval.get("checkpoint_id") or "").strip()
+    verified_by = str(approval.get("verified_by") or "").strip()
+    bridge_token_sha256 = str(
+        approval.get("bridge_token_sha256") or ""
+    ).strip().lower()
+    if approval.get("decision") != "approved" or actor != "user":
+        raise ContractError(
+            "registration requires an explicit approved user decision"
+        )
+    if not checkpoint_id:
+        raise ContractError(
+            "registration requires a user approval checkpoint_id"
+        )
+    if verified_by != "agent_bridge_token" or len(bridge_token_sha256) != 64:
+        raise ContractError(
+            "registration requires a verified agent-bridge approval"
+        )
+    try:
+        int(bridge_token_sha256, 16)
+    except ValueError as exc:
+        raise ContractError(
+            "registration agent-bridge proof is invalid"
+        ) from exc
+    record = {
+        "approval_id": f"recipe-registration-approval-{uuid4().hex}",
+        "decision": "approved",
+        "actor": actor,
+        "checkpoint_id": checkpoint_id,
+        "reason": str(approval.get("reason") or "").strip(),
+        "verified_by": verified_by,
+        "bridge_token_sha256": bridge_token_sha256,
+        "decided_at": utc_now(),
+    }
+    record["approval_sha256"] = content_digest(record)
+    return record
+
+
+def _assert_persisted_registration_approval(approval: Any) -> None:
+    if not isinstance(approval, Mapping):
+        raise VersionIntegrityError("registration approval evidence is missing")
+    selected = dict(approval)
+    approval_sha256 = str(selected.pop("approval_sha256", "")).strip().lower()
+    if len(approval_sha256) != 64 or content_digest(selected) != approval_sha256:
+        raise VersionIntegrityError("registration approval evidence changed")
+    if (
+        selected.get("decision") != "approved"
+        or selected.get("actor") != "user"
+        or not str(selected.get("checkpoint_id") or "").strip()
+        or selected.get("verified_by") != "agent_bridge_token"
+    ):
+        raise VersionIntegrityError("registration approval evidence is invalid")
+    bridge_token_sha256 = str(
+        selected.get("bridge_token_sha256") or ""
+    ).strip().lower()
+    try:
+        if len(bridge_token_sha256) != 64:
+            raise ValueError
+        int(bridge_token_sha256, 16)
+    except ValueError as exc:
+        raise VersionIntegrityError(
+            "registration approval bridge proof is invalid"
+        ) from exc
+
+
 def _write_immutable(path: Path, value: Mapping[str, Any]) -> None:
     if path.is_file():
         if canonical_json(read_json(path)) != canonical_json(value):
@@ -303,7 +371,14 @@ class RecipeVersionStore:
         path = self.intent_dir / intent_id / "intent.json"
         if not path.is_file():
             raise FileNotFoundError(f"registration intent not found: {intent_id}")
-        return read_json(path)
+        intent = read_json(path)
+        if intent.get("status") in {
+            "applying",
+            "recovery_required",
+            "registered",
+        }:
+            _assert_persisted_registration_approval(intent.get("approval"))
+        return intent
 
     def reject(
         self,
@@ -349,11 +424,7 @@ class RecipeVersionStore:
         current_spec_revision: int,
         activate: ActivationCallback | None = None,
     ) -> dict[str, Any]:
-        actor = str(approval.get("actor", "")).strip()
-        if approval.get("decision") != "approved" or not actor:
-            raise ContractError(
-                "registration requires an explicit approved decision and actor"
-            )
+        approval_record = _verified_registration_approval(approval)
         with self._lock:
             intent = self.get_intent(intent_id)
             if intent["status"] == "registered":
@@ -382,18 +453,22 @@ class RecipeVersionStore:
                 intent.update(
                     {
                         "status": "applying",
-                        "approval": {
-                            "decision": "approved",
-                            "actor": actor,
-                            "reason": str(approval.get("reason", "")).strip(),
-                            "decided_at": utc_now(),
-                        },
+                        "approval": approval_record,
                         "updated_at": utc_now(),
                         "last_error": None,
                     }
                 )
                 self._write_intent(intent)
-                self._event(intent_id, "registration.approved", {"actor": actor})
+                self._event(
+                    intent_id,
+                    "registration.approved",
+                    {
+                        "actor": approval_record["actor"],
+                        "checkpoint_id": approval_record["checkpoint_id"],
+                        "approval_id": approval_record["approval_id"],
+                        "approval_sha256": approval_record["approval_sha256"],
+                    },
+                )
             return self._complete_registration(intent, activate)
 
     def recover_transactions(
@@ -520,6 +595,7 @@ class RecipeVersionStore:
         intent: dict[str, Any],
         activate: ActivationCallback | None,
     ) -> dict[str, Any]:
+        _assert_persisted_registration_approval(intent.get("approval"))
         intent_id = str(intent["intent_id"])
         recipe_version = self.get_recipe_version(str(intent["recipe_version_id"]))
         adapter_version = self.get_adapter_version(str(intent["adapter_version_id"]))

@@ -236,13 +236,26 @@ def _image_journey(report: dict[str, Any]) -> dict[str, Any]:
     return journey
 
 
-def _prepare_three_family_runtime(hf_report_path: Path, hf_report: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
+def _prepare_three_family_runtime(
+    hf_report_path: Path,
+    hf_report: dict[str, Any],
+    *,
+    user_approval_checkpoint_id: str,
+) -> tuple[Path, dict[str, Any]]:
     runtime_dir = hf_report_path.parent / "runtime"
     journeys: dict[str, dict[str, Any]] = {"image": _image_journey(hf_report)}
     app = create_app(runtime_dir)
     with TestClient(app) as client:
-        journeys["tabular"] = _prepare_tabular(client, app)
-        journeys["audio"] = _prepare_audio(client, app)
+        journeys["tabular"] = _prepare_tabular(
+            client,
+            app,
+            user_approval_checkpoint_id=user_approval_checkpoint_id,
+        )
+        journeys["audio"] = _prepare_audio(
+            client,
+            app,
+            user_approval_checkpoint_id=user_approval_checkpoint_id,
+        )
     if tuple(journeys) != FAMILIES:
         raise RuntimeError("three-family journey order drifted")
     restart = _verify_restart(runtime_dir, journeys)
@@ -488,6 +501,8 @@ def _collect_cold_clone(
     producer_run_id: str,
     artifacts: Path,
     tools: dict[str, Path],
+    *,
+    user_approval_checkpoint_id: str,
 ) -> tuple[dict[str, Any], Path, Path]:
     command_log = artifacts / "cold-clone" / "commands.ndjson"
     report_path = artifacts / "cold-clone" / "cold-clone-report.json"
@@ -512,7 +527,23 @@ def _collect_cold_clone(
                 ("node_tests", [str(tools["npm"]), "--prefix", str(clone / "integrations" / "deepseek-harness"), "test"], clone),
                 ("node_check", [str(tools["npm"]), "--prefix", str(clone / "integrations" / "deepseek-harness"), "run", "check"], clone),
                 ("browser_ci", [str(tools["npm"]), "--prefix", str(clone / "acceptance" / "browser"), "ci", "--ignore-scripts"], clone),
-                ("minimal_loop", [str(tools["uv"]), "run", "--project", str(clone), "python", "scripts/prepare_v07_acceptance_runtime.py", "--runtime-dir", str(root / "minimal-runtime"), "--skip-hf"], clone),
+                (
+                    "minimal_loop",
+                    [
+                        str(tools["uv"]),
+                        "run",
+                        "--project",
+                        str(clone),
+                        "python",
+                        "scripts/prepare_v07_acceptance_runtime.py",
+                        "--runtime-dir",
+                        str(root / "minimal-runtime"),
+                        "--skip-hf",
+                        "--user-approval-checkpoint-id",
+                        user_approval_checkpoint_id,
+                    ],
+                    clone,
+                ),
             ]
             for command_id, argv, cwd in specs:
                 record = _run_cold_command(command_id, argv, cwd=cwd, environment=environment, log_handle=log_handle)
@@ -568,8 +599,11 @@ def _collect_cold_clone(
 def collect(args: argparse.Namespace) -> Path:
     source_commit = args.source_commit.lower()
     challenge = args.verifier_challenge.lower()
+    user_approval_checkpoint_id = str(args.user_approval_checkpoint_id).strip()
     if len(challenge) != 32 or any(character not in "0123456789abcdef" for character in challenge):
         raise ValueError("verifier challenge must be 32 lowercase hex characters")
+    if not user_approval_checkpoint_id:
+        raise ValueError("user approval checkpoint id must not be empty")
     tools = _validated_tools(args)
     producer_cache = args.hf_report_root.expanduser().resolve().parent / "controlled-producer-cache"
     environment = _controlled_environment(producer_cache, tools)
@@ -582,7 +616,11 @@ def collect(args: argparse.Namespace) -> Path:
     artifacts.mkdir(mode=0o700)
     producer_run_id = f"evidence-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:8]}"
     hf_report_path, hf_report = _find_hf_report(args.hf_report_root.expanduser().resolve(), source_commit)
-    runtime_dir, journeys = _prepare_three_family_runtime(hf_report_path, hf_report)
+    runtime_dir, journeys = _prepare_three_family_runtime(
+        hf_report_path,
+        hf_report,
+        user_approval_checkpoint_id=user_approval_checkpoint_id,
+    )
     runtime_artifacts = artifacts / "runtime"
     _copy_json_artifact(runtime_dir / "journeys.json", runtime_artifacts / "journeys.json")
     _copy_json_artifact(hf_report_path, runtime_artifacts / "hf-report.json")
@@ -697,6 +735,7 @@ def collect(args: argparse.Namespace) -> Path:
             producer_run_id,
             artifacts,
             tools,
+            user_approval_checkpoint_id=user_approval_checkpoint_id,
         )
         shutil.copyfile(live_after_log, process_artifacts / "after.log")
         source_files = {
@@ -775,6 +814,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--npm", type=Path, required=True)
     parser.add_argument("--uv", type=Path, required=True)
     parser.add_argument("--chrome", type=Path, required=True)
+    parser.add_argument(
+        "--user-approval-checkpoint-id",
+        required=True,
+        help=(
+            "Identifier of the explicit user approval checkpoint authorizing "
+            "the controlled acceptance runs and artifact delivery actions."
+        ),
+    )
     selected = parser.parse_args()
     selected.invoked_argv = [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]]
     return selected

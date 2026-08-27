@@ -8,4 +8,4 @@ import os
 # opts telemetry back in before importing this package.
 os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 
-__version__ = "0.9.0rc1"
+__version__ = "1.0.0rc1"

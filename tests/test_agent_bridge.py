@@ -8,6 +8,7 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 try:
     from fastapi.testclient import TestClient
@@ -16,7 +17,6 @@ except ImportError:  # pragma: no cover
 
 from model_harness.agent_bridge import (
     AgentRuntimeError,
-    ConversationBridge,
     DshEventHub,
     DshRpcClient,
 )
@@ -168,20 +168,6 @@ class BlockingStreamConnection(FakeRpcConnection):
         self.closed_event.set()
 
 
-def build_bridge(
-    root: Path,
-    client: FakeDshClient,
-) -> tuple[ConversationBridge, DshEventHub]:
-    events = DshEventHub(client)  # type: ignore[arg-type]
-    bridge = ConversationBridge(  # type: ignore[arg-type]
-        root,
-        client,
-        events,
-        root,
-    )
-    return bridge, events
-
-
 def runtime_event(rpc_id: str, payload: dict[str, Any]) -> str:
     return json.dumps({"rpcId": rpc_id, "payload": payload})
 
@@ -208,6 +194,25 @@ def attach_queued_run(app: Any, task_id: str, run_id: str) -> Path:
 
 
 class AgentBridgeTests(unittest.TestCase):
+    def test_event_stream_health_starts_as_an_immutable_snapshot(self) -> None:
+        events = DshEventHub(FakeDshClient())  # type: ignore[arg-type]
+
+        health = events.stream_health()
+
+        self.assertEqual(
+            health,
+            {
+                "connected_at": None,
+                "last_event_at": None,
+                "last_error_at": None,
+                "consecutive_failures": 0,
+                "recovered_at": None,
+                "status": "not_started",
+            },
+        )
+        health["status"] = "mutated"
+        self.assertEqual(events.stream_health()["status"], "not_started")
+
     def test_rpc_client_reuses_keep_alive_connection_for_unary_calls(self) -> None:
         client = DshRpcClient("http://127.0.0.1:3080")
         connection = FakeRpcConnection()
@@ -303,6 +308,168 @@ class AgentBridgeTests(unittest.TestCase):
             connection.requests[0][3],
             {"accept": "text/event-stream", "connection": "keep-alive"},
         )
+        health = events.stream_health()
+        self.assertEqual(health["status"], "degraded")
+        self.assertIsNotNone(health["connected_at"])
+        self.assertIsNone(health["last_event_at"])
+        self.assertIsNotNone(health["last_error_at"])
+        self.assertEqual(health["consecutive_failures"], 1)
+        self.assertIsNone(health["recovered_at"])
+
+    def test_event_stream_exception_records_degraded_health(self) -> None:
+        connection = FakeRpcConnection(fail_response=True)
+
+        class EventClient:
+            def connection(
+                _self, timeout: float | None = None
+            ) -> FakeRpcConnection:
+                self.assertEqual(timeout, DshEventHub.STREAM_TIMEOUT_SECONDS)
+                return connection
+
+        events = DshEventHub(EventClient())  # type: ignore[arg-type]
+        stop = FakeStopEvent()
+        events._stop = stop  # type: ignore[assignment]
+
+        events._run()  # noqa: SLF001 - deterministic failure under test
+
+        health = events.stream_health()
+        self.assertEqual(health["status"], "degraded")
+        self.assertIsNone(health["connected_at"])
+        self.assertIsNone(health["last_event_at"])
+        self.assertIsNotNone(health["last_error_at"])
+        self.assertEqual(health["consecutive_failures"], 1)
+        self.assertIsNone(health["recovered_at"])
+
+    def test_event_stream_recovery_resets_failures_and_records_event(self) -> None:
+        failed = FakeRpcConnection(fail_response=True)
+        recovered = FakeRpcConnection()
+        connections = iter([failed, recovered])
+
+        class RecoveryStopEvent:
+            def __init__(_self) -> None:
+                _self.stopped = False
+                _self.waits: list[float] = []
+
+            def is_set(_self) -> bool:
+                return _self.stopped
+
+            def wait(_self, timeout: float) -> bool:
+                _self.waits.append(timeout)
+                return False
+
+        stop = RecoveryStopEvent()
+        event = runtime_event(
+            "rpc-recovered",
+            {
+                "type": "approval/requested",
+                "sessionId": "session-recovered",
+                "approvalId": "approval-recovered",
+                "toolName": "model_harness_get_task",
+            },
+        )
+        lines = iter([f"data: {event}\n".encode("utf-8"), b"\n"])
+        response = FakeHttpResponse({})
+
+        def readline() -> bytes:
+            try:
+                return next(lines)
+            except StopIteration:
+                stop.stopped = True
+                return b""
+
+        response.readline = readline  # type: ignore[method-assign]
+        recovered.getresponse = lambda: response  # type: ignore[method-assign]
+
+        class EventClient:
+            def connection(
+                _self, timeout: float | None = None
+            ) -> FakeRpcConnection:
+                self.assertEqual(timeout, DshEventHub.STREAM_TIMEOUT_SECONDS)
+                return next(connections)
+
+        events = DshEventHub(EventClient())  # type: ignore[arg-type]
+        events._stop = stop  # type: ignore[assignment]
+
+        events._run()  # noqa: SLF001 - deterministic recovery under test
+
+        health = events.stream_health()
+        self.assertEqual(health["status"], "healthy")
+        self.assertIsNotNone(health["connected_at"])
+        self.assertIsNotNone(health["last_event_at"])
+        self.assertIsNotNone(health["last_error_at"])
+        self.assertEqual(health["consecutive_failures"], 0)
+        self.assertIsNotNone(health["recovered_at"])
+        self.assertGreaterEqual(health["recovered_at"], health["last_error_at"])
+        self.assertGreaterEqual(health["last_event_at"], health["connected_at"])
+        self.assertEqual(stop.waits, [DshEventHub.RECONNECT_DELAY_SECONDS])
+
+    def test_event_stream_upgrades_to_websocket_when_dsh_returns_426(self) -> None:
+        connection = FakeRpcConnection()
+        connection.getresponse = lambda: FakeHttpResponse({}, status=426)  # type: ignore[method-assign]
+
+        class EventClient:
+            def connection(
+                _self, timeout: float | None = None
+            ) -> FakeRpcConnection:
+                self.assertEqual(timeout, DshEventHub.STREAM_TIMEOUT_SECONDS)
+                return connection
+
+        events = DshEventHub(EventClient())  # type: ignore[arg-type]
+        stop = FakeStopEvent()
+        events._stop = stop  # type: ignore[assignment]
+        upgraded: list[bool] = []
+
+        def consume_websocket() -> None:
+            upgraded.append(True)
+            stop.stopped = True
+
+        events._consume_websocket = consume_websocket  # type: ignore[method-assign]
+        events._run()  # noqa: SLF001 - protocol fallback under test
+
+        self.assertEqual(upgraded, [True])
+        self.assertGreaterEqual(connection.closed, 1)
+
+    def test_websocket_none_records_degraded_health(self) -> None:
+        connection = FakeRpcConnection()
+        connection.getresponse = lambda: FakeHttpResponse({}, status=426)  # type: ignore[method-assign]
+
+        class EventClient:
+            host = "127.0.0.1"
+            port = 3080
+
+            def connection(
+                _self, timeout: float | None = None
+            ) -> FakeRpcConnection:
+                self.assertEqual(timeout, DshEventHub.STREAM_TIMEOUT_SECONDS)
+                return connection
+
+        class FakeWebSocket:
+            def __init__(_self) -> None:
+                _self.closed = 0
+
+            def recv(_self, timeout: float) -> None:
+                self.assertEqual(timeout, 1.0)
+                return None
+
+            def close(_self) -> None:
+                _self.closed += 1
+
+        websocket = FakeWebSocket()
+        events = DshEventHub(EventClient())  # type: ignore[arg-type]
+        stop = FakeStopEvent()
+        events._stop = stop  # type: ignore[assignment]
+
+        with patch("websockets.sync.client.connect", return_value=websocket):
+            events._run()  # noqa: SLF001 - WebSocket EOF under test
+
+        health = events.stream_health()
+        self.assertEqual(health["status"], "degraded")
+        self.assertIsNotNone(health["connected_at"])
+        self.assertIsNone(health["last_event_at"])
+        self.assertIsNotNone(health["last_error_at"])
+        self.assertEqual(health["consecutive_failures"], 1)
+        self.assertIsNone(health["recovered_at"])
+        self.assertGreaterEqual(websocket.closed, 1)
 
     def test_event_hub_stop_closes_blocked_stream_and_unary_connection(self) -> None:
         stream = BlockingStreamConnection()
@@ -331,13 +498,15 @@ class AgentBridgeTests(unittest.TestCase):
         self.assertEqual(client.closed, 1)
         self.assertIsNotNone(events._thread)  # noqa: SLF001
         self.assertFalse(events._thread.is_alive())  # type: ignore[union-attr]  # noqa: SLF001
+        self.assertEqual(events.stream_health()["status"], "stopped")
 
     def test_pending_approval_and_question_survive_restart_until_resolved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             client = FakeDshClient()
-            bridge, events = build_bridge(root, client)
-            session_id = bridge.ensure_session("task-a", "Task A")
+            session_id = "dsh-session-a"
+            events = DshEventHub(client)  # type: ignore[arg-type]
+            events.bind_workspace(root)
 
             events._consume(  # noqa: SLF001 - runtime envelope is the unit under test
                 runtime_event(
@@ -347,6 +516,7 @@ class AgentBridgeTests(unittest.TestCase):
                         "sessionId": session_id,
                         "approvalId": "approval-1",
                         "toolName": "model_harness_start_task_run",
+                        "callId": "call-approval-1",
                         "reason": "start the frozen run",
                     },
                 )
@@ -371,136 +541,30 @@ class AgentBridgeTests(unittest.TestCase):
                 {"rpc-approval", "rpc-question"},
             )
 
-            restarted, restarted_events = build_bridge(root, client)
-            conversation = restarted.conversation("task-a")
-            self.assertEqual(conversation["session_id"], session_id)
+            restarted_events = DshEventHub(client)  # type: ignore[arg-type]
+            restarted_events.bind_workspace(root)
             self.assertEqual(
-                {item["kind"] for item in conversation["pending"]},
+                {item["kind"] for item in restarted_events.pending_for(session_id)},
                 {"approval", "question"},
             )
-
-            restarted.answer_approval("task-a", "rpc-approval", "allowed-once")
-            restarted.answer_question(
-                "task-a",
-                "rpc-question",
-                [{"id": "metric", "selected": ["macro_f1"]}],
+            approval = next(
+                item
+                for item in restarted_events.pending_for(session_id)
+                if item["kind"] == "approval"
             )
+            self.assertEqual(approval["call_id"], "call-approval-1")
+
+            restarted_events.resolve_local(session_id, "rpc-approval")
+            restarted_events.resolve_local(session_id, "rpc-question")
             self.assertEqual(restarted_events.pending_for(session_id), [])
 
-            final_bridge, final_events = build_bridge(root, client)
-            self.assertEqual(final_bridge.session_for("task-a"), session_id)
+            final_events = DshEventHub(client)  # type: ignore[arg-type]
+            final_events.bind_workspace(root)
             self.assertEqual(final_events.pending_for(session_id), [])
             self.assertEqual(
                 read_json(root / DshEventHub.PENDING_STATE_FILENAME)["sessions"],
                 {},
             )
-
-    def test_task_session_mapping_is_reused_and_isolated_across_restart(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            client = FakeDshClient()
-            bridge, _events = build_bridge(root, client)
-
-            task_a_session = bridge.ensure_session("task-a", "Task A")
-            self.assertEqual(
-                bridge.ensure_session("task-a", "Task A renamed"),
-                task_a_session,
-            )
-            task_b_session = bridge.ensure_session("task-b", "Task B")
-            self.assertNotEqual(task_a_session, task_b_session)
-            self.assertEqual(
-                [method for method, _payload in client.calls].count("session.create"),
-                2,
-            )
-
-            restarted, _restarted_events = build_bridge(root, client)
-            self.assertEqual(
-                restarted.ensure_session("task-a", "Task A after restart"),
-                task_a_session,
-            )
-            self.assertEqual(restarted.session_for("task-b"), task_b_session)
-            self.assertEqual(
-                [method for method, _payload in client.calls].count("session.create"),
-                2,
-            )
-
-    def test_offline_session_creation_does_not_mutate_task_or_run_state(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            task_path = root / "tasks" / "task-a" / "task.json"
-            run_path = root / "runs" / "run-a" / "run_state.json"
-            write_json(task_path, {"task_id": "task-a", "status": "ready"})
-            write_json(run_path, {"run_id": "run-a", "status": "queued"})
-            task_before = task_path.read_bytes()
-            run_before = run_path.read_bytes()
-            client = FakeDshClient(fail_methods={"session.create"})
-            bridge, events = build_bridge(root, client)
-
-            with self.assertRaisesRegex(AgentRuntimeError, "offline"):
-                bridge.prompt("task-a", "Task A", "start")
-
-            self.assertEqual(task_path.read_bytes(), task_before)
-            self.assertEqual(run_path.read_bytes(), run_before)
-            self.assertFalse((root / "conversations.json").exists())
-            self.assertEqual(events.pending_for("missing-session"), [])
-            self.assertFalse((root / DshEventHub.PENDING_STATE_FILENAME).exists())
-
-            prompt_client = FakeDshClient(fail_methods={"session.prompt"})
-            prompt_bridge, _prompt_events = build_bridge(root, prompt_client)
-            with self.assertRaisesRegex(AgentRuntimeError, "offline"):
-                prompt_bridge.prompt("task-a", "Task A", "start")
-            self.assertEqual(task_path.read_bytes(), task_before)
-            self.assertEqual(run_path.read_bytes(), run_before)
-            self.assertEqual(
-                prompt_bridge.session_for("task-a"),
-                "session-1",
-            )
-
-    def test_cancel_calls_only_session_cancel_and_preserves_task_and_run(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            client = FakeDshClient()
-            bridge, events = build_bridge(root, client)
-            session_id = bridge.ensure_session("task-a", "Task A")
-            events._consume(  # noqa: SLF001 - runtime envelope is the unit under test
-                runtime_event(
-                    "rpc-approval",
-                    {
-                        "type": "approval/requested",
-                        "sessionId": session_id,
-                        "approvalId": "approval-1",
-                        "toolName": "model_harness_start_task_run",
-                    },
-                )
-            )
-            task_path = root / "tasks" / "task-a" / "task.json"
-            run_path = root / "runs" / "run-a" / "run_state.json"
-            write_json(task_path, {"task_id": "task-a", "status": "running"})
-            write_json(run_path, {"run_id": "run-a", "status": "training"})
-            task_before = task_path.read_bytes()
-            run_before = run_path.read_bytes()
-            mapping_before = (root / "conversations.json").read_bytes()
-            pending_before = (root / DshEventHub.PENDING_STATE_FILENAME).read_bytes()
-            client.calls.clear()
-
-            bridge.cancel("task-a")
-
-            self.assertEqual(
-                client.calls,
-                [("session.cancel", {"sessionId": session_id})],
-            )
-            self.assertEqual(task_path.read_bytes(), task_before)
-            self.assertEqual(run_path.read_bytes(), run_before)
-            self.assertEqual((root / "conversations.json").read_bytes(), mapping_before)
-            self.assertEqual(
-                (root / DshEventHub.PENDING_STATE_FILENAME).read_bytes(),
-                pending_before,
-            )
-
-            client.calls.clear()
-            with self.assertRaisesRegex(AgentRuntimeError, "还没有启动"):
-                bridge.cancel("task-without-session")
-            self.assertEqual(client.calls, [])
 
     @unittest.skipIf(TestClient is None, "server extra is not installed")
     def test_task_owned_run_cancel_rejects_cross_task_and_preserves_conversation(self) -> None:
@@ -520,12 +584,12 @@ class AgentBridgeTests(unittest.TestCase):
             run_a = attach_queued_run(app, task_a["task_id"], "run-a")
             attach_queued_run(app, task_b["task_id"], "run-b")
 
-            agent_client = FakeDshClient()
-            agent_bridge, _agent_events = build_bridge(workspace.root, agent_client)
-            agent_bridge.ensure_session(task_a["task_id"], "Task A")
-            mapping_before = (workspace.root / "conversations.json").read_bytes()
-            sessions_before = deepcopy(agent_client.sessions)
-            conversation_before = agent_bridge.conversation(task_a["task_id"])
+            legacy_mapping = workspace.root / "conversations.json"
+            write_json(
+                legacy_mapping,
+                {task_a["task_id"]: {"session_id": "legacy-session-sentinel"}},
+            )
+            mapping_before = legacy_mapping.read_bytes()
             run_b_state_path = app.state.run_service.runs_dir / "run-b" / "run_state.json"
             run_b_before = run_b_state_path.read_bytes()
 
@@ -548,13 +612,8 @@ class AgentBridgeTests(unittest.TestCase):
                 )
 
                 self.assertEqual(
-                    (workspace.root / "conversations.json").read_bytes(),
+                    legacy_mapping.read_bytes(),
                     mapping_before,
-                )
-                self.assertEqual(agent_client.sessions, sessions_before)
-                self.assertEqual(
-                    agent_bridge.conversation(task_a["task_id"]),
-                    conversation_before,
                 )
 
                 execute_run(run_a, registry=app.state.run_service.registry)

@@ -11,6 +11,8 @@ except ImportError:  # pragma: no cover
 
 from model_harness.runner import verify_run
 from model_harness.server import create_app
+from tests.contract_confirmation import contract_confirmation_payload
+from tests.run_authorization import AGENT_BRIDGE_HEADERS, start_authorized_task_run
 from tests.test_audio_keyword_engine import _dataset_zip
 
 
@@ -60,28 +62,84 @@ class RecipeFactoryWorkspaceTests(unittest.TestCase):
                     app.state.run_service.registry.recipe_ids(),
                 )
 
-                denied = client.post(
-                    f"/tasks/{task_id}/recipe-builds/{build['attempt_id']}/register",
-                    json={
-                        "decision": "approved",
-                        "actor": "",
-                        "candidate_digest": build["candidate_digest"],
-                        "validation_digest": build["validation_digest"],
-                    },
-                )
-                self.assertEqual(denied.status_code, 422, denied.text)
-
-                registered = client.post(
+                actor_only = client.post(
                     f"/tasks/{task_id}/recipe-builds/{build['attempt_id']}/register",
                     json={
                         "decision": "approved",
                         "actor": "local-user",
-                        "reason": "reviewed declarative spec and validation digests",
                         "candidate_digest": build["candidate_digest"],
                         "validation_digest": build["validation_digest"],
                     },
+                    headers=AGENT_BRIDGE_HEADERS,
+                )
+                self.assertEqual(actor_only.status_code, 422, actor_only.text)
+                self.assertNotIn(
+                    "audio-keyword-classification",
+                    app.state.run_service.registry.recipe_ids(),
+                )
+
+                approval_payload = {
+                    "decision": "approved",
+                    "approval": {
+                        "actor": "user",
+                        "checkpoint_id": "test-recipe-registration-checkpoint",
+                    },
+                    "reason": "reviewed declarative spec and validation digests",
+                    "candidate_digest": build["candidate_digest"],
+                    "validation_digest": build["validation_digest"],
+                }
+                no_token = client.post(
+                    f"/tasks/{task_id}/recipe-builds/{build['attempt_id']}/register",
+                    json=approval_payload,
+                )
+                self.assertEqual(no_token.status_code, 403, no_token.text)
+
+                forged_actor = client.post(
+                    f"/tasks/{task_id}/recipe-builds/{build['attempt_id']}/register",
+                    json={
+                        **approval_payload,
+                        "approval": {
+                            "actor": "acceptance-preparer",
+                            "checkpoint_id": "test-forged-actor-checkpoint",
+                        },
+                    },
+                    headers=AGENT_BRIDGE_HEADERS,
+                )
+                self.assertEqual(forged_actor.status_code, 422, forged_actor.text)
+
+                missing_checkpoint = client.post(
+                    f"/tasks/{task_id}/recipe-builds/{build['attempt_id']}/register",
+                    json={
+                        **approval_payload,
+                        "approval": {"actor": "user", "checkpoint_id": ""},
+                    },
+                    headers=AGENT_BRIDGE_HEADERS,
+                )
+                self.assertEqual(
+                    missing_checkpoint.status_code,
+                    422,
+                    missing_checkpoint.text,
+                )
+
+                registered = client.post(
+                    f"/tasks/{task_id}/recipe-builds/{build['attempt_id']}/register",
+                    json=approval_payload,
+                    headers=AGENT_BRIDGE_HEADERS,
                 )
                 self.assertEqual(registered.status_code, 200, registered.text)
+                registration_intent = registered.json()["registration_intent"]
+                self.assertEqual(
+                    registration_intent["approval"]["checkpoint_id"],
+                    "test-recipe-registration-checkpoint",
+                )
+                self.assertEqual(
+                    registration_intent["approval"]["verified_by"],
+                    "agent_bridge_token",
+                )
+                self.assertEqual(
+                    len(registration_intent["approval"]["approval_sha256"]),
+                    64,
+                )
                 task = registered.json()["task"]
                 self.assertEqual(task["task_id"], task_id)
                 self.assertEqual(task["status"], "awaiting_data")
@@ -113,14 +171,10 @@ class RecipeFactoryWorkspaceTests(unittest.TestCase):
 
                 confirmed = client.post(
                     f"/tasks/{task_id}/confirm",
-                    json={
-                        "data_authorized": True,
-                        "labels_reviewed": True,
-                        "gates_reviewed": True,
-                    },
+                    json=contract_confirmation_payload(client, task_id),
                 )
                 self.assertEqual(confirmed.status_code, 200, confirmed.text)
-                started = client.post(f"/tasks/{task_id}/runs")
+                started = start_authorized_task_run(client, task_id)
                 self.assertEqual(started.status_code, 202, started.text)
                 run_id = started.json()["task"]["current_run_id"]
                 app.state.run_service.wait(run_id, timeout=30)

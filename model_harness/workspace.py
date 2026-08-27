@@ -14,7 +14,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from threading import RLock
-from typing import Any
+from typing import Any, Mapping
 from uuid import uuid4
 
 from PIL import Image, UnidentifiedImageError
@@ -22,8 +22,20 @@ from PIL import Image, UnidentifiedImageError
 from .blockers import BlockerStore
 from .feasibility_store import FeasibilityStore
 from .environment_resolver import resolve_environment_dependencies
-from .contracts import validate_contract
+from .contracts import (
+    ApprovalDecision,
+    ApprovalDecisionIntegrityError,
+    ContractRevision,
+    ContractRevisionConflictError,
+    ContractRevisionIntegrityError,
+    validate_contract,
+)
 from .data_adapters import DataAdapterRegistry, default_data_adapter_registry
+from .delivery_authorizations import (
+    DeliveryAuthorizationError,
+    DeliveryAuthorizationStore,
+    delivery_scope_sha256,
+)
 from .errors import ContractError, HarnessError
 from .io_utils import read_json, sha256_file, write_json
 from .huggingface_assets import (
@@ -33,6 +45,7 @@ from .huggingface_assets import (
 )
 from .huggingface_catalog import HuggingFaceCatalog
 from .github_source import GitHubSourceProvider
+from .inference_inputs import InferenceInputError, InferenceInputStore
 from .model_assets import ModelAssetError, ModelAssetStore
 from .model_source_store import ModelSourceStore, model_search_contains_credentials
 from .model_sources import (
@@ -64,6 +77,7 @@ from .resource_feasibility import (
 )
 from .runner import new_run_id
 from .service import RunService
+from .sample_inference import SampleInferenceBlocked
 from .state import ACTIVE_STATUSES
 from .staged_assets import StagedAssetNotFound, StagedAssetStore
 from .task_specs import (
@@ -443,6 +457,8 @@ class TrainingWorkspace:
         self.blocker_store = BlockerStore(self.root)
         self.training_plan_store = TrainingPlanStore(self.root)
         self.feasibility_store = FeasibilityStore(self.root)
+        self.delivery_authorization_store = DeliveryAuthorizationStore(self.root)
+        self.inference_input_store = InferenceInputStore(self.root)
         self.model_source_providers: dict[str, SourceProvider] = {
             "github": GitHubSourceProvider(),
             "huggingface": HuggingFaceSourceProvider(),
@@ -550,6 +566,12 @@ class TrainingWorkspace:
             "contract_confirmed": False,
             "confirmations": {},
             "confirmed_contract_sha256": None,
+            "contract_revision_ids": [],
+            "current_contract_revision_id": None,
+            "confirmed_contract_revision_id": None,
+            "approval_decision_ids": [],
+            "current_approval_decision_id": None,
+            "delivery_authorization_ids": [],
             "contract_stale": False,
             "current_model_binding_revision_id": None,
             "last_model_binding_revision_id": None,
@@ -597,6 +619,23 @@ class TrainingWorkspace:
         plan = self.training_plan_store.current_revision(task_id)
         if plan is None:
             return None
+        return self._training_plan_view(task, plan)
+
+    def get_training_plan(
+        self,
+        task_id: str,
+        revision_id: str,
+    ) -> dict[str, Any]:
+        task = read_json(self._task_path(task_id))
+        plan = self.training_plan_store.get_revision(task_id, revision_id)
+        return self._training_plan_view(task, plan)
+
+    def _training_plan_view(
+        self,
+        task: Mapping[str, Any],
+        plan: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        task_id = str(task["task_id"])
         view = self.training_plan_store.revision_view(
             task_id, str(plan["training_plan_revision_id"])
         )
@@ -969,6 +1008,22 @@ class TrainingWorkspace:
         )
         return {**bundle, "decision": decision, "blockers": blockers}
 
+    def get_resource_probe(self, task_id: str, probe_id: str) -> dict[str, Any]:
+        read_json(self._task_path(task_id))
+        return self.feasibility_store.get_resource_probe(task_id, probe_id)
+
+    def get_environment_lock(self, task_id: str, lock_id: str) -> dict[str, Any]:
+        read_json(self._task_path(task_id))
+        return self.feasibility_store.get_environment_lock(task_id, lock_id)
+
+    def get_resource_fit_report(
+        self,
+        task_id: str,
+        report_id: str,
+    ) -> dict[str, Any]:
+        read_json(self._task_path(task_id))
+        return self.feasibility_store.get_resource_fit_report(task_id, report_id)
+
     def check_resource_feasibility(
         self,
         task_id: str,
@@ -1259,6 +1314,10 @@ class TrainingWorkspace:
     ) -> list[dict[str, Any]]:
         read_json(self._task_path(task_id))
         return self.blocker_store.list(task_id, active_only=active_only)
+
+    def get_blocker(self, task_id: str, blocker_id: str) -> dict[str, Any]:
+        read_json(self._task_path(task_id))
+        return self.blocker_store.get(task_id, blocker_id)
 
     def _record_model_source_blocker(
         self,
@@ -1683,6 +1742,14 @@ class TrainingWorkspace:
     ) -> dict[str, Any]:
         read_json(self._task_path(task_id))
         return self.model_source_store.get_resolution(task_id, resolution_id)
+
+    def get_model_source_search(
+        self,
+        task_id: str,
+        search_id: str,
+    ) -> dict[str, Any]:
+        read_json(self._task_path(task_id))
+        return self.model_source_store.get_search_record(task_id, search_id)
 
     def list_model_source_searches(self, task_id: str) -> list[dict[str, Any]]:
         read_json(self._task_path(task_id))
@@ -2268,6 +2335,29 @@ class TrainingWorkspace:
             )
         return bindings
 
+    def get_model_binding(
+        self,
+        task_id: str,
+        binding_revision_id: str,
+    ) -> dict[str, Any]:
+        task = read_json(self._task_path(task_id))
+        binding = self.model_source_store.get_binding_revision(
+            task_id, binding_revision_id
+        )
+        context = self.model_source_store.binding_context(
+            task_id, binding_revision_id
+        )
+        assert context is not None
+        current = self.model_source_store.current_binding(task_id)
+        return self._model_binding_projection(
+            task,
+            binding,
+            context,
+            current_binding_id=(
+                str(current["binding_revision_id"]) if current else None
+            ),
+        )
+
     def current_model_binding(self, task_id: str) -> dict[str, Any] | None:
         with self._lock:
             task = read_json(self._task_path(task_id))
@@ -2311,6 +2401,34 @@ class TrainingWorkspace:
         read_json(self._task_path(task_id))
         record = self.model_source_store.get_analysis(task_id, analysis_id)
         return deepcopy(record["analysis"])
+
+    def get_repository_analysis_envelope(
+        self,
+        task_id: str,
+        analysis_id: str,
+    ) -> dict[str, Any]:
+        """Project one analysis with only its exact persisted blocker evidence."""
+
+        read_json(self._task_path(task_id))
+        record = self.model_source_store.get_analysis(task_id, analysis_id)
+        related_blockers = [
+            blocker
+            for blocker in self.blocker_store.list(task_id)
+            if blocker.get("related_object_type") == "RepositoryAnalysis"
+            and blocker.get("related_object_id") == record["analysis_id"]
+            and blocker.get("related_object_digest") == record["content_digest"]
+        ]
+        return {
+            "analysis": deepcopy(record["analysis"]),
+            "analysis_record": {
+                "analysis_id": record["analysis_id"],
+                "task_id": record["task_id"],
+                "content_digest": record["content_digest"],
+                "revision": record["revision"],
+                "status": record["status"],
+            },
+            "blockers": deepcopy(related_blockers),
+        }
 
     def get_repository_evidence_excerpt(
         self,
@@ -2785,12 +2903,16 @@ class TrainingWorkspace:
             task["model_asset_binding"] = binding
             task["contract_confirmed"] = False
             task["confirmations"] = {}
+            task["confirmed_contract_sha256"] = None
+            task["confirmed_contract_revision_id"] = None
+            task["current_approval_decision_id"] = None
             task["updated_at_utc"] = _utc_now()
             if self._contract_path(task_id).is_file() and task.get("dataset_id"):
                 contract = read_json(self._contract_path(task_id))
                 contract["model_asset"] = deepcopy(binding)
                 validate_contract(contract, registry=self.runs.registry)
                 write_json(self._contract_path(task_id), contract)
+                self._record_contract_revision(task, contract)
             write_json(self._task_path(task_id), task)
         return {
             "task": self.get_task(task_id),
@@ -3236,13 +3358,26 @@ class TrainingWorkspace:
             if task.get("recipe_source") != "recipe-factory":
                 self._append_spec_for_recipe(task, plugin, "dataset_import")
             template = deepcopy(plugin.template())
+            contract_overrides = deepcopy(
+                task.get("recipe_contract_overrides", {})
+            )
             _deep_update(
                 template,
-                deepcopy(task.get("recipe_contract_overrides", {})),
+                contract_overrides,
             )
             template["task_id"] = task_id
             template["business_goal"] = task["business_goal"]
             template["dataset"].update(imported.contract_dataset)
+            prepare_contract = getattr(plugin, "prepare_contract_for_dataset", None)
+            if callable(prepare_contract):
+                release_gate_overrides = contract_overrides.get("release_gates", {})
+                if not isinstance(release_gate_overrides, dict):
+                    raise ContractError("recipe_contract_overrides.release_gates必须是对象")
+                template = prepare_contract(
+                    template,
+                    report,
+                    overridden_release_gates=set(release_gate_overrides),
+                )
             if task.get("model_asset_binding"):
                 template["model_asset"] = deepcopy(task["model_asset_binding"])
             current_binding = self.model_source_store.current_binding(task_id)
@@ -3277,6 +3412,7 @@ class TrainingWorkspace:
             task["status"] = "data_ready"
             task["updated_at_utc"] = _utc_now()
             write_json(self._contract_path(task_id), template)
+            self._record_contract_revision(task, template)
             write_json(self._task_path(task_id), task)
         return self.get_task(task_id)
 
@@ -3296,6 +3432,12 @@ class TrainingWorkspace:
                 if not isinstance(gates, dict):
                     raise ContractError("release_gates必须是对象")
                 contract["release_gates"].update(gates)
+                plugin = self.runs.registry.get_recipe(str(task["recipe_id"]))
+                record_overrides = getattr(
+                    plugin, "record_release_gate_overrides", None
+                )
+                if callable(record_overrides):
+                    contract = record_overrides(contract, gates)
             options = changes.get("recipe_options", {})
             if options:
                 if not isinstance(options, dict):
@@ -3312,6 +3454,7 @@ class TrainingWorkspace:
             task["status"] = "data_ready"
             task["updated_at_utc"] = _utc_now()
             write_json(self._contract_path(task_id), contract)
+            self._record_contract_revision(task, contract)
             write_json(self._task_path(task_id), task)
         return self.get_task(task_id)
 
@@ -3330,13 +3473,254 @@ class TrainingWorkspace:
             contract = read_json(self._contract_path(task_id))
             validate_contract(contract, registry=self.runs.registry)
             self._assert_contract_model_binding_current(task, contract)
+            expected = confirmations.get("expected_contract_revision")
+            revision = self._assert_expected_contract_revision(task, expected)
+            approval = confirmations.get("approval")
+            if approval is None:
+                approval = {
+                    "actor": confirmations.get("actor"),
+                    "checkpoint_id": confirmations.get("checkpoint_id"),
+                }
+            if not isinstance(approval, Mapping):
+                raise ContractError("approval必须包含actor与checkpoint_id")
+            actor = str(approval.get("actor") or "").strip()
+            checkpoint_id = str(approval.get("checkpoint_id") or "").strip()
+            if not actor or not checkpoint_id:
+                raise ContractError("确认合同必须记录actor与checkpoint_id")
+            decision = ApprovalDecision.create(
+                approval_decision_id=f"approval-decision-{uuid4().hex[:12]}",
+                revision=revision,
+                actor=actor,
+                checkpoint_id=checkpoint_id,
+                confirmations={name: True for name in required},
+            ).to_dict()
+            decision_path = self._approval_decision_path(
+                task_id, str(decision["approval_decision_id"])
+            )
+            if decision_path.exists():
+                raise ApprovalDecisionIntegrityError("approval decision already exists")
+            write_json(decision_path, decision)
             task["contract_confirmed"] = True
-            task["confirmed_contract_sha256"] = sha256_file(self._contract_path(task_id))
-            task["confirmations"] = {**{name: True for name in required}, "confirmed_at_utc": _utc_now()}
+            task["confirmed_contract_sha256"] = revision["contract_sha256"]
+            task["confirmed_contract_revision_id"] = revision[
+                "contract_revision_id"
+            ]
+            approval_ids = list(task.get("approval_decision_ids") or [])
+            approval_ids.append(decision["approval_decision_id"])
+            task["approval_decision_ids"] = approval_ids
+            task["current_approval_decision_id"] = decision[
+                "approval_decision_id"
+            ]
+            task["confirmations"] = {
+                **{name: True for name in required},
+                "confirmed_at_utc": decision["created_at_utc"],
+                "approval_decision_id": decision["approval_decision_id"],
+                "checkpoint_id": checkpoint_id,
+            }
             task["status"] = "ready"
             task["updated_at_utc"] = _utc_now()
             write_json(self._task_path(task_id), task)
         return self.get_task(task_id)
+
+    def list_contract_revisions(self, task_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            task = read_json(self._task_path(task_id))
+            if self._contract_path(task_id).is_file() and task.get("dataset_id"):
+                self._ensure_contract_revision(task)
+            revisions = [
+                self.get_contract_revision(task_id, str(revision_id))
+                for revision_id in task.get("contract_revision_ids", [])
+            ]
+        return revisions
+
+    def get_contract_revision(
+        self, task_id: str, contract_revision_id: str
+    ) -> dict[str, Any]:
+        path = self._contract_revision_path(task_id, contract_revision_id)
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"contract revision not found: {contract_revision_id}"
+            )
+        revision = ContractRevision.from_record(read_json(path)).to_dict()
+        if revision["task_id"] != task_id:
+            raise ContractRevisionIntegrityError(
+                "contract revision belongs to another task"
+            )
+        return revision
+
+    def list_approval_decisions(self, task_id: str) -> list[dict[str, Any]]:
+        task = read_json(self._task_path(task_id))
+        return [
+            self.get_approval_decision(task_id, str(decision_id))
+            for decision_id in task.get("approval_decision_ids", [])
+        ]
+
+    def get_approval_decision(
+        self, task_id: str, approval_decision_id: str
+    ) -> dict[str, Any]:
+        path = self._approval_decision_path(task_id, approval_decision_id)
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"approval decision not found: {approval_decision_id}"
+            )
+        decision = ApprovalDecision.from_record(read_json(path)).to_dict()
+        if decision["task_id"] != task_id:
+            raise ApprovalDecisionIntegrityError(
+                "approval decision belongs to another task"
+            )
+        return decision
+
+    def _dataset_identity(self, task: Mapping[str, Any]) -> tuple[str, str]:
+        dataset_id = str(task.get("dataset_id") or "").strip()
+        if not dataset_id:
+            raise HarnessError("训练合同没有绑定数据集")
+        report_path = (
+            self._task_dir(str(task["task_id"]))
+            / "datasets"
+            / dataset_id
+            / "dataset_report.json"
+        )
+        if not report_path.is_file():
+            raise HarnessError("数据集体检报告不存在，不能创建合同版本")
+        report = read_json(report_path)
+        fingerprint = str(report.get("fingerprint_sha256") or "").strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+            raise HarnessError("数据集体检报告缺少有效指纹")
+        return dataset_id, fingerprint
+
+    def _record_contract_revision(
+        self,
+        task: dict[str, Any],
+        contract: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Append an immutable revision after every authoritative contract write."""
+
+        task_id = str(task["task_id"])
+        spec = self._ensure_spec_revision(task)
+        dataset_id, fingerprint = self._dataset_identity(task)
+        revision = ContractRevision.create(
+            contract_revision_id=f"contract-revision-{uuid4().hex[:12]}",
+            task_id=task_id,
+            spec_revision_id=str(spec["revision_id"]),
+            dataset_id=dataset_id,
+            dataset_fingerprint_sha256=fingerprint,
+            contract_snapshot=contract,
+        ).to_dict()
+        contract_path = self._contract_path(task_id)
+        if not contract_path.is_file() or sha256_file(contract_path) != revision[
+            "contract_sha256"
+        ]:
+            raise ContractRevisionIntegrityError(
+                "contract file and revision snapshot differ"
+            )
+        revision_path = self._contract_revision_path(
+            task_id, str(revision["contract_revision_id"])
+        )
+        if revision_path.exists():
+            raise ContractRevisionIntegrityError("contract revision already exists")
+        write_json(revision_path, revision)
+        revision_ids = list(task.get("contract_revision_ids") or [])
+        revision_ids.append(revision["contract_revision_id"])
+        task["contract_revision_ids"] = revision_ids
+        task["current_contract_revision_id"] = revision["contract_revision_id"]
+        task["confirmed_contract_revision_id"] = None
+        task["current_approval_decision_id"] = None
+        return revision
+
+    def _ensure_contract_revision(self, task: dict[str, Any]) -> dict[str, Any]:
+        """Return the current revision, migrating only an unversioned legacy contract."""
+
+        task_id = str(task["task_id"])
+        revision_id = str(task.get("current_contract_revision_id") or "")
+        known_ids = list(task.get("contract_revision_ids") or [])
+        if revision_id:
+            if known_ids and revision_id not in known_ids:
+                raise ContractRevisionIntegrityError(
+                    "current contract revision is absent from task history"
+                )
+            return self.get_contract_revision(task_id, revision_id)
+        if known_ids:
+            raise ContractRevisionIntegrityError(
+                "contract revision history exists without a current pointer"
+            )
+        contract_path = self._contract_path(task_id)
+        if not contract_path.is_file():
+            raise FileNotFoundError(f"contract not found: {task_id}")
+        revision = self._record_contract_revision(task, read_json(contract_path))
+        write_json(self._task_path(task_id), task)
+        return revision
+
+    def _assert_expected_contract_revision(
+        self,
+        task: dict[str, Any],
+        expected: Any,
+    ) -> dict[str, Any]:
+        if not isinstance(expected, Mapping):
+            raise ContractRevisionConflictError(
+                "确认请求缺少expected_contract_revision；请刷新后确认当前合同版本"
+            )
+        revision = self._ensure_contract_revision(task)
+        identity_fields = (
+            "contract_revision_id",
+            "contract_sha256",
+            "task_id",
+            "spec_revision_id",
+            "dataset_id",
+            "dataset_fingerprint_sha256",
+        )
+        mismatches = [
+            field
+            for field in identity_fields
+            if str(expected.get(field) or "") != str(revision[field])
+        ]
+        spec = self._ensure_spec_revision(task)
+        dataset_id, fingerprint = self._dataset_identity(task)
+        current_context = {
+            "task_id": str(task["task_id"]),
+            "spec_revision_id": str(spec["revision_id"]),
+            "dataset_id": dataset_id,
+            "dataset_fingerprint_sha256": fingerprint,
+            "contract_sha256": sha256_file(self._contract_path(str(task["task_id"]))),
+        }
+        mismatches.extend(
+            field
+            for field, value in current_context.items()
+            if str(revision[field]) != value and field not in mismatches
+        )
+        if task.get("contract_stale"):
+            mismatches.append("contract_stale")
+        if mismatches:
+            raise ContractRevisionConflictError(
+                "合同、任务规格或数据版本已经变化；请刷新后重新审阅。"
+                f" mismatch={sorted(set(mismatches))}"
+            )
+        return revision
+
+    def _current_approval_decision(
+        self, task: Mapping[str, Any], revision: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        approval_id = str(task.get("current_approval_decision_id") or "")
+        if not approval_id:
+            raise ApprovalDecisionIntegrityError(
+                "当前合同没有独立的ApprovalDecision，必须重新确认"
+            )
+        try:
+            decision = self.get_approval_decision(
+                str(task["task_id"]), approval_id
+            )
+        except FileNotFoundError as exc:
+            raise ApprovalDecisionIntegrityError(
+                "当前合同的ApprovalDecision不存在，必须重新确认"
+            ) from exc
+        if (
+            decision["contract_revision_id"] != revision["contract_revision_id"]
+            or decision["contract_sha256"] != revision["contract_sha256"]
+            or decision["decision"] != "approved"
+        ):
+            raise ApprovalDecisionIntegrityError(
+                "ApprovalDecision未绑定当前合同版本，必须重新确认"
+            )
+        return decision
 
     def task_exists(self, task_id: str) -> bool:
         """Return whether ``task_id`` is owned by this workspace without creating it."""
@@ -3484,17 +3868,38 @@ class TrainingWorkspace:
         if not task.get("contract_confirmed"):
             raise HarnessError("必须先确认数据授权、标签和验收门槛")
         contract_path = self._contract_path(task_id)
+        revision = self._ensure_contract_revision(task)
         confirmed_digest = task.get("confirmed_contract_sha256")
-        if not confirmed_digest or confirmed_digest != sha256_file(contract_path):
+        confirmed_revision_id = task.get("confirmed_contract_revision_id")
+        if (
+            not confirmed_digest
+            or confirmed_digest != sha256_file(contract_path)
+            or confirmed_digest != revision["contract_sha256"]
+            or confirmed_revision_id != revision["contract_revision_id"]
+        ):
             task["contract_confirmed"] = False
             task["confirmations"] = {}
             task["confirmed_contract_sha256"] = None
+            task["confirmed_contract_revision_id"] = None
+            task["current_approval_decision_id"] = None
             task["status"] = "data_ready"
             task["updated_at_utc"] = _utc_now()
             write_json(self._task_path(task_id), task)
             raise HarnessError(
                 "训练合同在确认之后被修改，必须重新确认数据授权、标签和验收门槛"
             )
+        try:
+            self._current_approval_decision(task, revision)
+        except ApprovalDecisionIntegrityError as exc:
+            task["contract_confirmed"] = False
+            task["confirmations"] = {}
+            task["confirmed_contract_sha256"] = None
+            task["confirmed_contract_revision_id"] = None
+            task["current_approval_decision_id"] = None
+            task["status"] = "data_ready"
+            task["updated_at_utc"] = _utc_now()
+            write_json(self._task_path(task_id), task)
+            raise HarnessError(str(exc)) from exc
         contract = read_json(contract_path)
         if contract.get("task_id") != task_id:
             raise HarnessError("训练合同 task_id 与当前任务不一致")
@@ -3645,6 +4050,188 @@ class TrainingWorkspace:
             "V3只完成静态预算与本机资源匹配；尚未完成L3镜像拉取、依赖构建和隔离环境资格验证，禁止执行第三方训练代码"
         )
 
+    def _task_run_start_scope(
+        self,
+        task_id: str,
+        *,
+        expected_contract_sha256: str | None = None,
+        expected_dataset_id: str | None = None,
+        expected_dataset_fingerprint_sha256: str | None = None,
+        expected_spec_revision: int | None = None,
+    ) -> dict[str, Any]:
+        task, _contract = self._authorize_task_run_creation(task_id)
+        task_status = str(task.get("status") or "")
+        recoverable_statuses = {"failed", "cancelled", "interrupted"}
+        if task_status != "ready" and task_status not in recoverable_statuses:
+            raise DeliveryAuthorizationError(
+                "run-start authorization requires a ready or recoverable task"
+            )
+        current_run_id = str(task.get("current_run_id") or "")
+        if task.get("pending_run"):
+            raise DeliveryAuthorizationError(
+                "run-start authorization requires no pending run"
+            )
+        current_run_status: str | None = None
+        if current_run_id:
+            current_run_status = str(self.runs.status(current_run_id).get("status") or "")
+            if current_run_status not in recoverable_statuses:
+                raise DeliveryAuthorizationError(
+                    "run-start authorization cannot replace a non-recoverable run"
+                )
+        elif task_status in recoverable_statuses:
+            raise DeliveryAuthorizationError(
+                "recoverable run-start authorization requires prior run lineage"
+            )
+        revision = self._ensure_contract_revision(task)
+        contract_sha256 = str(task.get("confirmed_contract_sha256") or "")
+        # The authoritative dataset report lives beside the imported dataset;
+        # ``dataset_report`` is only attached to the public task view and is
+        # not persisted in the raw task record read above.  Reuse the same
+        # on-disk identity check as contract revisioning so an otherwise valid
+        # native approval cannot fail with an empty fingerprint.
+        dataset_id, dataset_fingerprint_sha256 = self._dataset_identity(task)
+        spec_revision = int(task.get("current_spec_revision") or 0)
+        checks = (
+            (expected_contract_sha256, contract_sha256, "contract digest"),
+            (expected_dataset_id, dataset_id, "dataset id"),
+            (
+                expected_dataset_fingerprint_sha256,
+                dataset_fingerprint_sha256,
+                "dataset fingerprint",
+            ),
+            (expected_spec_revision, spec_revision, "task spec revision"),
+        )
+        for expected, actual, label in checks:
+            if expected is not None and expected != actual:
+                raise DeliveryAuthorizationError(
+                    f"run-start authorization {label} changed"
+                )
+        return {
+            "action": "start_task_run",
+            "task_id": task_id,
+            "contract_revision_id": revision["contract_revision_id"],
+            "contract_sha256": contract_sha256,
+            "dataset_id": dataset_id,
+            "dataset_fingerprint_sha256": dataset_fingerprint_sha256,
+            "spec_revision": spec_revision,
+            "spec_revision_id": revision["spec_revision_id"],
+            "contract_approval_decision_id": task.get(
+                "current_approval_decision_id"
+            ),
+            "prior_task_status": task_status,
+            "prior_run_id": current_run_id or None,
+            "prior_run_status": current_run_status,
+        }
+
+    def authorize_task_run_start(
+        self,
+        task_id: str,
+        *,
+        contract_sha256: str,
+        dataset_id: str,
+        dataset_fingerprint_sha256: str,
+        spec_revision: int,
+        approval: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        with self._lock:
+            scope = self._task_run_start_scope(
+                task_id,
+                expected_contract_sha256=contract_sha256,
+                expected_dataset_id=dataset_id,
+                expected_dataset_fingerprint_sha256=(
+                    dataset_fingerprint_sha256
+                ),
+                expected_spec_revision=spec_revision,
+            )
+            record, token = self.delivery_authorization_store.issue(
+                task_id=task_id,
+                action="start_task_run",
+                scope=scope,
+                approval=approval,
+            )
+            self._record_delivery_authorization(
+                task_id,
+                str(record["authorization_id"]),
+            )
+            return {
+                "task": self.get_task(task_id),
+                "run_authorization": self.delivery_authorization_store.public(
+                    record
+                ),
+                "authorization_token": token,
+            }
+
+    def start_run_with_authorization(
+        self,
+        task_id: str,
+        *,
+        run_authorization_id: str,
+        authorization_token: str,
+        run_request_sha256: str,
+    ) -> dict[str, Any]:
+        with self._lock:
+            authorization = self.delivery_authorization_store.get(
+                task_id,
+                run_authorization_id,
+            )
+            approved_scope = authorization.get("scope") or {}
+            if (
+                authorization.get("action") != "start_task_run"
+                or approved_scope.get("task_id") != task_id
+            ):
+                raise DeliveryAuthorizationError(
+                    "run-start authorization belongs to another action or task"
+                )
+            current_scope = self._task_run_start_scope(task_id)
+            self.delivery_authorization_store.reserve(
+                task_id=task_id,
+                authorization_id=run_authorization_id,
+                authorization_token=authorization_token,
+                action="start_task_run",
+                approved_scope_sha256=run_request_sha256,
+                current_scope=current_scope,
+            )
+            try:
+                task = self.start_run(task_id)
+            except Exception as exc:
+                self.delivery_authorization_store.complete(
+                    task_id=task_id,
+                    authorization_id=run_authorization_id,
+                    succeeded=False,
+                    outcome={
+                        "status": "run_start_failed",
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                raise
+            run_id = str(task.get("current_run_id") or "")
+            if not run_id:
+                self.delivery_authorization_store.complete(
+                    task_id=task_id,
+                    authorization_id=run_authorization_id,
+                    succeeded=False,
+                    outcome={"status": "run_identity_missing"},
+                )
+                raise DeliveryAuthorizationError(
+                    "authorized run start produced no canonical run id"
+                )
+            completed = self.delivery_authorization_store.complete(
+                task_id=task_id,
+                authorization_id=run_authorization_id,
+                succeeded=True,
+                outcome={
+                    "status": "run_started",
+                    "run_id": run_id,
+                },
+            )
+            return {
+                "task": task,
+                "run": self.runs.status(run_id),
+                "run_authorization": self.delivery_authorization_store.public(
+                    completed
+                ),
+            }
+
     def start_run(self, task_id: str) -> dict[str, Any]:
         with self._lock:
             _task, recovered = self._reconcile_pending_run(
@@ -3724,7 +4311,16 @@ class TrainingWorkspace:
             self._finalize_run_intent(task_id, child_run_id)
         return self.get_task(task_id)
 
-    def cancel_run(self, task_id: str, run_id: str) -> dict[str, Any]:
+    def cancel_run(
+        self,
+        task_id: str,
+        run_id: str,
+        *,
+        actor: str = "user",
+        reason: str = "requested by user",
+        cancellation_kind: str = "user_requested",
+        scope: str = "training_run",
+    ) -> dict[str, Any]:
         """Request cancellation only after proving the Run belongs to the Task."""
 
         with self._lock:
@@ -3737,6 +4333,10 @@ class TrainingWorkspace:
             accepted = self.runs.cancel(
                 run_id,
                 workspace_task_id=task_id,
+                actor=actor,
+                reason=reason,
+                cancellation_kind=cancellation_kind,
+                scope=scope,
             )
             if accepted:
                 task["updated_at_utc"] = _utc_now()
@@ -3748,6 +4348,129 @@ class TrainingWorkspace:
             "cancel_requested": accepted,
             "run": run_state,
         }
+
+    def task_background_actions(self, task_id: str) -> list[dict[str, Any]]:
+        """Return task-owned work whose worker may outlive an Agent response."""
+
+        task = read_json(self._task_path(task_id))
+        actions: list[dict[str, Any]] = []
+        for run_id in task.get("run_ids", []):
+            if not isinstance(run_id, str) or not run_id:
+                continue
+            try:
+                actions.append(
+                    self.runs.background_action(
+                        run_id,
+                        workspace_task_id=task_id,
+                    )
+                )
+            except FileNotFoundError:
+                continue
+        for attempt in self.list_model_binding_attempts(task_id):
+            current = attempt.get("current_state", {})
+            if not isinstance(current, Mapping):
+                continue
+            attempt_record = attempt.get("attempt", {})
+            attempt_id = (
+                attempt_record.get("attempt_id")
+                if isinstance(attempt_record, Mapping)
+                else None
+            )
+            if not isinstance(attempt_id, str) or not attempt_id:
+                continue
+            with self._lock:
+                future = self._binding_futures.get(attempt_id)
+            worker_running = bool(future is not None and not future.done())
+            domain_status = str(current.get("status") or "unknown")
+            running = worker_running or domain_status in {"queued", "running"}
+            cancellation = current.get("cancellation")
+            cancellation_projection = None
+            if isinstance(cancellation, Mapping):
+                cancellation_projection = {
+                    "actor": "unknown",
+                    "kind": "unattributed",
+                    "reason": cancellation.get("reason"),
+                    "scope": "model_binding_analysis",
+                }
+            actions.append(
+                {
+                    "action_id": f"model-binding:{attempt_id}",
+                    "action_type": "model_binding_analysis",
+                    "task_id": task_id,
+                    "attempt_id": attempt_id,
+                    "status": (
+                        "cancel_requested"
+                        if domain_status == "cancelled" and worker_running
+                        else domain_status
+                    ),
+                    "domain_status": domain_status,
+                    "running": running,
+                    "worker_running": worker_running,
+                    "cancel_requested": domain_status == "cancelled",
+                    "cancel_reason": current.get("reason")
+                    or current.get("error"),
+                    "cancel": cancellation_projection,
+                    "event_seq": current.get("state_revision"),
+                    "updated_at_utc": current.get("created_at_utc"),
+                    "last_event": {
+                        "event_id": current.get("event_id"),
+                        "seq": current.get("state_revision"),
+                        "type": f"model_binding.{domain_status}",
+                        "timestamp_utc": current.get("created_at_utc"),
+                    },
+                }
+            )
+        return sorted(
+            actions,
+            key=lambda item: (
+                str(item.get("updated_at_utc") or ""),
+                str(item.get("action_id") or ""),
+            ),
+        )
+
+    def cancel_task_background_actions(
+        self,
+        task_id: str,
+        cancellation: Mapping[str, Any] | str = "Agent stop requested by user",
+    ) -> list[dict[str, Any]]:
+        """Cascade Agent cancellation to every active task-owned worker."""
+
+        if isinstance(cancellation, Mapping):
+            actor = str(cancellation.get("actor") or "user")
+            reason = str(cancellation.get("reason") or "Stop requested")
+            cancellation_kind = str(
+                cancellation.get("kind") or "user_requested"
+            )
+            scope = str(cancellation.get("scope") or "task_execution")
+        else:
+            actor = "user"
+            reason = str(cancellation)
+            cancellation_kind = "user_requested"
+            scope = "task_execution"
+
+        for action in self.task_background_actions(task_id):
+            if action.get("running") is not True:
+                continue
+            if action.get("action_type") == "training_run":
+                run_id = action.get("run_id")
+                if isinstance(run_id, str) and run_id:
+                    self.cancel_run(
+                        task_id,
+                        run_id,
+                        actor=actor,
+                        reason=reason,
+                        cancellation_kind=cancellation_kind,
+                        scope=scope,
+                    )
+            elif action.get("action_type") == "model_binding_analysis":
+                attempt_id = action.get("attempt_id")
+                if isinstance(attempt_id, str) and attempt_id:
+                    self.cancel_model_binding_attempt(
+                        task_id,
+                        attempt_id,
+                        reason=reason,
+                    )
+        return self.task_background_actions(task_id)
 
     def evaluation_report(self, task_id: str, run_id: str) -> dict[str, Any]:
         self._require_owned_run(task_id, run_id)
@@ -3807,20 +4530,370 @@ class TrainingWorkspace:
             ),
         }
 
-    def build_artifact_bundle(
+    def stage_inference_input(
+        self,
+        task_id: str,
+        run_id: str,
+        payload: bytes,
+        *,
+        filename: str,
+        sample_type: str,
+    ) -> dict[str, Any]:
+        with self._lock:
+            _, run_state = self._require_owned_run(task_id, run_id)
+            if run_state.get("status") != "completed":
+                raise InferenceInputError(
+                    "inference input requires a completed task-owned run"
+                )
+            record = self.inference_input_store.stage(
+                task_id=task_id,
+                run_id=run_id,
+                payload=payload,
+                filename=filename,
+                sample_type=sample_type,
+            )
+        return {
+            "task": self.get_task(task_id),
+            "run_id": run_id,
+            "inference_input": record,
+            "object_refs": [self.inference_input_store.object_ref(record)],
+        }
+
+    def list_inference_inputs(
+        self,
+        task_id: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        self._require_owned_run(task_id, run_id)
+        return {
+            "task": self.get_task(task_id),
+            "run_id": run_id,
+            "inference_inputs": self.inference_input_store.list(
+                task_id, run_id=run_id
+            ),
+        }
+
+    def get_inference_input(
+        self,
+        task_id: str,
+        run_id: str,
+        inference_input_id: str,
+    ) -> dict[str, Any]:
+        self._require_owned_run(task_id, run_id)
+        record = self.inference_input_store.get(task_id, inference_input_id)
+        if record.get("run_id") != run_id:
+            raise InferenceInputError("inference input belongs to another run")
+        return {
+            "task": self.get_task(task_id),
+            "run_id": run_id,
+            "inference_input": record,
+            "object_refs": [self.inference_input_store.object_ref(record)],
+        }
+
+    def _sample_inference_scope(
+        self,
+        task_id: str,
+        run_id: str,
+        inference_input_id: str,
+        *,
+        expected_inference_input_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        _, run_state = self._require_owned_run(task_id, run_id)
+        if run_state.get("status") != "completed":
+            raise DeliveryAuthorizationError(
+                "sample inference authorization requires a completed run"
+            )
+        record, _ = self.inference_input_store.resolve_staged(
+            task_id=task_id,
+            run_id=run_id,
+            inference_input_id=inference_input_id,
+            expected_sha256=expected_inference_input_sha256,
+        )
+        return {
+            "action": "run_sample_inference",
+            "task_id": task_id,
+            "run_id": run_id,
+            "inference_input_id": record["inference_input_id"],
+            "inference_input_sha256": record["sha256"],
+            "inference_input_record_sha256": record["record_sha256"],
+            "sample_type": record["sample_type"],
+            "size_bytes": record["size_bytes"],
+        }
+
+    def authorize_sample_inference(
+        self,
+        task_id: str,
+        run_id: str,
+        *,
+        inference_input_id: str,
+        inference_input_sha256: str,
+        approval: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        with self._lock:
+            scope = self._sample_inference_scope(
+                task_id,
+                run_id,
+                inference_input_id,
+                expected_inference_input_sha256=inference_input_sha256,
+            )
+            record, token = self.delivery_authorization_store.issue(
+                task_id=task_id,
+                action="run_sample_inference",
+                scope=scope,
+                approval=approval,
+            )
+            self._record_delivery_authorization(
+                task_id, str(record["authorization_id"])
+            )
+            input_record = self.inference_input_store.get(
+                task_id, inference_input_id
+            )
+            return {
+                "task": self.get_task(task_id),
+                "run_id": run_id,
+                "inference_input": input_record,
+                "object_refs": [
+                    self.inference_input_store.object_ref(input_record)
+                ],
+                "sample_inference_authorization": (
+                    self.delivery_authorization_store.public(record)
+                ),
+                "authorization_token": token,
+            }
+
+    def run_sample_inference_with_authorization(
+        self,
+        task_id: str,
+        run_id: str,
+        *,
+        inference_input_id: str,
+        sample_inference_authorization_id: str,
+        authorization_token: str,
+        sample_inference_request_sha256: str,
+    ) -> dict[str, Any]:
+        with self._lock:
+            authorization = self.delivery_authorization_store.get(
+                task_id, sample_inference_authorization_id
+            )
+            approved_scope = authorization.get("scope") or {}
+            if (
+                authorization.get("action") != "run_sample_inference"
+                or approved_scope.get("task_id") != task_id
+                or approved_scope.get("run_id") != run_id
+                or approved_scope.get("inference_input_id")
+                != inference_input_id
+            ):
+                raise DeliveryAuthorizationError(
+                    "sample inference does not match its approved task/run/input scope"
+                )
+            current_scope = self._sample_inference_scope(
+                task_id,
+                run_id,
+                inference_input_id,
+                expected_inference_input_sha256=str(
+                    approved_scope.get("inference_input_sha256") or ""
+                ),
+            )
+            self.delivery_authorization_store.reserve(
+                task_id=task_id,
+                authorization_id=sample_inference_authorization_id,
+                authorization_token=authorization_token,
+                action="run_sample_inference",
+                approved_scope_sha256=sample_inference_request_sha256,
+                current_scope=current_scope,
+            )
+            try:
+                input_record, sample_path = self.inference_input_store.reserve(
+                    task_id=task_id,
+                    run_id=run_id,
+                    inference_input_id=inference_input_id,
+                    expected_sha256=str(
+                        approved_scope["inference_input_sha256"]
+                    ),
+                )
+            except Exception as exc:
+                self.delivery_authorization_store.complete(
+                    task_id=task_id,
+                    authorization_id=sample_inference_authorization_id,
+                    succeeded=False,
+                    outcome={
+                        "status": "input_reservation_failed",
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                raise
+            try:
+                report = self.runs.sample_inference(
+                    run_id,
+                    sample_path,
+                    sample_type=str(input_record["sample_type"]),
+                )
+            except SampleInferenceBlocked as exc:
+                input_record = self.inference_input_store.complete(
+                    task_id=task_id,
+                    run_id=run_id,
+                    inference_input_id=inference_input_id,
+                    outcome={
+                        "status": "blocked",
+                        "sample_inference_check_id": exc.check_id,
+                    },
+                )
+                self.delivery_authorization_store.complete(
+                    task_id=task_id,
+                    authorization_id=sample_inference_authorization_id,
+                    succeeded=True,
+                    outcome={
+                        "status": "inference_blocked",
+                        "inference_input_id": inference_input_id,
+                        "sample_inference_check_id": exc.check_id,
+                    },
+                )
+                raise
+            except Exception as exc:
+                self.inference_input_store.complete(
+                    task_id=task_id,
+                    run_id=run_id,
+                    inference_input_id=inference_input_id,
+                    outcome={
+                        "status": "failed",
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                self.delivery_authorization_store.complete(
+                    task_id=task_id,
+                    authorization_id=sample_inference_authorization_id,
+                    succeeded=False,
+                    outcome={
+                        "status": "inference_failed",
+                        "inference_input_id": inference_input_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                raise
+            input_record = self.inference_input_store.complete(
+                task_id=task_id,
+                run_id=run_id,
+                inference_input_id=inference_input_id,
+                outcome={
+                    "status": "passed",
+                    "sample_inference_check_id": report.get("check_id"),
+                },
+            )
+            completed = self.delivery_authorization_store.complete(
+                task_id=task_id,
+                authorization_id=sample_inference_authorization_id,
+                succeeded=True,
+                outcome={
+                    "status": "inference_completed",
+                    "inference_input_id": inference_input_id,
+                    "sample_inference_check_id": report.get("check_id"),
+                },
+            )
+            return {
+                "task": self.get_task(task_id),
+                "run_id": run_id,
+                "inference_input": input_record,
+                "object_refs": [
+                    self.inference_input_store.object_ref(input_record)
+                ],
+                "sample_inference": report,
+                "sample_inference_authorization": (
+                    self.delivery_authorization_store.public(completed)
+                ),
+            }
+
+    def _record_delivery_authorization(
+        self,
+        task_id: str,
+        authorization_id: str,
+    ) -> None:
+        task = read_json(self._task_path(task_id))
+        authorization_ids = list(task.get("delivery_authorization_ids") or [])
+        if authorization_id not in authorization_ids:
+            authorization_ids.append(authorization_id)
+        task["delivery_authorization_ids"] = authorization_ids
+        task["updated_at_utc"] = _utc_now()
+        write_json(self._task_path(task_id), task)
+
+    def get_delivery_authorization(
+        self,
+        task_id: str,
+        authorization_id: str,
+    ) -> dict[str, Any]:
+        task = read_json(self._task_path(task_id))
+        if authorization_id not in task.get("delivery_authorization_ids", []):
+            raise DeliveryAuthorizationError(
+                "delivery authorization does not belong to this task"
+            )
+        record = self.delivery_authorization_store.get(task_id, authorization_id)
+        return {
+            "task_id": task_id,
+            "delivery_authorization": self.delivery_authorization_store.public(
+                record
+            ),
+        }
+
+    def _artifact_bundle_build_scope(
         self,
         task_id: str,
         run_id: str,
         *,
         sample_inference_check_id: str | None = None,
         inference_check_id: str | None = None,
-    ) -> dict[str, Any]:
-        self._require_owned_run(task_id, run_id)
+        expected_evaluation_report_id: str | None = None,
+        expected_evaluation_report_sha256: str | None = None,
+    ) -> tuple[dict[str, Any], str | None]:
+        _, run_state = self._require_owned_run(task_id, run_id)
+        if run_state.get("status") != "completed":
+            raise DeliveryAuthorizationError(
+                "artifact bundle authorization requires a completed run"
+            )
         if sample_inference_check_id and inference_check_id:
             raise ContractError(
                 "sample_inference_check_id and inference_check_id are mutually exclusive"
             )
+        evaluation = self.runs.evaluation_report(run_id)
+        if evaluation.get("task_id") != task_id or evaluation.get("run_id") != run_id:
+            raise DeliveryAuthorizationError(
+                "EvaluationReport belongs to another task or run"
+            )
+        if evaluation.get("run_status") != "completed":
+            raise DeliveryAuthorizationError(
+                "artifact bundle authorization requires a completed EvaluationReport"
+            )
+        if evaluation.get("integrity_status") != "passed":
+            raise DeliveryAuthorizationError(
+                "artifact bundle authorization requires passed run integrity"
+            )
+        calculated_report_sha256 = delivery_scope_sha256(
+            {
+                key: value
+                for key, value in evaluation.items()
+                if key not in {"report_sha256", "updated_at"}
+            }
+        )
+        if evaluation.get("report_sha256") != calculated_report_sha256:
+            raise DeliveryAuthorizationError(
+                "EvaluationReport digest does not match its canonical contents"
+            )
+        if (
+            expected_evaluation_report_id is not None
+            and evaluation.get("report_id") != expected_evaluation_report_id
+        ):
+            raise DeliveryAuthorizationError(
+                "EvaluationReport id changed before authorization"
+            )
+        if (
+            expected_evaluation_report_sha256 is not None
+            and evaluation.get("report_sha256")
+            != expected_evaluation_report_sha256
+        ):
+            raise DeliveryAuthorizationError(
+                "EvaluationReport digest changed before authorization"
+            )
         selected_inference_id = inference_check_id
+        sample_evidence_sha256 = None
+        inference_evidence_sha256 = None
         if sample_inference_check_id:
             sample_report = self.runs.sample_inference_check(
                 run_id,
@@ -3835,16 +4908,205 @@ class TrainingWorkspace:
                 raise HarnessError(
                     "sample inference has no trusted inference check"
                 )
-        bundle = self.runs.build_artifact_bundle(
-            run_id,
-            inference_check_id=(
-                str(selected_inference_id) if selected_inference_id else None
-            ),
-        )
+            if (
+                sample_report.get("task_id") != task_id
+                or sample_report.get("run_id") != run_id
+                or sample_report.get("check_id") != sample_inference_check_id
+            ):
+                raise DeliveryAuthorizationError(
+                    "sample inference evidence belongs to another scope"
+                )
+            sample_evidence_sha256 = delivery_scope_sha256(
+                {
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "check_id": sample_inference_check_id,
+                    "inference_check_id": selected_inference_id,
+                    "sample_sha256": (sample_report.get("sample") or {}).get(
+                        "sha256"
+                    ),
+                    "model_sha256": (sample_report.get("model") or {}).get(
+                        "sha256"
+                    ),
+                    "prediction_sha256": sample_report.get("prediction_sha256"),
+                }
+            )
+        if selected_inference_id:
+            inference_report = next(
+                (
+                    item
+                    for item in self.runs.inference_checks(run_id)
+                    if item.get("check_id") == selected_inference_id
+                ),
+                None,
+            )
+            if inference_report is None:
+                raise FileNotFoundError("inference check not found")
+            if (
+                inference_report.get("status") != "passed"
+                or inference_report.get("task_id") != task_id
+                or inference_report.get("run_id") != run_id
+                or inference_report.get("check_id") != selected_inference_id
+            ):
+                raise DeliveryAuthorizationError(
+                    "inference evidence is not a passed check for this task and run"
+                )
+            inference_evidence_sha256 = delivery_scope_sha256(inference_report)
+        scope = {
+            "action": "build_artifact_bundle",
+            "task_id": task_id,
+            "run_id": run_id,
+            "evaluation_report_id": evaluation.get("report_id"),
+            "evaluation_report_sha256": evaluation.get("report_sha256"),
+            "sample_inference_check_id": sample_inference_check_id,
+            "inference_check_id": inference_check_id,
+            "sample_inference_evidence_sha256": sample_evidence_sha256,
+            "inference_evidence_sha256": inference_evidence_sha256,
+        }
+        return scope, str(selected_inference_id) if selected_inference_id else None
+
+    def authorize_artifact_bundle_build(
+        self,
+        task_id: str,
+        run_id: str,
+        *,
+        evaluation_report_id: str,
+        evaluation_report_sha256: str,
+        approval: Mapping[str, Any],
+        sample_inference_check_id: str | None = None,
+        inference_check_id: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            scope, _ = self._artifact_bundle_build_scope(
+                task_id,
+                run_id,
+                sample_inference_check_id=sample_inference_check_id,
+                inference_check_id=inference_check_id,
+                expected_evaluation_report_id=evaluation_report_id,
+                expected_evaluation_report_sha256=evaluation_report_sha256,
+            )
+            record, token = self.delivery_authorization_store.issue(
+                task_id=task_id,
+                action="build_artifact_bundle",
+                scope=scope,
+                approval=approval,
+            )
+            self._record_delivery_authorization(
+                task_id, str(record["authorization_id"])
+            )
+            return {
+                "task": self.get_task(task_id),
+                "run_id": run_id,
+                "artifact_bundle_authorization": (
+                    self.delivery_authorization_store.public(record)
+                ),
+                "authorization_token": token,
+            }
+
+    def build_artifact_bundle(
+        self,
+        task_id: str,
+        run_id: str,
+        *,
+        artifact_bundle_authorization_id: str,
+        authorization_token: str,
+        bundle_request_sha256: str,
+        sample_inference_check_id: str | None = None,
+        inference_check_id: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            authorization = self.delivery_authorization_store.get(
+                task_id, artifact_bundle_authorization_id
+            )
+            approved_scope = authorization.get("scope") or {}
+            if (
+                authorization.get("action") != "build_artifact_bundle"
+                or approved_scope.get("task_id") != task_id
+                or approved_scope.get("run_id") != run_id
+                or approved_scope.get("sample_inference_check_id")
+                != sample_inference_check_id
+                or approved_scope.get("inference_check_id") != inference_check_id
+            ):
+                raise DeliveryAuthorizationError(
+                    "artifact bundle build does not match its approved task/run scope"
+                )
+            current_scope, selected_inference_id = self._artifact_bundle_build_scope(
+                task_id,
+                run_id,
+                sample_inference_check_id=sample_inference_check_id,
+                inference_check_id=inference_check_id,
+            )
+            reserved = self.delivery_authorization_store.reserve(
+                task_id=task_id,
+                authorization_id=artifact_bundle_authorization_id,
+                authorization_token=authorization_token,
+                action="build_artifact_bundle",
+                approved_scope_sha256=bundle_request_sha256,
+                current_scope=current_scope,
+            )
+            approval_decision = reserved["approval_decision"]
+            authorization_lineage = {
+                "authorization_id": reserved["authorization_id"],
+                "action": reserved["action"],
+                "scope_sha256": reserved["scope_sha256"],
+                "approval_decision_id": approval_decision["decision_id"],
+                "approval_decision_sha256": approval_decision["decision_sha256"],
+                "approval_actor": approval_decision["actor"],
+                "approval_checkpoint_id": approval_decision["checkpoint_id"],
+                "evaluation_report_id": reserved["scope"][
+                    "evaluation_report_id"
+                ],
+                "evaluation_report_sha256": reserved["scope"][
+                    "evaluation_report_sha256"
+                ],
+                "sample_inference_check_id": reserved["scope"].get(
+                    "sample_inference_check_id"
+                ),
+                "sample_inference_evidence_sha256": reserved["scope"].get(
+                    "sample_inference_evidence_sha256"
+                ),
+                "inference_check_id": reserved["scope"].get(
+                    "inference_check_id"
+                ),
+                "inference_evidence_sha256": reserved["scope"].get(
+                    "inference_evidence_sha256"
+                ),
+            }
+            try:
+                bundle = self.runs.build_artifact_bundle(
+                    run_id,
+                    inference_check_id=selected_inference_id,
+                    authorization_lineage=authorization_lineage,
+                )
+            except Exception as exc:
+                self.delivery_authorization_store.complete(
+                    task_id=task_id,
+                    authorization_id=artifact_bundle_authorization_id,
+                    succeeded=False,
+                    outcome={
+                        "status": "build_failed",
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                raise
+            completed = self.delivery_authorization_store.complete(
+                task_id=task_id,
+                authorization_id=artifact_bundle_authorization_id,
+                succeeded=True,
+                outcome={
+                    "status": "bundle_built",
+                    "bundle_id": bundle.get("bundle_id"),
+                    "manifest_sha256": bundle.get("manifest_sha256"),
+                    "archive_sha256": (bundle.get("archive") or {}).get("sha256"),
+                },
+            )
         return {
             "task": self.get_task(task_id),
             "run_id": run_id,
             "artifact_bundle": bundle,
+            "artifact_bundle_authorization": (
+                self.delivery_authorization_store.public(completed)
+            ),
         }
 
     def list_artifact_bundles(
@@ -3882,14 +5144,136 @@ class TrainingWorkspace:
             "artifact_bundle": bundle,
         }
 
-    def artifact_bundle_file(
+    def _artifact_bundle_download_scope(
         self,
         task_id: str,
         run_id: str,
         bundle_id: str,
-    ) -> Path:
-        self._require_owned_run(task_id, run_id)
-        return self.runs.artifact_bundle_path(run_id, bundle_id)
+        *,
+        expected_manifest_sha256: str | None = None,
+        expected_archive_sha256: str | None = None,
+    ) -> tuple[dict[str, Any], Path]:
+        detail = self.get_artifact_bundle(task_id, run_id, bundle_id)
+        bundle = detail["artifact_bundle"]
+        manifest_sha256 = str(bundle.get("manifest_sha256") or "")
+        archive = bundle.get("archive") or {}
+        archive_sha256 = str(archive.get("sha256") or "")
+        if (
+            expected_manifest_sha256 is not None
+            and manifest_sha256 != expected_manifest_sha256
+        ):
+            raise DeliveryAuthorizationError(
+                "artifact bundle manifest changed before download authorization"
+            )
+        if (
+            expected_archive_sha256 is not None
+            and archive_sha256 != expected_archive_sha256
+        ):
+            raise DeliveryAuthorizationError(
+                "artifact bundle archive changed before download authorization"
+            )
+        path = self.runs.artifact_bundle_path(run_id, bundle_id)
+        if sha256_file(path) != archive_sha256:
+            raise DeliveryAuthorizationError(
+                "artifact bundle archive no longer matches canonical metadata"
+            )
+        scope = {
+            "action": "download_artifact_bundle",
+            "task_id": task_id,
+            "run_id": run_id,
+            "bundle_id": bundle_id,
+            "manifest_sha256": manifest_sha256,
+            "archive_sha256": archive_sha256,
+            "archive_size_bytes": archive.get("size_bytes"),
+        }
+        return scope, path
+
+    def authorize_artifact_bundle_download(
+        self,
+        task_id: str,
+        run_id: str,
+        bundle_id: str,
+        *,
+        manifest_sha256: str,
+        archive_sha256: str,
+        approval: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        with self._lock:
+            scope, _ = self._artifact_bundle_download_scope(
+                task_id,
+                run_id,
+                bundle_id,
+                expected_manifest_sha256=manifest_sha256,
+                expected_archive_sha256=archive_sha256,
+            )
+            record, token = self.delivery_authorization_store.issue(
+                task_id=task_id,
+                action="download_artifact_bundle",
+                scope=scope,
+                approval=approval,
+            )
+            self._record_delivery_authorization(
+                task_id, str(record["authorization_id"])
+            )
+            return {
+                "task_id": task_id,
+                "run_id": run_id,
+                "bundle_id": bundle_id,
+                "artifact_bundle_download_authorization": (
+                    self.delivery_authorization_store.public(record)
+                ),
+                "authorization_token": token,
+            }
+
+    def consume_artifact_bundle_download(
+        self,
+        task_id: str,
+        run_id: str,
+        bundle_id: str,
+        *,
+        artifact_bundle_download_authorization_id: str,
+        authorization_token: str,
+        download_request_sha256: str,
+    ) -> tuple[Path, dict[str, Any]]:
+        with self._lock:
+            authorization = self.delivery_authorization_store.get(
+                task_id, artifact_bundle_download_authorization_id
+            )
+            approved_scope = authorization.get("scope") or {}
+            if (
+                authorization.get("action") != "download_artifact_bundle"
+                or approved_scope.get("task_id") != task_id
+                or approved_scope.get("run_id") != run_id
+                or approved_scope.get("bundle_id") != bundle_id
+            ):
+                raise DeliveryAuthorizationError(
+                    "artifact bundle download does not match its approved scope"
+                )
+            current_scope, path = self._artifact_bundle_download_scope(
+                task_id,
+                run_id,
+                bundle_id,
+            )
+            self.delivery_authorization_store.reserve(
+                task_id=task_id,
+                authorization_id=artifact_bundle_download_authorization_id,
+                authorization_token=authorization_token,
+                action="download_artifact_bundle",
+                approved_scope_sha256=download_request_sha256,
+                current_scope=current_scope,
+            )
+            completed = self.delivery_authorization_store.complete(
+                task_id=task_id,
+                authorization_id=artifact_bundle_download_authorization_id,
+                succeeded=True,
+                outcome={
+                    "status": "download_opened",
+                    "bundle_id": bundle_id,
+                    "manifest_sha256": current_scope["manifest_sha256"],
+                    "archive_sha256": current_scope["archive_sha256"],
+                },
+            )
+            return path, self.delivery_authorization_store.public(completed)
 
     def _require_owned_run(
         self,
@@ -4003,6 +5387,8 @@ class TrainingWorkspace:
         task["contract_confirmed"] = False
         task["confirmations"] = {}
         task["confirmed_contract_sha256"] = None
+        task["confirmed_contract_revision_id"] = None
+        task["current_approval_decision_id"] = None
         task["contract_stale"] = True
         if task.get("current_run_id"):
             task["last_run_id"] = task["current_run_id"]
@@ -4179,6 +5565,9 @@ class TrainingWorkspace:
                 dataset_report = read_json(report_path)
         contract = read_json(self._contract_path(task["task_id"])) if self._contract_path(task["task_id"]).is_file() else None
         contract_is_active = bool(contract and not task.get("contract_stale"))
+        contract_revision = None
+        if contract_is_active and task.get("dataset_id"):
+            contract_revision = self._ensure_contract_revision(task)
         if contract_is_active and not task.get("recipe_id"):
             task["recipe_id"] = contract.get("recipe")
             if task["recipe_id"]:
@@ -4192,6 +5581,51 @@ class TrainingWorkspace:
             }.get(dataset_kind)
         task["dataset_report"] = dataset_report
         task["contract"] = contract if contract_is_active else None
+        task["contract_revision"] = contract_revision
+        approval_decision = None
+        approval_decision_id = str(task.get("current_approval_decision_id") or "")
+        if approval_decision_id:
+            try:
+                approval_decision = self.get_approval_decision(
+                    str(task["task_id"]), approval_decision_id
+                )
+            except (ApprovalDecisionIntegrityError, FileNotFoundError):
+                # A task read must remain available so the product can explain
+                # and recover from corrupt approval evidence.  Fail closed by
+                # revoking only the still-current confirmation pointer while
+                # retaining the immutable decision id/file for audit.
+                with self._lock:
+                    persisted = read_json(self._task_path(str(task["task_id"])))
+                    if (
+                        str(persisted.get("current_approval_decision_id") or "")
+                        == approval_decision_id
+                    ):
+                        persisted["contract_confirmed"] = False
+                        persisted["confirmations"] = {}
+                        persisted["confirmed_contract_sha256"] = None
+                        persisted["confirmed_contract_revision_id"] = None
+                        persisted["current_approval_decision_id"] = None
+                        if persisted.get("status") == "ready":
+                            persisted["status"] = "data_ready"
+                        persisted["updated_at_utc"] = _utc_now()
+                        write_json(
+                            self._task_path(str(task["task_id"])), persisted
+                        )
+                        task.update(
+                            {
+                                field: deepcopy(persisted.get(field))
+                                for field in (
+                                    "contract_confirmed",
+                                    "confirmations",
+                                    "confirmed_contract_sha256",
+                                    "confirmed_contract_revision_id",
+                                    "current_approval_decision_id",
+                                    "status",
+                                    "updated_at_utc",
+                                )
+                            }
+                        )
+        task["approval_decision"] = approval_decision
         task["current_result"] = current_result
         recipe_request_path = self._recipe_request_path(task["task_id"])
         task["recipe_request"] = read_json(recipe_request_path) if recipe_request_path.is_file() else None
@@ -4400,6 +5834,8 @@ class TrainingWorkspace:
         task["contract_confirmed"] = False
         task["confirmations"] = {}
         task["confirmed_contract_sha256"] = None
+        task["confirmed_contract_revision_id"] = None
+        task["current_approval_decision_id"] = None
         if task.get("current_run_id"):
             task["last_run_id"] = task["current_run_id"]
             task["current_run_id"] = None
@@ -4445,6 +5881,7 @@ class TrainingWorkspace:
                 contract["business_goal"] = spec["business_goal"]
                 contract["recipe"] = selected_recipe
                 write_json(contract_path, contract)
+                self._record_contract_revision(task, contract)
                 task["contract_stale"] = False
         else:
             task["status"] = "awaiting_data"
@@ -5242,6 +6679,34 @@ class TrainingWorkspace:
 
     def _contract_path(self, task_id: str) -> Path:
         return self._task_dir(task_id) / "task_contract.json"
+
+    def _contract_revision_path(
+        self, task_id: str, contract_revision_id: str
+    ) -> Path:
+        if (
+            not contract_revision_id
+            or Path(contract_revision_id).name != contract_revision_id
+        ):
+            raise HarnessError("invalid contract revision id")
+        return (
+            self._task_dir(task_id)
+            / "contract_revisions"
+            / f"{contract_revision_id}.json"
+        )
+
+    def _approval_decision_path(
+        self, task_id: str, approval_decision_id: str
+    ) -> Path:
+        if (
+            not approval_decision_id
+            or Path(approval_decision_id).name != approval_decision_id
+        ):
+            raise HarnessError("invalid approval decision id")
+        return (
+            self._task_dir(task_id)
+            / "approval_decisions"
+            / f"{approval_decision_id}.json"
+        )
 
     def _spec_revision_path(self, task_id: str, revision: int) -> Path:
         if revision < 1:

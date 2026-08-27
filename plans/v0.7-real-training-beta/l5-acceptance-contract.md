@@ -9,7 +9,8 @@
 ## 1. 一键执行与输出
 
 ```bash
-.venv/bin/python scripts/verify_v07_beta.py
+.venv/bin/python scripts/verify_v07_beta.py \
+  --user-approval-checkpoint-id "<user-confirmed-checkpoint-id>"
 ```
 
 每次执行使用全新临时 runtime，并写入：
@@ -60,6 +61,7 @@ commit  = a6a0b39ca1f5b0a247eb0a2e83f06cd95fc03674
 
 ```bash
 .venv/bin/python scripts/verify_v07_beta.py \
+  --user-approval-checkpoint-id "<user-confirmed-checkpoint-id>" \
   --controlled-evidence-dir /absolute/path/to/fresh-evidence-dir \
   --output /absolute/path/acceptance-report.json
 ```

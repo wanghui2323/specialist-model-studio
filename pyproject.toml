@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "specialist-model-studio"
-version = "0.9.0rc1"
+version = "1.0.0rc1"
 description = "A conversation-native studio for evidence-backed specialist-model research, training, evaluation, and delivery."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,7 +24,8 @@ dependencies = [
 [project.optional-dependencies]
 server = [
   "fastapi>=0.115,<1.0",
-  "uvicorn>=0.30,<1.0"
+  "uvicorn>=0.30,<1.0",
+  "websockets>=15,<16"
 ]
 test = [
   "httpx2>=2.0,<3.0"

@@ -35,6 +35,41 @@ class RunStateTests(unittest.TestCase):
             self.assertIn("run.cancel_requested", {item["type"] for item in records})
             self.assertIn("run.cancelled", {item["type"] for item in records})
 
+    def test_stale_worker_event_cannot_erase_concurrent_cancel_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "concurrent-cancel"
+            run_dir.mkdir()
+            worker = RunState(
+                run_dir,
+                task_id="task",
+                run_id="concurrent-cancel",
+                plugin_id="digit-classification",
+            )
+            worker.transition("queued")
+            worker.transition("preflight")
+            worker.transition("training")
+            canceller = RunState.load(run_dir)
+
+            self.assertTrue(canceller.request_cancel("stop agent cascade"))
+            worker.event("training.worker_returned", {"ok": True})
+
+            persisted = RunState.load(run_dir)
+            self.assertTrue(persisted.cancel_requested)
+            self.assertEqual(
+                persisted.data["cancel_reason"],
+                "stop agent cascade",
+            )
+            records = [
+                json.loads(line)
+                for line in persisted.events_path.read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+            self.assertEqual(
+                [record["seq"] for record in records],
+                list(range(1, len(records) + 1)),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,10 +14,15 @@ try:
 except ImportError:  # pragma: no cover
     TestClient = None  # type: ignore[assignment]
 
+from model_harness.contracts import ContractError, validate_contract
+from model_harness.data_adapters import DataAdapterRegistry
 from model_harness.io_utils import write_json
+from model_harness.plugins import PluginRegistry
 from model_harness.recipes.tabular_regression import TrainingContext, evaluate
 from model_harness.runner import verify_run
 from model_harness.server import create_app
+from tests.contract_confirmation import contract_confirmation_payload
+from tests.run_authorization import start_authorized_task_run
 
 
 def build_regression_csv(row_count: int = 180) -> bytes:
@@ -34,8 +39,128 @@ def build_regression_csv(row_count: int = 180) -> bytes:
     return output.getvalue().encode("utf-8")
 
 
+def build_raw_scale_regression_csv(row_count: int = 180) -> bytes:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["sample_id", "signal", "disease_progression"])
+    for index in range(row_count):
+        target = 25 + ((index * 37) % 322)
+        writer.writerow([f"D-{index:04d}", index / 10.0, target])
+    return output.getvalue().encode("utf-8")
+
+
 @unittest.skipIf(TestClient is None, "server extra is not installed")
 class TabularLoopTests(unittest.TestCase):
+    def test_raw_target_scale_drives_regression_error_gates_and_records_units(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = create_app(Path(temp_dir) / "runs")
+            with TestClient(app) as client:  # type: ignore[misc]
+                created = client.post(
+                    "/tasks",
+                    json={
+                        "name": "疾病进展预测",
+                        "business_goal": "根据检查数据预测疾病进展数值",
+                        "capability_request": {
+                            "modality": "tabular",
+                            "objective": "regression",
+                            "target_kind": "numeric",
+                            "target_column": "disease_progression",
+                        },
+                    },
+                )
+                self.assertEqual(created.status_code, 201, created.text)
+                task_id = created.json()["task"]["task_id"]
+                uploaded = client.post(
+                    f"/tasks/{task_id}/dataset",
+                    content=build_raw_scale_regression_csv(),
+                    headers={
+                        "Content-Type": "text/csv",
+                        "X-Filename": "disease.csv",
+                        "X-Target-Column": "disease_progression",
+                        "X-Ignored-Columns": "sample_id",
+                    },
+                )
+                self.assertEqual(uploaded.status_code, 201, uploaded.text)
+                task = uploaded.json()["task"]
+                summary = task["dataset_report"]["target_summary"]
+                contract = task["contract"]
+                gates = contract["release_gates"]
+                basis = contract["release_gate_basis"]
+
+                self.assertEqual(summary["value_space"], "raw")
+                self.assertEqual(summary["target_transform"], "none")
+                self.assertFalse(summary["target_standardized"])
+                self.assertGreater(summary["mean_baseline_mae"], 1.0)
+                self.assertGreater(summary["mean_baseline_rmse"], 1.0)
+                self.assertAlmostEqual(
+                    gates["clean_test_mae_max"],
+                    summary["mean_baseline_mae"] * 0.9,
+                    places=8,
+                )
+                self.assertAlmostEqual(
+                    gates["clean_test_rmse_max"],
+                    summary["mean_baseline_rmse"] * 0.9,
+                    places=8,
+                )
+                self.assertNotEqual(gates["clean_test_mae_max"], 0.8)
+                self.assertNotEqual(gates["clean_test_rmse_max"], 1.1)
+                self.assertEqual(basis["target_column"], "disease_progression")
+                self.assertEqual(basis["target_value_space"], "raw")
+                self.assertEqual(basis["target_transform"], "none")
+                self.assertEqual(basis["metric_unit"], "same_as_target_column")
+                self.assertEqual(
+                    basis["dataset_fingerprint_sha256"],
+                    task["dataset_report"]["fingerprint_sha256"],
+                )
+                self.assertTrue(basis["requires_human_review"])
+
+                explicitly_changed = client.patch(
+                    f"/tasks/{task_id}/contract",
+                    json={
+                        "release_gates": {
+                            "clean_test_mae_max": 40.0,
+                            "clean_test_rmse_max": 55.0,
+                        }
+                    },
+                )
+                self.assertEqual(
+                    explicitly_changed.status_code, 200, explicitly_changed.text
+                )
+                changed_basis = explicitly_changed.json()["task"]["contract"][
+                    "release_gate_basis"
+                ]
+                self.assertEqual(
+                    changed_basis["thresholds"]["clean_test_mae_max"]["source"],
+                    "explicit_contract_override",
+                )
+                self.assertEqual(
+                    changed_basis["thresholds"]["clean_test_rmse_max"]["source"],
+                    "explicit_contract_override",
+                )
+
+    def test_legacy_unitless_regression_defaults_fail_closed_on_raw_wide_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            registry = PluginRegistry(include_builtins=True)
+            imported = DataAdapterRegistry(include_builtins=True).get(
+                "tabular-csv"
+            ).import_data(
+                Path(temp_dir) / "datasets",
+                build_raw_scale_regression_csv(),
+                "disease.csv",
+                {
+                    "target_column": "disease_progression",
+                    "ignored_columns": ["sample_id"],
+                    "objective": "regression",
+                },
+            )
+            contract = registry.get_recipe("tabular-regression").template()
+            contract["dataset"].update(imported.contract_dataset)
+            with self.assertRaisesRegex(
+                ContractError,
+                "not bound to the raw target scale",
+            ):
+                validate_contract(contract, registry=registry)
+
     def test_capability_task_csv_contract_run_and_artifacts_form_a_real_loop(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             runs_dir = Path(temp_dir) / "runs"
@@ -78,14 +203,10 @@ class TabularLoopTests(unittest.TestCase):
 
                 confirmed = client.post(
                     f"/tasks/{task_id}/confirm",
-                    json={
-                        "data_authorized": True,
-                        "labels_reviewed": True,
-                        "gates_reviewed": True,
-                    },
+                    json=contract_confirmation_payload(client, task_id),
                 )
                 self.assertEqual(confirmed.status_code, 200, confirmed.text)
-                started = client.post(f"/tasks/{task_id}/runs")
+                started = start_authorized_task_run(client, task_id)
                 self.assertEqual(started.status_code, 202, started.text)
                 run_id = started.json()["task"]["current_run_id"]
                 app.state.run_service.wait(run_id, timeout=30)

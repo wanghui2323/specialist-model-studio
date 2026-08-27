@@ -5,7 +5,14 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 
-from model_harness.contracts import ContractError, validate_contract
+from model_harness.contracts import (
+    ApprovalDecision,
+    ApprovalDecisionIntegrityError,
+    ContractError,
+    ContractRevision,
+    ContractRevisionIntegrityError,
+    validate_contract,
+)
 from model_harness.templates import DIGIT_CLASSIFICATION_TEMPLATE
 
 
@@ -44,6 +51,67 @@ class ContractTests(unittest.TestCase):
         contract["optimization"]["require_approval"] = False
         with self.assertRaisesRegex(ContractError, "require_approval=true"):
             validate_contract(contract)
+
+    def test_contract_revision_and_approval_are_digest_bound(self) -> None:
+        snapshot = deepcopy(DIGIT_CLASSIFICATION_TEMPLATE)
+        snapshot["task_id"] = "contract-task"
+        revision = ContractRevision.create(
+            contract_revision_id="contract-revision-unit",
+            task_id="contract-task",
+            spec_revision_id="contract-task:spec:r1",
+            dataset_id="dataset-unit",
+            dataset_fingerprint_sha256="a" * 64,
+            contract_snapshot=snapshot,
+            created_at_utc="2026-08-26T00:00:00+00:00",
+        ).to_dict()
+        approval = ApprovalDecision.create(
+            approval_decision_id="approval-decision-unit",
+            revision=revision,
+            actor="unit-user",
+            checkpoint_id="checkpoint:unit",
+            confirmations={
+                "data_authorized": True,
+                "labels_reviewed": True,
+                "gates_reviewed": True,
+            },
+            created_at_utc="2026-08-26T00:01:00+00:00",
+        ).to_dict()
+        self.assertEqual(
+            approval["contract_revision_id"], revision["contract_revision_id"]
+        )
+        self.assertEqual(approval["contract_sha256"], revision["contract_sha256"])
+
+    def test_immutable_revision_and_approval_detect_tampering(self) -> None:
+        snapshot = deepcopy(DIGIT_CLASSIFICATION_TEMPLATE)
+        snapshot["task_id"] = "contract-task"
+        revision = ContractRevision.create(
+            contract_revision_id="contract-revision-tamper",
+            task_id="contract-task",
+            spec_revision_id="contract-task:spec:r1",
+            dataset_id="dataset-unit",
+            dataset_fingerprint_sha256="b" * 64,
+            contract_snapshot=snapshot,
+        ).to_dict()
+        tampered_revision = deepcopy(revision)
+        tampered_revision["dataset_id"] = "dataset-other"
+        with self.assertRaises(ContractRevisionIntegrityError):
+            ContractRevision.from_record(tampered_revision)
+
+        approval = ApprovalDecision.create(
+            approval_decision_id="approval-decision-tamper",
+            revision=revision,
+            actor="unit-user",
+            checkpoint_id="checkpoint:unit",
+            confirmations={
+                "data_authorized": True,
+                "labels_reviewed": True,
+                "gates_reviewed": True,
+            },
+        ).to_dict()
+        tampered_approval = deepcopy(approval)
+        tampered_approval["checkpoint_id"] = "checkpoint:other"
+        with self.assertRaises(ApprovalDecisionIntegrityError):
+            ApprovalDecision.from_record(tampered_approval)
 
 
 if __name__ == "__main__":

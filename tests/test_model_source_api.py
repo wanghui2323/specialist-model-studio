@@ -14,14 +14,14 @@ except ImportError:  # pragma: no cover
 
 from model_harness.blockers import verify_blocker_evidence
 from model_harness.errors import HarnessError
-from model_harness.resource_feasibility import ResourceProbe
+from model_harness.resource_feasibility import ResourceProbe, evaluate_resource_fit
 from model_harness.server import create_app
 from tests.test_model_binding_workspace import (
     COMMIT_A,
     FakeProvider,
     disk_bytes,
 )
-from tests.test_resource_feasibility import probe_observations
+from tests.test_resource_feasibility import environment_lock, probe_observations
 
 
 @unittest.skipIf(TestClient is None, "server extra is not installed")
@@ -238,7 +238,19 @@ class ModelSourceApiTests(unittest.TestCase):
             f"/tasks/{self.task_id}/repository-analyses/{analysis_id}"
         )
         self.assertEqual(analysis.status_code, 200, analysis.text)
-        self.assertEqual(analysis.json()["analysis"]["analysis_id"], analysis_id)
+        analysis_envelope = analysis.json()
+        self.assertEqual(analysis_envelope["analysis"]["analysis_id"], analysis_id)
+        self.assertEqual(
+            analysis_envelope["analysis_record"]["analysis_id"], analysis_id
+        )
+        self.assertEqual(
+            analysis_envelope["analysis_record"]["task_id"], self.task_id
+        )
+        self.assertRegex(
+            analysis_envelope["analysis_record"]["content_digest"],
+            r"^[0-9a-f]{64}$",
+        )
+        self.assertEqual(analysis_envelope["blockers"], [])
 
         workspace_root = self.app.state.training_workspace.root
         self.assertNotIn(github_secret.encode("utf-8"), disk_bytes(workspace_root))
@@ -520,6 +532,23 @@ class ModelSourceApiTests(unittest.TestCase):
         self.assertEqual(blocker["code"], "blocked_security")
         self.assertEqual(blocker["related_object_type"], "RepositoryAnalysis")
         verify_blocker_evidence(blocker, allow_active_projection=True)
+
+        analysis_response = self.client.get(
+            f"/tasks/{self.task_id}/repository-analyses/{bound['analysis']['analysis_id']}"
+        )
+        self.assertEqual(analysis_response.status_code, 200, analysis_response.text)
+        analysis_envelope = analysis_response.json()
+        self.assertEqual(
+            analysis_envelope["analysis_record"]["content_digest"],
+            blocker["related_object_digest"],
+        )
+        self.assertEqual(
+            [item["blocker_id"] for item in analysis_envelope["blockers"]],
+            [blocker["blocker_id"]],
+        )
+        self.assertEqual(
+            analysis_envelope["blockers"][0]["task_id"], self.task_id
+        )
 
         rejected = self.client.post(
             f"/tasks/{self.task_id}/training-plans",
@@ -871,6 +900,285 @@ class ModelSourceApiTests(unittest.TestCase):
             },
         )
         self.assertEqual(invalid.status_code, 422, invalid.text)
+
+    def test_exact_get_routes_preserve_source_binding_and_plan_identity(self) -> None:
+        revision = self.app.state.training_workspace.get_task(self.task_id)[
+            "current_spec_revision"
+        ]
+        searched = self.client.post(
+            f"/tasks/{self.task_id}/model-source-searches",
+            json={
+                "query": "text classification",
+                "providers": ["github"],
+                "limit_per_provider": 1,
+                "base_spec_revision": revision,
+            },
+        )
+        self.assertEqual(searched.status_code, 200, searched.text)
+        search = searched.json()
+        exact_search = self.client.get(
+            f"/tasks/{self.task_id}/model-source-searches/{search['search_id']}"
+        )
+        self.assertEqual(exact_search.status_code, 200, exact_search.text)
+        exact_search_record = exact_search.json()["search"]
+        self.assertEqual(exact_search_record["search_id"], search["search_id"])
+        self.assertEqual(
+            exact_search_record["query_plan"],
+            search["query_plan"],
+        )
+        self.assertEqual(exact_search_record["candidates"], search["candidates"])
+        self.assertRegex(exact_search_record["content_digest"], r"^[0-9a-f]{64}$")
+
+        first_resolution = self.resolve(revision="r1").json()["resolution"]
+        first_bound = self.bind_and_wait(first_resolution["resolution_id"])
+        first_binding = first_bound["binding"]
+        second_resolution = self.resolve(revision="r2").json()["resolution"]
+        second_bound = self.bind_and_wait(
+            second_resolution["resolution_id"],
+            expected_commit="b" * 40,
+        )
+        second_binding = second_bound["binding"]
+
+        for resolution in (first_resolution, second_resolution):
+            response = self.client.get(
+                f"/tasks/{self.task_id}/model-source-resolutions/{resolution['resolution_id']}"
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(
+                response.json()["resolution"]["resolution_id"],
+                resolution["resolution_id"],
+            )
+            self.assertEqual(
+                response.json()["resolution"]["resolved_commit"],
+                resolution["resolved_commit"],
+            )
+
+        historical_binding = self.client.get(
+            f"/tasks/{self.task_id}/model-bindings/{first_binding['binding_revision_id']}"
+        )
+        current_binding = self.client.get(
+            f"/tasks/{self.task_id}/model-bindings/current"
+        )
+        exact_current_binding = self.client.get(
+            f"/tasks/{self.task_id}/model-bindings/{second_binding['binding_revision_id']}"
+        )
+        self.assertEqual(historical_binding.status_code, 200, historical_binding.text)
+        self.assertEqual(exact_current_binding.status_code, 200, exact_current_binding.text)
+        self.assertEqual(
+            historical_binding.json()["binding"]["binding_revision_id"],
+            first_binding["binding_revision_id"],
+        )
+        self.assertEqual(historical_binding.json()["binding"]["status"], "superseded")
+        self.assertEqual(
+            historical_binding.json()["binding"]["resolved_commit"], COMMIT_A
+        )
+        self.assertEqual(
+            current_binding.json()["binding"]["binding_revision_id"],
+            second_binding["binding_revision_id"],
+        )
+        self.assertEqual(
+            exact_current_binding.json()["binding"]["binding_revision_id"],
+            second_binding["binding_revision_id"],
+        )
+        self.assertNotEqual(
+            historical_binding.json()["binding"]["binding_revision_id"],
+            current_binding.json()["binding"]["binding_revision_id"],
+        )
+
+        created_plan = self.client.post(
+            f"/tasks/{self.task_id}/training-plans",
+            json={"base_spec_revision": revision},
+        )
+        self.assertEqual(created_plan.status_code, 201, created_plan.text)
+        parent = created_plan.json()["training_plan"]["plan"]
+        revised_plan = self.client.post(
+            f"/tasks/{self.task_id}/training-plans/{parent['training_plan_revision_id']}/revisions",
+            json={
+                "base_spec_revision": revision,
+                "expected_parent_sha256": parent["plan_sha256"],
+                "resource_budget": {"ram_bytes": 5 * 1024**3},
+            },
+        )
+        self.assertEqual(revised_plan.status_code, 201, revised_plan.text)
+        child = revised_plan.json()["training_plan"]["plan"]
+        historical_plan = self.client.get(
+            f"/tasks/{self.task_id}/training-plans/{parent['training_plan_revision_id']}"
+        )
+        exact_child = self.client.get(
+            f"/tasks/{self.task_id}/training-plans/{child['training_plan_revision_id']}"
+        )
+        current_plan = self.client.get(
+            f"/tasks/{self.task_id}/training-plans/current"
+        )
+        self.assertEqual(historical_plan.status_code, 200, historical_plan.text)
+        self.assertEqual(exact_child.status_code, 200, exact_child.text)
+        self.assertEqual(
+            historical_plan.json()["training_plan"]["plan"][
+                "training_plan_revision_id"
+            ],
+            parent["training_plan_revision_id"],
+        )
+        self.assertEqual(
+            historical_plan.json()["training_plan"]["plan"]["resource_budget"],
+            parent["resource_budget"],
+        )
+        self.assertEqual(
+            exact_child.json()["training_plan"]["plan"][
+                "training_plan_revision_id"
+            ],
+            child["training_plan_revision_id"],
+        )
+        self.assertEqual(
+            current_plan.json()["training_plan"]["plan"][
+                "training_plan_revision_id"
+            ],
+            child["training_plan_revision_id"],
+        )
+        self.assertNotEqual(parent["resource_budget"], child["resource_budget"])
+
+        other = self.client.post(
+            "/tasks",
+            json={"name": "exact GET other task", "business_goal": "identity guard"},
+        ).json()["task"]
+        exact_paths = (
+            f"model-source-searches/{search['search_id']}",
+            f"model-source-resolutions/{first_resolution['resolution_id']}",
+            f"model-bindings/{first_binding['binding_revision_id']}",
+            f"training-plans/{parent['training_plan_revision_id']}",
+        )
+        for path in exact_paths:
+            with self.subTest(path=path, guard="cross_task"):
+                response = self.client.get(f"/tasks/{other['task_id']}/{path}")
+                self.assertEqual(response.status_code, 404, response.text)
+        for collection in (
+            "model-source-searches",
+            "model-source-resolutions",
+            "model-bindings",
+            "training-plans",
+        ):
+            with self.subTest(collection=collection, guard="missing_id"):
+                response = self.client.get(
+                    f"/tasks/{self.task_id}/{collection}/missing_exact_object"
+                )
+                self.assertEqual(response.status_code, 404, response.text)
+            with self.subTest(collection=collection, guard="malformed_id"):
+                response = self.client.get(
+                    f"/tasks/{self.task_id}/{collection}/bad%5Cid"
+                )
+                self.assertEqual(response.status_code, 409, response.text)
+
+    def test_exact_get_routes_preserve_feasibility_and_blocker_ownership(self) -> None:
+        workspace = self.app.state.training_workspace
+        probe = ResourceProbe.from_observations(probe_observations())
+        lock = environment_lock()
+        report = evaluate_resource_fit(
+            training_plan_revision_id="plan_exact_fixture",
+            training_plan_sha256="a" * 64,
+            resource_budget={
+                "max_seconds": 300,
+                "ram_bytes": 1_000_000_000,
+                "disk_bytes": 2_000_000_000,
+                "vram_bytes": 0,
+            },
+            environment_lock=lock,
+            resource_probe=probe,
+        )
+        probe_record = workspace.feasibility_store.append_resource_probe(
+            self.task_id, probe
+        )
+        lock_record = workspace.feasibility_store.append_environment_lock(
+            self.task_id, lock
+        )
+        report_record = workspace.feasibility_store.append_resource_fit_report(
+            self.task_id, report
+        )
+        blocker = workspace.blocker_store.append(
+            self.task_id,
+            stage="resource_fit",
+            code="blocked_resources",
+            message="精确读取阻断证据 fixture",
+            retry_action="create_revised_training_plan",
+            related_object_type="ResourceFitReport",
+            related_object_id=report_record["resource_fit_report_id"],
+            related_object_digest=report_record["report_sha256"],
+            details={"detector": "exact_get_contract_fixture"},
+        )
+        verify_blocker_evidence(blocker)
+
+        cases = (
+            (
+                f"resource-probes/{probe_record['resource_probe_id']}",
+                "resource_probe",
+                "resource_probe_id",
+                probe_record["resource_probe_id"],
+            ),
+            (
+                f"environment-locks/{lock_record['environment_lock_id']}",
+                "environment_lock",
+                "environment_lock_id",
+                lock_record["environment_lock_id"],
+            ),
+            (
+                f"resource-fit-reports/{report_record['resource_fit_report_id']}",
+                "resource_fit_report",
+                "resource_fit_report_id",
+                report_record["resource_fit_report_id"],
+            ),
+            (
+                f"blockers/{blocker['blocker_id']}",
+                "blocker",
+                "blocker_id",
+                blocker["blocker_id"],
+            ),
+        )
+        for path, envelope, id_field, expected_id in cases:
+            with self.subTest(path=path, guard="exact"):
+                response = self.client.get(f"/tasks/{self.task_id}/{path}")
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()[envelope][id_field], expected_id)
+
+        other = self.client.post(
+            "/tasks",
+            json={"name": "feasibility other task", "business_goal": "identity guard"},
+        ).json()["task"]
+        for path, _envelope, _id_field, _expected_id in cases:
+            with self.subTest(path=path, guard="cross_task"):
+                response = self.client.get(f"/tasks/{other['task_id']}/{path}")
+                self.assertEqual(response.status_code, 404, response.text)
+        for collection in (
+            "resource-probes",
+            "environment-locks",
+            "resource-fit-reports",
+            "blockers",
+        ):
+            with self.subTest(collection=collection, guard="missing_id"):
+                response = self.client.get(
+                    f"/tasks/{self.task_id}/{collection}/missing_exact_object"
+                )
+                self.assertEqual(response.status_code, 404, response.text)
+
+    def test_exact_get_routes_reject_malformed_ids_as_conflicts(self) -> None:
+        non_raising_client = TestClient(  # type: ignore[misc]
+            self.app, raise_server_exceptions=False
+        )
+        try:
+            for collection in (
+                "model-source-searches",
+                "model-source-resolutions",
+                "model-bindings",
+                "training-plans",
+                "resource-probes",
+                "environment-locks",
+                "resource-fit-reports",
+                "blockers",
+            ):
+                with self.subTest(collection=collection):
+                    response = non_raising_client.get(
+                        f"/tasks/{self.task_id}/{collection}/bad%5Cid"
+                    )
+                    self.assertEqual(response.status_code, 409, response.text)
+        finally:
+            non_raising_client.close()
 
     def test_search_rejects_credentials_before_calls_or_persistence(self) -> None:
         workspace = self.app.state.training_workspace

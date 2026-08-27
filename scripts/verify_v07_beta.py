@@ -1400,6 +1400,16 @@ def probe_process_restart_evidence(
     return status, evidence, [] if status == "passed" else ["process_restart_independent_verification_failed"]
 
 
+def _command_option_value(argv: list[str], option: str) -> str | None:
+    if argv.count(option) != 1:
+        return None
+    option_index = argv.index(option)
+    if option_index + 1 >= len(argv):
+        return None
+    selected = str(argv[option_index + 1]).strip()
+    return selected or None
+
+
 def probe_cold_clone_evidence(
     external: LoadedExternalEvidence | None,
     load_blockers: list[str],
@@ -1429,6 +1439,14 @@ def probe_cold_clone_evidence(
         and logged[command["id"]].get("exit_code") == command["exit_code"]
         for command in commands
     )
+    minimal_checkpoint_id = _command_option_value(
+        commands[8]["argv"],
+        "--user-approval-checkpoint-id",
+    )
+    producer_checkpoint_id = _command_option_value(
+        external.manifest["producer"]["command"],
+        "--user-approval-checkpoint-id",
+    )
     command_shapes = {
         "clone": commands[0]["argv"][:5] == [tool_paths["git"], "clone", "--no-local", "--no-hardlinks", "--no-checkout"] and commands[0]["argv"][5] == str(ROOT),
         "checkout": commands[1]["argv"][:3] == [tool_paths["git"], "-C", commands[1]["argv"][2]] and commands[1]["argv"][-3:] == ["checkout", "--detach", source_commit],
@@ -1438,7 +1456,14 @@ def probe_cold_clone_evidence(
         "node_tests": commands[5]["argv"][0] == tool_paths["npm"] and commands[5]["argv"][-1] == "test",
         "node_check": commands[6]["argv"][0] == tool_paths["npm"] and commands[6]["argv"][-2:] == ["run", "check"],
         "browser_ci": commands[7]["argv"][0] == tool_paths["npm"] and "acceptance/browser" in "/".join(commands[7]["argv"]) and "--ignore-scripts" in commands[7]["argv"],
-        "minimal_loop": commands[8]["argv"][0] == tool_paths["uv"] and commands[8]["argv"][-1] == "--skip-hf" and "prepare_v07_acceptance_runtime.py" in " ".join(commands[8]["argv"]),
+        "minimal_loop": (
+            commands[8]["argv"][0] == tool_paths["uv"]
+            and commands[8]["argv"].count("--skip-hf") == 1
+            and "prepare_v07_acceptance_runtime.py"
+            in " ".join(commands[8]["argv"])
+            and minimal_checkpoint_id is not None
+            and minimal_checkpoint_id == producer_checkpoint_id
+        ),
     }
     minimal_families = minimal.get("journey_families") or {}
     minimal_match = minimal.get("status") == "passed" and minimal.get("mode") == "local_image_skip_hf" and set(minimal_families) == {"image", "tabular", "audio"}
@@ -1689,8 +1714,12 @@ def _command_gate(
 def execute_acceptance(
     output_path: Path,
     *,
+    user_approval_checkpoint_id: str,
     controlled_evidence_dir: Path | None = None,
 ) -> dict[str, Any]:
+    selected_checkpoint_id = str(user_approval_checkpoint_id).strip()
+    if not selected_checkpoint_id:
+        raise ValueError("user approval checkpoint id must not be empty")
     config = load_json(GATES_PATH)
     levels = instantiate_levels(config)
     started_at = utc_now()
@@ -1915,6 +1944,8 @@ def execute_acceptance(
             trusted_tools["uv"],
             "--chrome",
             trusted_tools["chrome"],
+            "--user-approval-checkpoint-id",
+            selected_checkpoint_id,
         ]
         if selected_controlled_evidence_dir.exists():
             commands["controlled_external_evidence"] = command_not_run(
@@ -2507,6 +2538,14 @@ def parse_args() -> argparse.Namespace:
             "Existing directories and hand-authored JSON are refused."
         ),
     )
+    parser.add_argument(
+        "--user-approval-checkpoint-id",
+        required=True,
+        help=(
+            "Identifier of the explicit user approval checkpoint authorizing "
+            "the controlled acceptance runs and artifact delivery actions."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -2525,6 +2564,7 @@ def main() -> int:
         )
     report = execute_acceptance(
         output_path,
+        user_approval_checkpoint_id=arguments.user_approval_checkpoint_id,
         controlled_evidence_dir=arguments.controlled_evidence_dir,
     )
     print(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from concurrent.futures import Future
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
@@ -10,10 +11,71 @@ from model_harness.errors import ContractError
 from model_harness.io_utils import read_json
 from model_harness.runner import prepare_run, run_task
 from model_harness.service import RunService
+from model_harness.state import RunState
 from model_harness.templates import DIGIT_CLASSIFICATION_TEMPLATE
 
 
 class RunServiceTests(unittest.TestCase):
+    def test_running_worker_keeps_cancel_requested_visible_until_it_stops(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "running-cancel"
+            worker_state = RunState(
+                run_dir,
+                "fixture-task",
+                "running-cancel",
+                "fixture-recipe",
+            )
+            worker_state.transition("queued")
+            worker_state.transition("preflight")
+            worker_state.transition("training")
+            future: Future[Path] = Future()
+            self.assertTrue(future.set_running_or_notify_cancel())
+            with RunService(
+                temp_dir,
+                registry=object(),
+                recover=False,
+            ) as service:
+                service._futures[run_dir.name] = future
+
+                self.assertTrue(
+                    service.cancel(
+                        run_dir.name,
+                        actor="system",
+                        reason="disk reserve exhausted",
+                        cancellation_kind="safety_stop",
+                        scope="task_execution",
+                    )
+                )
+                action = service.background_action(run_dir.name)
+
+                self.assertEqual(action["status"], "cancel_requested")
+                self.assertEqual(action["domain_status"], "training")
+                self.assertTrue(action["running"])
+                self.assertTrue(action["worker_running"])
+                self.assertTrue(action["cancel_requested"])
+                self.assertEqual(
+                    action["cancel"],
+                    {
+                        "actor": "system",
+                        "kind": "safety_stop",
+                        "reason": "disk reserve exhausted",
+                        "scope": "task_execution",
+                        "requested_at_utc": action["cancel"]["requested_at_utc"],
+                    },
+                )
+                self.assertEqual(action["last_event"]["type"], "run.cancel_requested")
+
+                worker_state.event("training.worker_returned", {"ok": True})
+                latest = RunState.load(run_dir)
+                self.assertTrue(latest.cancel_requested)
+                latest.cancel("requested by user")
+                future.set_result(run_dir)
+                settled = service.background_action(run_dir.name)
+
+                self.assertEqual(settled["status"], "cancelled")
+                self.assertFalse(settled["running"])
+                self.assertFalse(settled["worker_running"])
+
     def test_workspace_owned_contract_rejects_direct_runner_and_service(self) -> None:
         contract = deepcopy(DIGIT_CLASSIFICATION_TEMPLATE)
         contract["task_id"] = "owned-task"

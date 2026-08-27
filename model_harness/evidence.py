@@ -7,6 +7,7 @@ import re
 import shutil
 import time
 import zipfile
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from threading import RLock
@@ -403,6 +404,13 @@ class EvaluationReport:
                 "created_at": previous.get("created_at", now) if previous else now,
                 "updated_at": now,
             }
+            report["report_sha256"] = _canonical_hash(
+                {
+                    key: value
+                    for key, value in report.items()
+                    if key not in {"report_sha256", "updated_at"}
+                }
+            )
             if previous:
                 comparable_previous = {
                     key: value
@@ -658,8 +666,17 @@ class ArtifactBundleBuilder:
         self.bundles_dir = _safe_subdirectory(self.run_dir, "evidence", "bundles")
         self._lock = RLock()
 
-    def build(self, *, inference_check_id: str | None = None) -> dict[str, Any]:
+    def build(
+        self,
+        *,
+        inference_check_id: str | None = None,
+        authorization_lineage: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         with self._lock:
+            if authorization_lineage is not None and not isinstance(
+                authorization_lineage, dict
+            ):
+                raise EvidenceError("artifact bundle authorization lineage is invalid")
             integrity = _integrity_snapshot(self.run_dir)
             if str(integrity["state"].get("status")) != "completed":
                 raise EvidenceError("artifact bundles require a completed run")
@@ -737,8 +754,12 @@ class ArtifactBundleBuilder:
                         "internal_state_included": False,
                         "absolute_paths_in_manifest": False,
                     },
+                    "authorization_lineage": deepcopy(authorization_lineage),
                     "created_at": _now(),
                 }
+                bundle_manifest["manifest_sha256"] = _canonical_hash(
+                    bundle_manifest
+                )
                 manifest_path = payload_dir / "bundle_manifest.json"
                 write_json(manifest_path, bundle_manifest)
                 archive_path = temporary_dir / "artifact_bundle.zip"
@@ -754,8 +775,10 @@ class ArtifactBundleBuilder:
                     "schema_version": EVIDENCE_SCHEMA_VERSION,
                     "bundle_id": bundle_id,
                     "run_id": integrity["state"].get("run_id"),
+                    "task_id": integrity["state"].get("task_id"),
                     "status": "completed",
                     "release_ready": bool(evaluation.get("release_ready")),
+                    "manifest_sha256": bundle_manifest["manifest_sha256"],
                     "archive": {
                         "filename": "artifact_bundle.zip",
                         "sha256": sha256_file(archive_path),

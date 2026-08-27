@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0",
+  "iteration": "v1.0-conversation-native",
+  "expected_product_name": "Specialist Model Studio",
+  "expected_distribution_name": "specialist-model-studio",
+  "canonical_console_script": "specialist-model-studio",
+  "compatibility_console_scripts": ["small-model-harness"],
+  "expected_package_version": "1.0.0rc1",
+  "expected_api_version": "1.0.0-rc.1",
+  "distribution_kind": "source_checkout_rc",
+  "wheel_scope": "backend_only",
+  "allowed_gate_statuses": ["passed", "failed", "blocked"],
+  "aggregation_contract": {
+    "required_gate_pass_condition": "status must equal passed",
+    "level_pass_condition": "every required gate in the level must equal passed",
+    "local_review_condition": "every required L0-L5 gate must equal passed",
+    "public_rc_condition": "local_review_condition plus L6 must pass from a remote detached clone of the exact candidate commit",
+    "github_released_condition": "public_rc_condition plus the release gate must equal passed",
+    "skipped_policy": "skipped is forbidden and must never aggregate to passed"
+  },
+  "levels": [
+    {
+      "level_id": "L0",
+      "gate_id": "V10-L0-RELEASE-TRUTH",
+      "required": true,
+      "description": "Product, API, package, adapter, feature track and source-RC distribution boundary agree."
+    },
+    {
+      "level_id": "L1",
+      "gate_id": "V10-L1-ONE-COMMAND-RUNTIME",
+      "required": true,
+      "description": "The public start command launches one Studio URL and verifies the exact source revision, source-dirty state and real multi-agent runtime."
+    },
+    {
+      "level_id": "L2",
+      "gate_id": "V10-L2-REAL-AGENT-TURN",
+      "required": true,
+      "description": "A provider-backed coordinator turn and at least one native specialist delegation produce durable canonical actions."
+    },
+    {
+      "level_id": "L3",
+      "gate_id": "V10-L3-REAL-REGISTERED-TRAINING",
+      "required": true,
+      "description": "A conversation-created tabular task imports user CSV, confirms the contract and creates a real Run, evaluation and artifact."
+    },
+    {
+      "level_id": "L4",
+      "gate_id": "V10-L4-HONEST-UNSUPPORTED-BOUNDARY",
+      "required": true,
+      "description": "An unregistered task ends in a typed, digest-bound BlockerEvidence with no simulated Run."
+    },
+    {
+      "level_id": "L5",
+      "gate_id": "V10-L5-AI-HUMAN-BROWSER",
+      "required": true,
+      "description": "AI turn ownership, one authoritative state, stop/recovery, evidence opening, refresh and task re-entry pass on desktop and mobile."
+    },
+    {
+      "level_id": "L6",
+      "gate_id": "V10-L6-REMOTE-COLD-REPRODUCTION",
+      "required": true,
+      "description": "A remote detached clone of the exact commit installs from locks, starts the complete source RC, repeats the two journeys and survives restart."
+    },
+    {
+      "level_id": "release",
+      "gate_id": "V10-RELEASE-CHAIN",
+      "required": false,
+      "required_for_github_release": true,
+      "description": "The exact verified commit is merged, tagged v1.0.0-rc.1 and published as a GitHub Prerelease with source checksums; no backend-only wheel is labeled as the complete Studio."
+    }
+  ]
+}

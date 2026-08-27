@@ -15,8 +15,10 @@ from model_harness.io_utils import read_json
 from model_harness.recipes.audio_keyword_plugin import PLUGIN as AUDIO_PLUGIN
 from model_harness.server import create_app
 from tests.test_audio_keyword_engine import _dataset_zip as build_audio_dataset_zip
+from tests.contract_confirmation import contract_confirmation_payload
 from tests.test_tabular_loop import build_regression_csv
 from tests.test_workspace_loop import build_image_dataset_zip
+from tests.run_authorization import start_authorized_task_run
 
 
 @unittest.skipIf(TestClient is None, "server extra is not installed")
@@ -37,11 +39,7 @@ class DatasetIntegrityAtTrainTests(unittest.TestCase):
     def _confirm(self, task_id: str) -> None:
         response = self.client.post(
             f"/tasks/{task_id}/confirm",
-            json={
-                "data_authorized": True,
-                "labels_reviewed": True,
-                "gates_reviewed": True,
-            },
+            json=contract_confirmation_payload(self.client, task_id),
         )
         self.assertEqual(response.status_code, 200, response.text)
 
@@ -119,7 +117,7 @@ class DatasetIntegrityAtTrainTests(unittest.TestCase):
         return task_id, uploaded.json()["task"]["contract"]["dataset"]
 
     def _assert_integrity_failure(self, task_id: str) -> None:
-        started = self.client.post(f"/tasks/{task_id}/runs")
+        started = start_authorized_task_run(self.client, task_id)
         self.assertEqual(started.status_code, 202, started.text)
         run_id = started.json()["task"]["current_run_id"]
         with self.assertRaisesRegex(ContractError, "数据完整性"):
@@ -129,7 +127,7 @@ class DatasetIntegrityAtTrainTests(unittest.TestCase):
         self.assertIn("数据完整性", state["error"])
 
     def _assert_completed(self, task_id: str) -> None:
-        started = self.client.post(f"/tasks/{task_id}/runs")
+        started = start_authorized_task_run(self.client, task_id)
         self.assertEqual(started.status_code, 202, started.text)
         run_id = started.json()["task"]["current_run_id"]
         self.app.state.run_service.wait(run_id, timeout=30)

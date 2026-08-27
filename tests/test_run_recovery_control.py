@@ -18,6 +18,8 @@ from model_harness.runner import prepare_run
 from model_harness.server import create_app
 from model_harness.state import RunState
 from model_harness.workspace import TrainingWorkspace
+from tests.contract_confirmation import contract_confirmation_payload
+from tests.run_authorization import start_authorized_task_run
 
 
 def _image_dataset_zip() -> bytes:
@@ -94,11 +96,7 @@ class RunRecoveryApiTests(unittest.TestCase):
                 self.assertEqual(uploaded.status_code, 201, uploaded.text)
                 confirmed = client.post(
                     f"/tasks/{task_id}/confirm",
-                    json={
-                        "data_authorized": True,
-                        "labels_reviewed": True,
-                        "gates_reviewed": True,
-                    },
+                    json=contract_confirmation_payload(client, task_id),
                 )
                 self.assertEqual(confirmed.status_code, 200, confirmed.text)
 
@@ -130,7 +128,11 @@ class RunRecoveryApiTests(unittest.TestCase):
                     "retry_training_run",
                 )
 
-                retried = client.post(f"/tasks/{task_id}/runs")
+                retried = start_authorized_task_run(
+                    client,
+                    task_id,
+                    checkpoint_id="native-run-retry:failed-original",
+                )
                 self.assertEqual(retried.status_code, 202, retried.text)
                 retry_task = retried.json()["task"]
                 new_run_id = retry_task["current_run_id"]

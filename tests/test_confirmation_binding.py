@@ -15,6 +15,10 @@ except ImportError:  # pragma: no cover - optional dependency
 
 from model_harness.io_utils import read_json, sha256_file, write_json
 from model_harness.server import create_app
+from tests.run_authorization import (
+    request_task_run_authorization,
+    start_authorized_task_run,
+)
 
 
 def _image_dataset_zip() -> bytes:
@@ -70,12 +74,31 @@ class ConfirmationBindingTests(unittest.TestCase):
         return task_id
 
     def _confirm(self, task_id: str) -> None:
+        task_response = self.client.get(f"/tasks/{task_id}")
+        self.assertEqual(task_response.status_code, 200, task_response.text)
+        revision = task_response.json()["task"]["contract_revision"]
+        expected = {
+            field: revision[field]
+            for field in (
+                "contract_revision_id",
+                "contract_sha256",
+                "task_id",
+                "spec_revision_id",
+                "dataset_id",
+                "dataset_fingerprint_sha256",
+            )
+        }
         response = self.client.post(
             f"/tasks/{task_id}/confirm",
             json={
                 "data_authorized": True,
                 "labels_reviewed": True,
                 "gates_reviewed": True,
+                "expected_contract_revision": expected,
+                "approval": {
+                    "actor": "test-user",
+                    "checkpoint_id": f"checkpoint:{task_id}",
+                },
             },
         )
         self.assertEqual(response.status_code, 200, response.text)
@@ -93,7 +116,7 @@ class ConfirmationBindingTests(unittest.TestCase):
         write_json(path, contract)
 
     def _start_and_wait(self, task_id: str) -> None:
-        response = self.client.post(f"/tasks/{task_id}/runs")
+        response = start_authorized_task_run(self.client, task_id)
         self.assertEqual(response.status_code, 202, response.text)
         run_id = response.json()["task"]["current_run_id"]
         self.app.state.run_service.wait(run_id, timeout=30)
@@ -107,13 +130,91 @@ class ConfirmationBindingTests(unittest.TestCase):
             task["confirmed_contract_sha256"],
             sha256_file(self._contract_path(task_id)),
         )
+        self.assertEqual(
+            task["confirmed_contract_revision_id"],
+            task["current_contract_revision_id"],
+        )
+        decisions = self.client.get(f"/tasks/{task_id}/approval-decisions")
+        self.assertEqual(decisions.status_code, 200, decisions.text)
+        approval = decisions.json()["approval_decisions"][0]
+        self.assertEqual(approval["actor"], "test-user")
+        self.assertEqual(approval["checkpoint_id"], f"checkpoint:{task_id}")
+        self.assertEqual(
+            approval["contract_revision_id"],
+            task["confirmed_contract_revision_id"],
+        )
+        retrieved = self.client.get(
+            f"/tasks/{task_id}/approval-decisions/{approval['approval_decision_id']}"
+        )
+        self.assertEqual(retrieved.status_code, 200, retrieved.text)
+        self.assertEqual(retrieved.json()["approval_decision"], approval)
         self._start_and_wait(task_id)
+
+    def test_confirm_without_expected_identity_fails_closed(self) -> None:
+        task_id = self._create_data_ready_task()
+        response = self.client.post(
+            f"/tasks/{task_id}/confirm",
+            json={
+                "data_authorized": True,
+                "labels_reviewed": True,
+                "gates_reviewed": True,
+                "approval": {
+                    "actor": "test-user",
+                    "checkpoint_id": "checkpoint:missing-identity",
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        task = read_json(self._task_path(task_id))
+        self.assertFalse(task["contract_confirmed"])
+        self.assertEqual(task.get("approval_decision_ids"), [])
+
+    def test_stale_expected_identity_returns_409_without_approval(self) -> None:
+        task_id = self._create_data_ready_task()
+        task_response = self.client.get(f"/tasks/{task_id}")
+        revision = task_response.json()["task"]["contract_revision"]
+        expected = {
+            field: revision[field]
+            for field in (
+                "contract_revision_id",
+                "contract_sha256",
+                "task_id",
+                "spec_revision_id",
+                "dataset_id",
+                "dataset_fingerprint_sha256",
+            )
+        }
+        expected["contract_sha256"] = "0" * 64
+        response = self.client.post(
+            f"/tasks/{task_id}/confirm",
+            json={
+                "data_authorized": True,
+                "labels_reviewed": True,
+                "gates_reviewed": True,
+                "expected_contract_revision": expected,
+                "approval": {
+                    "actor": "test-user",
+                    "checkpoint_id": "checkpoint:stale",
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(
+            self.client.get(f"/tasks/{task_id}/approval-decisions").json()[
+                "approval_decisions"
+            ],
+            [],
+        )
 
     def test_disk_tamper_blocks_start_and_requests_reconfirmation(self) -> None:
         task_id = self._create_data_ready_task()
         self._confirm(task_id)
         self._tamper_contract(task_id)
-        response = self.client.post(f"/tasks/{task_id}/runs")
+        response = request_task_run_authorization(
+            self.client,
+            task_id,
+            checkpoint_id="native-run:tampered-contract",
+        )
         self.assertEqual(response.status_code, 409, response.text)
         self.assertIn("重新确认", response.json()["detail"])
 
@@ -121,7 +222,11 @@ class ConfirmationBindingTests(unittest.TestCase):
         task_id = self._create_data_ready_task()
         self._confirm(task_id)
         self._tamper_contract(task_id)
-        response = self.client.post(f"/tasks/{task_id}/runs")
+        response = request_task_run_authorization(
+            self.client,
+            task_id,
+            checkpoint_id="native-run:tampered-contract-reset",
+        )
         self.assertEqual(response.status_code, 409, response.text)
         task = read_json(self._task_path(task_id))
         self.assertFalse(task["contract_confirmed"])
@@ -129,16 +234,52 @@ class ConfirmationBindingTests(unittest.TestCase):
         self.assertIsNone(task["confirmed_contract_sha256"])
         self.assertEqual(task["status"], "data_ready")
 
+    def test_approval_tamper_blocks_start_and_resets_confirmation(self) -> None:
+        task_id = self._create_data_ready_task()
+        self._confirm(task_id)
+        task = read_json(self._task_path(task_id))
+        approval_id = task["current_approval_decision_id"]
+        approval_path = (
+            self.app.state.training_workspace.tasks_dir
+            / task_id
+            / "approval_decisions"
+            / f"{approval_id}.json"
+        )
+        approval = read_json(approval_path)
+        approval["actor"] = "tampered-user"
+        write_json(approval_path, approval)
+
+        response = request_task_run_authorization(
+            self.client,
+            task_id,
+            checkpoint_id="native-run:tampered-approval",
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        persisted = read_json(self._task_path(task_id))
+        self.assertFalse(persisted["contract_confirmed"])
+        self.assertIsNone(persisted["current_approval_decision_id"])
+        self.assertIn(approval_id, persisted["approval_decision_ids"])
+        self.assertTrue(approval_path.is_file())
+
     def test_reconfirm_binds_new_digest_and_allows_start(self) -> None:
         task_id = self._create_data_ready_task()
         self._confirm(task_id)
         old_digest = read_json(self._task_path(task_id))["confirmed_contract_sha256"]
-        self._tamper_contract(task_id)
-        response = self.client.post(f"/tasks/{task_id}/runs")
-        self.assertEqual(response.status_code, 409, response.text)
+        old_revision = read_json(self._task_path(task_id))[
+            "current_contract_revision_id"
+        ]
+        response = self.client.patch(
+            f"/tasks/{task_id}/contract",
+            json={"release_gates": {"clean_test_accuracy_min": 0.0}},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
         self._confirm(task_id)
         task = read_json(self._task_path(task_id))
         self.assertNotEqual(task["confirmed_contract_sha256"], old_digest)
+        self.assertNotEqual(task["current_contract_revision_id"], old_revision)
+        revisions = self.client.get(f"/tasks/{task_id}/contract-revisions")
+        self.assertEqual(revisions.status_code, 200, revisions.text)
+        self.assertEqual(len(revisions.json()["contract_revisions"]), 2)
         self.assertEqual(
             task["confirmed_contract_sha256"],
             sha256_file(self._contract_path(task_id)),

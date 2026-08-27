@@ -103,6 +103,56 @@ class RunService:
     def status(self, run_id: str) -> dict[str, Any]:
         return read_json(self._run_dir(run_id) / "run_state.json")
 
+    def background_action(
+        self,
+        run_id: str,
+        *,
+        workspace_task_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Expose durable Run state separately from the worker lifecycle."""
+
+        state = self.status(run_id)
+        self._authorize_workspace_run(state, workspace_task_id)
+        with self._lock:
+            future = self._futures.get(run_id)
+        worker_running = bool(future is not None and not future.done())
+        domain_status = str(state.get("status") or "unknown")
+        cancel_requested = bool(state.get("cancel_requested", False))
+        visible_status = (
+            "cancel_requested"
+            if cancel_requested and worker_running
+            else domain_status
+        )
+        return {
+            "action_id": f"training-run:{run_id}",
+            "action_type": "training_run",
+            "task_id": state.get("task_id"),
+            "run_id": run_id,
+            "status": visible_status,
+            "domain_status": domain_status,
+            "running": worker_running or domain_status in ACTIVE_STATUSES,
+            "worker_running": worker_running,
+            "cancel_requested": cancel_requested,
+            "cancel_reason": state.get("cancel_reason"),
+            "cancel": deepcopy(state.get("cancel_request")),
+            "event_seq": state.get("event_seq"),
+            "updated_at_utc": state.get("updated_at_utc"),
+            "last_event": self._last_event_projection(run_id),
+        }
+
+    def _last_event_projection(self, run_id: str) -> dict[str, Any] | None:
+        records = self.events(run_id)
+        if not records:
+            return None
+        event = records[-1]
+        return {
+            "event_id": event.get("event_id"),
+            "seq": event.get("seq"),
+            "type": event.get("type"),
+            "stage": event.get("stage"),
+            "timestamp_utc": event.get("timestamp_utc"),
+        }
+
     def list_runs(self) -> list[dict[str, Any]]:
         states = [
             read_json(path)
@@ -141,16 +191,29 @@ class RunService:
         reason: str = "requested by user",
         *,
         workspace_task_id: str | None = None,
+        actor: str = "user",
+        cancellation_kind: str = "user_requested",
+        scope: str = "training_run",
     ) -> bool:
         state = RunState.load(self._run_dir(run_id))
         self._authorize_workspace_run(state.data, workspace_task_id)
-        if not state.request_cancel(reason):
+        if not state.request_cancel(
+            reason,
+            actor=actor,
+            cancellation_kind=cancellation_kind,
+            scope=scope,
+        ):
             return False
         with self._lock:
             future = self._futures.get(run_id)
         if future is not None and future.cancel():
             latest = RunState.load(self._run_dir(run_id))
-            latest.cancel(reason)
+            latest.cancel(
+                reason,
+                actor=actor,
+                cancellation_kind=cancellation_kind,
+                scope=scope,
+            )
         return True
 
     def resume(
@@ -342,9 +405,11 @@ class RunService:
         run_id: str,
         *,
         inference_check_id: str | None = None,
+        authorization_lineage: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return ArtifactBundleBuilder(self._run_dir(run_id)).build(
-            inference_check_id=inference_check_id
+            inference_check_id=inference_check_id,
+            authorization_lineage=authorization_lineage,
         )
 
     def artifact_bundles(self, run_id: str) -> list[dict[str, Any]]:

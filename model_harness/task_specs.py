@@ -98,6 +98,11 @@ MODALITY_CLARIFICATION_FAMILIES: dict[str, tuple[str, ...]] = {
         "anomaly_detection",
         "custom",
     ),
+    "time_series": (
+        "time_series_forecasting",
+        "anomaly_detection",
+        "custom",
+    ),
     "text": ("text_classification", "named_entity_recognition", "custom"),
 }
 
@@ -300,6 +305,7 @@ def capability_decision(
     looks_audio = _looks_audio(text, modality)
     looks_image = _looks_image(text, modality)
     looks_tabular = _looks_tabular(text, modality)
+    looks_time_series = _looks_time_series(text, modality)
     looks_text = _looks_text(text, modality)
     explicit_custom_intent = _contains_any(
         text,
@@ -446,7 +452,7 @@ def capability_decision(
         "forecasting",
         "forecast",
     ) or (
-        _contains_any(text, "预测", "预估") and _looks_time_series(text, modality)
+        _contains_any(text, "预测", "预估") and looks_time_series
     )
     if forecasting_intent:
         strong_families.add("time_series_forecasting")
@@ -502,6 +508,18 @@ def capability_decision(
             explicit_family,
             strong_families,
         ):
+            if (
+                explicit_family == "tabular_regression"
+                and "time_series_forecasting" in strong_families
+            ):
+                return _clarification(
+                    sorted(
+                        {explicit_family, *strong_families, "custom"},
+                        key=_family_sort_key,
+                    ),
+                    "时序预测和普通表格回归的数据切分方式不同",
+                    [*reason_codes, "explicit_family_conflicts_with_text"],
+                )
             reason_codes.append("explicit_family_overrides_ambiguous_text")
         return _resolved(
             explicit_family,
@@ -557,6 +575,12 @@ def capability_decision(
             list(MODALITY_CLARIFICATION_FAMILIES["image"]),
             "你希望图片模型输出类别、文字、目标位置、分割区域，还是其他明确结果？",
             [*reason_codes, "generic_image_task"],
+        )
+    if looks_time_series:
+        return _clarification(
+            list(MODALITY_CLARIFICATION_FAMILIES["time_series"]),
+            "你是想预测未来数值、发现序列中的异常，还是完成其他时序任务？",
+            [*reason_codes, "generic_time_series_task"],
         )
     if looks_tabular:
         return _clarification(
@@ -649,17 +673,25 @@ def _family_from_capability(modality: str, objective: str) -> str | None:
 def _family_compatible(explicit: str, inferred: set[str]) -> bool:
     if explicit in inferred:
         return True
-    groups = (
-        {
-            "classification",
-            "image_classification",
-            "audio_classification",
-            "text_classification",
-            "tabular_classification",
-        },
-        {"regression", "tabular_regression", "time_series_forecasting"},
-    )
-    return any(explicit in group and inferred <= group for group in groups)
+    classification_group = {
+        "classification",
+        "image_classification",
+        "audio_classification",
+        "text_classification",
+        "tabular_classification",
+    }
+    if explicit in classification_group and inferred <= classification_group:
+        return True
+    regression_group = {
+        "regression",
+        "tabular_regression",
+        "time_series_forecasting",
+    }
+    if explicit == "regression" and inferred <= regression_group:
+        return True
+    if inferred == {"regression"} and explicit in regression_group:
+        return True
+    return False
 
 
 def _resolved(

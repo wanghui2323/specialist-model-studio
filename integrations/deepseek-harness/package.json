@@ -1,6 +1,7 @@
 {
   "name": "specialist-model-studio-dsh-plugin",
-  "version": "0.9.0-rc.1",
+  "version": "1.0.0-rc.1",
+  "private": true,
   "description": "DeepSeek Harness tools for Specialist Model Studio",
   "type": "module",
   "main": "index.js",

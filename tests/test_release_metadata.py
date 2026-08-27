@@ -58,7 +58,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         project = metadata["project"]
 
-        self.assertEqual(project["version"], "0.9.0rc1")
+        self.assertEqual(project["version"], "1.0.0rc1")
         self.assertEqual(__version__, project["version"])
         self.assertEqual(
             importlib.metadata.version("specialist-model-studio"),
@@ -73,33 +73,36 @@ class ReleaseMetadataTests(unittest.TestCase):
             "model_harness.cli:main",
         )
 
-    def test_readme_describes_the_unreleased_rc_and_standalone_backend(self) -> None:
+    def test_readme_describes_the_unreleased_source_rc_and_product_start(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-        self.assertIn("`v0.9-universal-byom`", readme)
+        self.assertIn("`v1.0-conversation-native`", readme)
         self.assertIn("`unreleased_rc`", readme)
+        self.assertIn("uv run specialist-model-studio start", readme)
         self.assertIn("uv run specialist-model-studio serve", readme)
         self.assertIn("agent_required` 为 `false", readme)
         self.assertIn("只允许静态分析", readme)
+        self.assertIn("源码 RC", readme)
+        self.assertIn("wheel", readme)
         self.assertIn("不表示生产就绪", readme)
 
-    def test_v09_gate_contract_separates_review_rc_from_release(self) -> None:
+    def test_v10_gate_contract_separates_source_rc_from_public_release(self) -> None:
         gates = json.loads(
-            (ROOT / "acceptance" / "v0.9-gates.json").read_text(encoding="utf-8")
+            (ROOT / "acceptance" / "v1.0-gates.json").read_text(encoding="utf-8")
         )
 
-        self.assertEqual(gates["expected_package_version"], "0.9.0rc1")
-        self.assertEqual(gates["expected_api_version"], "0.9.0-rc.1")
+        self.assertEqual(gates["expected_package_version"], "1.0.0rc1")
+        self.assertEqual(gates["expected_api_version"], "1.0.0-rc.1")
+        self.assertEqual(gates["iteration"], "v1.0-conversation-native")
+        self.assertEqual(gates["distribution_kind"], "source_checkout_rc")
+        self.assertEqual(gates["wheel_scope"], "backend_only")
         self.assertEqual(gates["expected_product_name"], "Specialist Model Studio")
         self.assertEqual(gates["expected_distribution_name"], "specialist-model-studio")
         self.assertEqual(gates["canonical_console_script"], "specialist-model-studio")
         self.assertEqual(gates["compatibility_console_scripts"], ["small-model-harness"])
-        self.assertIn(
-            "blocked L3-L5 gates remain visible",
-            gates["aggregation_contract"]["reviewable_rc_condition"],
-        )
+        self.assertIn("remote detached clone", gates["aggregation_contract"]["public_rc_condition"])
         level_ids = {item["level_id"] for item in gates["levels"]}
-        self.assertEqual(level_ids, {"L0", "L1", "L2", "L3", "L4", "L5", "release"})
+        self.assertEqual(level_ids, {"L0", "L1", "L2", "L3", "L4", "L5", "L6", "release"})
         release_gate = next(
             item for item in gates["levels"] if item["level_id"] == "release"
         )
