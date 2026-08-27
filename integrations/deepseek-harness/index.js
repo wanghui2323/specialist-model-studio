@@ -1128,6 +1128,8 @@ const jsonOutput = {
 
 const SHA256 = /^[0-9a-f]{64}$/i;
 const COMMIT = /^[0-9a-f]{40}$/i;
+const BLOCKER_ID = /^blocker_[0-9a-f]{24}$/;
+const BLOCKER_EVIDENCE_SCHEMA_VERSION = "0.3";
 const UNSAFE_LABEL = /(?:^|\s)(?:\/Users\/|\/home\/|\/var\/|[A-Za-z]:[\\/])|authorization\s*:|bearer\s+|(?:hf|ghp|github_pat)_[A-Za-z0-9_-]{8,}|token\s*[=:]/i;
 
 function safeObjectRefLabel(value, type) {
@@ -1320,6 +1322,48 @@ function repositoryAnalysisRefs(envelope, taskId) {
   ];
 }
 
+function taskBlockerRefs(envelope, taskId) {
+  const task = envelope?.task || envelope;
+  if (!task || typeof task !== "object") {
+    throw new Error("TrainingTask returned an invalid canonical identity");
+  }
+  if (
+    typeof taskId !== "string"
+    || !taskId
+    || taskId !== taskId.trim()
+    || task?.task_id !== taskId
+  ) {
+    throw new Error("TrainingTask returned an invalid canonical identity");
+  }
+  if (task.blockers === undefined) return [];
+  if (!Array.isArray(task.blockers)) {
+    throw new Error("TrainingTask returned invalid blockers");
+  }
+  return task.blockers.map((blocker) => {
+    if (blocker?.task_id !== taskId) {
+      throw new Error("BlockerEvidence returned an invalid canonical identity");
+    }
+    if (
+      blocker?.schema_version !== BLOCKER_EVIDENCE_SCHEMA_VERSION
+      || blocker?.object_type !== "BlockerEvidence"
+      || typeof blocker?.blocker_id !== "string"
+      || !BLOCKER_ID.test(blocker.blocker_id)
+      || blocker?.blocker_evidence_id !== blocker.blocker_id
+      || typeof blocker?.content_digest !== "string"
+      || !SHA256.test(blocker.content_digest)
+      || blocker.content_digest !== blocker.content_digest.toLowerCase()
+    ) {
+      throw new Error("blocker returned an invalid canonical identity");
+    }
+    return canonicalObjectRef("blocker", taskId, {
+      id: blocker.blocker_id,
+      task_id: blocker.task_id,
+      digest: blocker.content_digest,
+      label: `阻塞证据 · ${blocker.code || blocker.blocker_id}`,
+    });
+  });
+}
+
 function resourceFeasibilityRefs(envelope, taskId) {
   const record = envelope?.resource_feasibility || envelope;
   if (!record) return [];
@@ -1505,7 +1549,11 @@ Never use the teaching digit run as a substitute for a user's OCR, speech, forec
       presentCall: (args) => ({ card: "generic", title: `Create training task: ${args.name}`, rawInput: args.business_goal }),
       async execute(args, exec) {
         const result = await client.createTask(args.name, args.business_goal, exec.signal);
-        return { ...result, workbench_url: client.workbenchUrl(result.task.task_id) };
+        return withObjectRefs(
+          { ...result, workbench_url: client.workbenchUrl(result.task.task_id) },
+          taskBlockerRefs(result, result.task.task_id),
+          result.task.task_id,
+        );
       },
     }),
   );
@@ -1530,7 +1578,11 @@ Never use the teaching digit run as a substitute for a user's OCR, speech, forec
           businessGoal: args.business_goal,
           userNote: args.user_note,
         }, exec.signal);
-        return { ...result, workbench_url: client.workbenchUrl(args.task_id) };
+        return withObjectRefs(
+          { ...result, workbench_url: client.workbenchUrl(args.task_id) },
+          taskBlockerRefs(result, args.task_id),
+          args.task_id,
+        );
       },
     }),
   );
@@ -1547,7 +1599,11 @@ Never use the teaching digit run as a substitute for a user's OCR, speech, forec
       presentCall: (args) => ({ card: "generic", title: `Inspect training task ${args.task_id}` }),
       async execute(args, exec) {
         const result = await client.getTask(args.task_id, exec.signal);
-        return { ...result, workbench_url: client.workbenchUrl(args.task_id) };
+        return withObjectRefs(
+          { ...result, workbench_url: client.workbenchUrl(args.task_id) },
+          taskBlockerRefs(result, args.task_id),
+          args.task_id,
+        );
       },
     }),
   );
@@ -1570,7 +1626,11 @@ Never use the teaching digit run as a substitute for a user's OCR, speech, forec
           businessGoal: args.business_goal,
           userNote: args.user_note,
         }, exec.signal);
-        return { ...result, workbench_url: client.workbenchUrl(args.task_id) };
+        return withObjectRefs(
+          { ...result, workbench_url: client.workbenchUrl(args.task_id) },
+          taskBlockerRefs(result, args.task_id),
+          args.task_id,
+        );
       },
     }),
   );

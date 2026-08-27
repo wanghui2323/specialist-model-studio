@@ -2166,7 +2166,24 @@ function actionResultSummary(action, payload) {
   }
   const answers = Array.isArray(result?.answers) ? result.answers.flatMap((answer) => [...(Array.isArray(answer.selected) ? answer.selected : []), ...(answer.custom ? [answer.custom] : [])]).filter(Boolean) : [];
   if (answers.length) return { state: "completed", text: `已记录你的选择：${answers.join("、")}` };
-  const collections = [[result?.matches, "能力匹配"], [result?.recipes, "训练方案"], [result?.adapters, "数据适配器"], [result?.candidates, "候选模型"]];
+  if (action?.tool_name === "model_harness_match_capability" && Array.isArray(result?.matches)) {
+    return {
+      state: result.matches.length ? "completed" : "completed_empty",
+      text: result.matches.length
+        ? `能力匹配返回 ${result.matches.length} 项结果`
+        : "能力匹配已完成：当前没有匹配项。这是能力边界，不是系统故障。",
+    };
+  }
+  const searchResult = result?.search && typeof result.search === "object" ? result.search : result;
+  if (Array.isArray(searchResult?.candidates)) {
+    const providerErrors = Array.isArray(searchResult?.provider_errors) ? searchResult.provider_errors : [];
+    if (!searchResult.candidates.length && providerErrors.length) {
+      return { state: "failed", text: `候选模型搜索未返回结果；${providerErrors.length} 个模型来源失败，请查看完整结果后重试` };
+    }
+    const partialFailureText = providerErrors.length ? `；${providerErrors.length} 个模型来源部分失败，请查看完整结果` : "";
+    return { state: "completed", text: `候选模型返回 ${searchResult.candidates.length} 项结果${partialFailureText}` };
+  }
+  const collections = [[result?.matches, "能力匹配"], [result?.recipes, "训练方案"], [result?.adapters, "数据适配器"]];
   const collection = collections.find(([items]) => Array.isArray(items));
   if (collection) return { state: "completed", text: `${collection[1]}返回 ${collection[0].length} 项结果` };
   if (typeof result === "string" && result) return { state: "completed", text: result.replace(/\s+/g, " ").slice(0, 220) };
@@ -2198,9 +2215,9 @@ function hydrateActionTimelineResults(section, actions) {
 function renderRecoveredActionRow(action, target) {
   const row = document.createElement("article"); row.className = "agent-action"; row.dataset.status = "completed"; row.dataset.toolClass = action.tool_class; row.dataset.actionId = action.action_id || "identity-error"; row.dataset.recoveredFailure = "true";
   const mark = document.createElement("i"); mark.setAttribute("aria-hidden", "true"); mark.textContent = "✓";
-  const copy = document.createElement("div"); const meta = document.createElement("span"); meta.className = "agent-action-meta"; const role = document.createElement("b"); role.textContent = roleLabel(action.actor_role); const timing = document.createElement("small"); timing.textContent = "后续执行已恢复"; meta.append(role, timing); const title = document.createElement("h4"); title.textContent = actionTitle(action); copy.append(meta, title);
-  const evidence = document.createElement("details"); evidence.className = "recovered-action-evidence"; evidence.dataset.originalStatus = action.status; evidence.dataset.actionId = action.action_id || "identity-error"; const summary = document.createElement("summary"); summary.textContent = "查看当时的技术问题"; const error = document.createElement("p"); error.className = "agent-action-error"; error.textContent = action.error?.message || action.error?.code || "当时的执行失败没有返回可读原因。"; evidence.append(summary, error); const refs = document.createElement("div"); refs.className = "agent-action-evidence"; appendObjectRefs(refs, action.object_refs || []); if (action.event_result_ref) { const button = document.createElement("button"); button.type = "button"; button.textContent = "技术详情"; button.addEventListener("click", () => openEventResultRef(action.event_result_ref)); refs.append(button); } if (refs.childElementCount) evidence.append(refs); copy.append(evidence);
-  const status = document.createElement("em"); status.textContent = "已恢复"; row.append(mark, copy, status); target.append(row);
+  const copy = document.createElement("div"); const meta = document.createElement("span"); meta.className = "agent-action-meta"; const role = document.createElement("b"); role.textContent = roleLabel(action.actor_role); const timing = document.createElement("small"); timing.textContent = "已由后续正确调用完成"; meta.append(role, timing); const title = document.createElement("h4"); title.textContent = actionTitle(action); copy.append(meta, title);
+  const evidence = document.createElement("details"); evidence.className = "recovered-action-evidence"; evidence.dataset.originalStatus = action.status; evidence.dataset.actionId = action.action_id || "identity-error"; const summary = document.createElement("summary"); summary.textContent = "查看初次调用记录"; const error = document.createElement("p"); error.className = "agent-action-error"; error.textContent = action.error?.message || action.error?.code || "初次调用没有完成，后续已由正确角色重新执行。"; evidence.append(summary, error); const refs = document.createElement("div"); refs.className = "agent-action-evidence"; appendObjectRefs(refs, action.object_refs || []); if (action.event_result_ref) { const button = document.createElement("button"); button.type = "button"; button.textContent = "技术详情"; button.addEventListener("click", () => openEventResultRef(action.event_result_ref)); refs.append(button); } if (refs.childElementCount) evidence.append(refs); copy.append(evidence);
+  const status = document.createElement("em"); status.textContent = "已处理"; row.append(mark, copy, status); target.append(row);
 }
 function renderActionRow(action, target, { waitingForHuman = false, recovered = false } = {}) {
   if (recovered) { renderRecoveredActionRow(action, target); return; }
@@ -2423,7 +2440,8 @@ function renderCoordinatorPlan(item, target = ui.messageList) {
 }
 function renderCoordinatorProgress(item, target = ui.messageList) {
   const details = document.createElement("details"); details.className = "coordinator-progress"; details.dataset.status = item.status; details.dataset.interactionKind = "lightweight-plan"; details.dataset.truthConflict = String(Boolean(item.truthConflict));
-  const summary = document.createElement("summary"); const copy = document.createElement("span"); const label = document.createElement("b"); label.textContent = item.truthConflict ? "状态说明已降级" : "当前计划"; const hint = document.createElement("small"); hint.textContent = item.truthConflict ? `与“${item.failedActionTitle || "失败工具"}”的真实证据冲突` : item.title || "正在梳理下一步"; copy.append(label, hint); const stateLabel = document.createElement("em"); stateLabel.textContent = item.truthConflict ? "不作为状态" : "展开"; summary.append(copy, stateLabel); details.append(summary);
+  const completed = item.status === "completed";
+  const summary = document.createElement("summary"); const copy = document.createElement("span"); const label = document.createElement("b"); label.textContent = item.truthConflict ? "状态说明已降级" : completed ? "本轮计划" : "当前计划"; const hint = document.createElement("small"); hint.textContent = item.truthConflict ? `与“${item.failedActionTitle || "失败工具"}”的真实证据冲突` : completed ? "已全部完成" : item.title || "正在梳理下一步"; copy.append(label, hint); const stateLabel = document.createElement("em"); stateLabel.textContent = item.truthConflict ? "不作为状态" : completed ? "查看" : "展开"; summary.append(copy, stateLabel); details.append(summary);
   const body = document.createElement("div"); body.className = "coordinator-progress-body"; if (item.truthConflict) { const warning = document.createElement("p"); warning.className = "coordinator-conflict-note"; warning.textContent = "下面是协调器当时的过程说明。系统已经检测到同轮工具失败，因此不会把其中的“已启动”或“正在运行”当作任务真相。"; body.append(warning); } const content = document.createElement("div"); renderRichText(content, item.summary || "协调器没有提供补充说明。"); body.append(content); appendObjectRefs(body, item.object_refs); details.append(body); target.append(details);
 }
 function teamEventTitle(item) {

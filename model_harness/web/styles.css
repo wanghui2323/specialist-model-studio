@@ -537,3 +537,7 @@ body[data-view="home"] .topbar-title>div{display:none}
 
 /* Regression gate units and recommendation rationale stay visible at review time. */
 .gate-grid .gate-basis{grid-column:1/-1;margin:3px 1px 0;padding:0;color:var(--muted);font-size:11px;line-height:1.55;text-align:left}
+
+/* Keep the data attachment affordance touch-safe without making its label compete with the prompt. */
+#datasetButton .attachment-label{font-size:12px;font-weight:500}
+@media(max-width:720px){#datasetButton.attachment-button{min-width:44px;min-height:44px;justify-content:center;padding:0 9px}}

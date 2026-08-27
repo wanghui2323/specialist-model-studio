@@ -4,6 +4,7 @@ import hashlib
 import base64
 import binascii
 import io
+import json
 import os
 import re
 import shutil
@@ -19,7 +20,7 @@ from uuid import uuid4
 
 from PIL import Image, UnidentifiedImageError
 
-from .blockers import BlockerStore
+from .blockers import BlockerStore, verify_recipe_unavailable_evidence
 from .feasibility_store import FeasibilityStore
 from .environment_resolver import resolve_environment_dependencies
 from .contracts import (
@@ -116,6 +117,19 @@ _MODEL_SEARCH_TERMS = {
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _canonical_digest(value: Mapping[str, Any]) -> str:
+    """Return a stable digest for one JSON evidence snapshot."""
+
+    encoded = json.dumps(
+        dict(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _model_search_plan(
@@ -518,6 +532,12 @@ class TrainingWorkspace:
         capability_status = decision_status
         if recipe_id:
             plugin = self.runs.registry.get_recipe(recipe_id)
+            if (
+                decision_status == "resolved"
+                and recipe_id
+                not in self._eligible_recipe_ids_for_capability(capability)
+            ):
+                raise ContractError("所选Recipe与已确认的原始能力规格不匹配")
             selected_recipe = plugin.manifest.plugin_id
             capability = self._capability_for_recipe(plugin, capability)
             spec = build_task_spec_revision(
@@ -588,9 +608,10 @@ class TrainingWorkspace:
             write_json(self._task_path(task_id), task)
             write_json(self._spec_revision_path(task_id, 1), spec)
             if capability_status == "needs_recipe":
-                write_json(
-                    self._recipe_request_path(task_id),
-                    self._new_recipe_request(task_id, capability),
+                self._persist_missing_recipe_evidence(
+                    task_id,
+                    capability,
+                    task_spec=spec,
                 )
         return self.get_task(task_id)
 
@@ -3272,20 +3293,33 @@ class TrainingWorkspace:
             if task["status"] == "running":
                 raise HarnessError("运行中不能更换Recipe")
             plugin = self.runs.registry.get_recipe(recipe_id)
+            current_spec = self._ensure_spec_revision(task)
+            original_capability = deepcopy(
+                current_spec.get("capability_request", {})
+            )
+            if recipe_id not in self._eligible_recipe_ids_for_capability(
+                original_capability
+            ):
+                raise ContractError("所选Recipe与已确认的原始能力规格不匹配")
             if task.get("data_adapter_id") and plugin.manifest.data_adapter != task["data_adapter_id"]:
                 raise ContractError("所选Recipe与当前数据适配器不兼容")
-            self._append_spec_for_recipe(task, plugin, "recipe_selected")
             task["recipe_id"] = recipe_id
             task["recipe_source"] = "explicit"
             task["capability_status"] = "matched"
             task["status"] = "data_ready" if task.get("dataset_id") else "awaiting_data"
             task["updated_at_utc"] = _utc_now()
+            self._resolve_missing_recipe_evidence(
+                task_id,
+                action="verified_recipe_selected",
+                recipe_id=recipe_id,
+            )
             request_path = self._recipe_request_path(task_id)
             if request_path.is_file():
                 request = read_json(request_path)
                 request["status"] = "resolved"
                 request["resolved_recipe_id"] = recipe_id
                 request["resolved_at_utc"] = _utc_now()
+                request["updated_at_utc"] = request["resolved_at_utc"]
                 write_json(request_path, request)
             write_json(self._task_path(task_id), task)
         return self.get_task(task_id)
@@ -3334,8 +3368,11 @@ class TrainingWorkspace:
                 }
                 matches = self.runs.registry.match_recipes(capability)
                 if not matches:
-                    request = self._new_recipe_request(task_id, capability)
-                    write_json(self._recipe_request_path(task_id), request)
+                    self._persist_missing_recipe_evidence(
+                        task_id,
+                        capability,
+                        task_spec=self._ensure_spec_revision(task),
+                    )
                     task["capability_status"] = "needs_recipe"
                     task["status"] = "needs_recipe"
                     task["updated_at_utc"] = _utc_now()
@@ -3402,6 +3439,11 @@ class TrainingWorkspace:
             task["recipe_id"] = recipe_id
             task["recipe_source"] = task.get("recipe_source") or "matched-from-data"
             task["capability_status"] = "matched"
+            self._resolve_missing_recipe_evidence(
+                task_id,
+                action="verified_recipe_matched_from_data",
+                recipe_id=str(recipe_id),
+            )
             task["data_adapter_id"] = adapter.manifest.adapter_id
             task["contract_confirmed"] = False
             task["confirmations"] = {}
@@ -5408,12 +5450,10 @@ class TrainingWorkspace:
         task["selected_model_asset_id"] = None
         task["model_asset_binding"] = None
         task["updated_at_utc"] = _utc_now()
-        write_json(
-            self._recipe_request_path(str(task["task_id"])),
-            self._new_recipe_request(
-                str(task["task_id"]),
-                deepcopy(task.get("capability_request", {})),
-            ),
+        self._persist_missing_recipe_evidence(
+            str(task["task_id"]),
+            deepcopy(task.get("capability_request", {})),
+            task_spec=self._ensure_spec_revision(task),
         )
 
     @staticmethod
@@ -5785,6 +5825,7 @@ class TrainingWorkspace:
         if spec["revision_id"] not in revision_ids:
             revision_ids.append(spec["revision_id"])
         task["spec_revision_ids"] = revision_ids
+        self._resolve_superseded_recipe_evidence(task["task_id"], spec)
         self._supersede_stale_assets(
             task["task_id"],
             int(spec["revision"]),
@@ -5868,11 +5909,17 @@ class TrainingWorkspace:
             task["status"] = "needs_confirmation"
         elif not selected_recipe:
             task["status"] = "needs_recipe"
-            write_json(
-                self._recipe_request_path(task["task_id"]),
-                self._new_recipe_request(task["task_id"], spec["capability_request"]),
+            self._persist_missing_recipe_evidence(
+                task["task_id"],
+                spec["capability_request"],
+                task_spec=spec,
             )
         elif task.get("dataset_id"):
+            self._resolve_missing_recipe_evidence(
+                task["task_id"],
+                action="verified_recipe_matched_from_spec",
+                recipe_id=str(selected_recipe),
+            )
             task["status"] = "data_ready"
             contract_path = self._contract_path(task["task_id"])
             if contract_path.is_file():
@@ -5884,13 +5931,42 @@ class TrainingWorkspace:
                 self._record_contract_revision(task, contract)
                 task["contract_stale"] = False
         else:
+            self._resolve_missing_recipe_evidence(
+                task["task_id"],
+                action="verified_recipe_matched_from_spec",
+                recipe_id=str(selected_recipe),
+            )
             task["status"] = "awaiting_data"
 
     def _select_recipe_for_capability(
         self,
         capability: dict[str, Any],
     ) -> str | None:
-        matches = self.runs.registry.match_recipes(capability)
+        matches = self._eligible_recipe_matches_for_capability(capability)
+        if not matches:
+            return None
+        if len(matches) > 1 and int(matches[0]["score"]) == int(matches[1]["score"]):
+            return None
+        return str(matches[0]["plugin_id"])
+
+    def _eligible_recipe_matches_for_capability(
+        self,
+        capability: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Return registered Recipes eligible for the original capability.
+
+        Registry membership is the verified boundary. Teaching/reference
+        Recipes remain opt-in and cannot satisfy an ordinary production task.
+        """
+
+        match_capability = deepcopy(capability)
+        family = normalize_family(match_capability.get("family"))
+        if family is not None:
+            match_capability = capability_for_family(
+                family,
+                match_capability,
+            )
+        matches = self.runs.registry.match_recipes(match_capability)
         requested_tags = {
             str(value).strip().lower()
             for value in capability.get("tags", [])
@@ -5908,12 +5984,18 @@ class TrainingWorkspace:
             if production_matches:
                 matches = production_matches
             elif matches:
-                return None
-        if not matches:
-            return None
-        if len(matches) > 1 and int(matches[0]["score"]) == int(matches[1]["score"]):
-            return None
-        return str(matches[0]["plugin_id"])
+                return []
+        return matches
+
+    def _eligible_recipe_ids_for_capability(
+        self,
+        capability: dict[str, Any],
+    ) -> set[str]:
+        return {
+            str(match["plugin_id"])
+            for match in self._eligible_recipe_matches_for_capability(capability)
+            if match.get("plugin_id")
+        }
 
     @staticmethod
     def _capability_for_recipe(
@@ -6241,10 +6323,34 @@ class TrainingWorkspace:
                 ),
             }
         if task.get("capability_status") == "needs_recipe":
+            capability_gap = next(
+                (
+                    item
+                    for item in task.get("blockers", [])
+                    if item.get("active") is not False
+                    and item.get("stage") == "build"
+                    and item.get("code") == "recipe_unavailable"
+                ),
+                None,
+            )
             blocked_by.append(
                 {
                     "code": "verified_recipe_unavailable",
-                    "message": "当前没有与规格匹配且通过验证的 Recipe",
+                    "message": (
+                        str(capability_gap["message"])
+                        if capability_gap is not None
+                        else "当前没有与规格匹配且通过验证的 Recipe"
+                    ),
+                    **(
+                        {
+                            "blocker_id": str(capability_gap["blocker_id"]),
+                            "blocker_digest": str(
+                                capability_gap["content_digest"]
+                            ),
+                        }
+                        if capability_gap is not None
+                        else {}
+                    ),
                 }
             )
             if decision.get("selected_family") == "audio_classification":
@@ -6430,17 +6536,29 @@ class TrainingWorkspace:
             result["constraints"] = deepcopy(constraints)
         return result
 
-    def _new_recipe_request(self, task_id: str, capability: dict[str, Any]) -> dict[str, Any]:
+    def _new_recipe_request(
+        self,
+        task_id: str,
+        capability: dict[str, Any],
+        *,
+        task_spec: dict[str, Any],
+    ) -> dict[str, Any]:
         now = _utc_now()
         modality = str(capability.get("modality", "specialist"))
         objective = str(capability.get("objective", "training"))
+        task_spec_digest = _canonical_digest(task_spec)
         return {
-            "schema_version": "0.1",
+            "schema_version": "0.2",
             "recipe_request_id": f"recipe-request-{uuid4().hex[:10]}",
             "task_id": task_id,
+            "task_spec_revision_id": task_spec["revision_id"],
+            "task_spec_revision_digest": task_spec_digest,
             "status": "needs_implementation",
             "suggested_plugin_id": _safe_slug(f"{modality}-{objective}", "custom-recipe"),
             "capability_request": deepcopy(capability),
+            "original_capability_request": deepcopy(
+                task_spec.get("capability_request", {})
+            ),
             "required_outputs": [
                 "RecipeManifest与合同模板",
                 "数据适配器或已验证的现有Adapter绑定",
@@ -6451,6 +6569,212 @@ class TrainingWorkspace:
             "created_at_utc": now,
             "updated_at_utc": now,
         }
+
+    def _persist_missing_recipe_evidence(
+        self,
+        task_id: str,
+        capability: dict[str, Any],
+        *,
+        task_spec: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Persist one Recipe request and its task-owned capability-gap fact.
+
+        ``needs_recipe`` is an honest product boundary, not a failed Run.  The
+        request remains the mutable recovery object while BlockerEvidence
+        seals the exact request snapshot that caused training to stay closed.
+        """
+
+        task_spec_snapshot = deepcopy(task_spec)
+        if task_spec_snapshot.get("task_id") != task_id:
+            raise ContractError("TaskSpecRevision不属于当前任务")
+        task_spec_digest = _canonical_digest(task_spec_snapshot)
+        self._resolve_superseded_recipe_evidence(task_id, task_spec_snapshot)
+        for existing in self.blocker_store.list(task_id, active_only=True):
+            if existing.get("code") != "recipe_unavailable":
+                continue
+            verified = verify_recipe_unavailable_evidence(
+                existing,
+                allow_active_projection=True,
+            )
+            if (
+                verified["facts"].get("task_spec_revision_id")
+                == task_spec_snapshot.get("revision_id")
+                and verified["facts"].get("task_spec_revision_digest")
+                == task_spec_digest
+            ):
+                return (
+                    deepcopy(
+                        verified["facts"]["recipe_build_request_snapshot"]
+                    ),
+                    verified,
+                )
+
+        request = self._new_recipe_request(
+            task_id,
+            capability,
+            task_spec=task_spec_snapshot,
+        )
+        write_json(self._recipe_request_path(task_id), request)
+        request_digest = _canonical_digest(request)
+        registered_recipe_ids = self.runs.registry.recipe_ids()
+        matches = self._eligible_recipe_matches_for_capability(
+            task_spec_snapshot.get("capability_request", {})
+        )
+        blocker = self.blocker_store.append(
+            task_id,
+            stage="build",
+            code="recipe_unavailable",
+            message=(
+                "当前任务规格没有匹配且已验证的训练 Recipe；真实训练保持关闭，"
+                "可继续查找模型来源或构建并注册新能力。"
+            ),
+            retry_action="review_capability_gap",
+            related_object_type="RecipeBuildRequest",
+            related_object_id=str(request["recipe_request_id"]),
+            related_object_digest=request_digest,
+            details={
+                "reason_code": "verified_recipe_unavailable",
+                "recipe_request_id": request["recipe_request_id"],
+                "recipe_request_digest": request_digest,
+                "task_spec_revision_id": task_spec_snapshot["revision_id"],
+                "task_spec_revision_digest": task_spec_digest,
+            },
+            detector="model_harness.workspace.recipe_registry_match@1.0",
+            facts={
+                "original_capability_request": deepcopy(
+                    task_spec_snapshot.get("capability_request", {})
+                ),
+                "requested_capability_request": deepcopy(capability),
+                "task_spec_revision_id": task_spec_snapshot["revision_id"],
+                "task_spec_revision_digest": task_spec_digest,
+                "task_spec_revision_snapshot": task_spec_snapshot,
+                "recipe_build_request_digest": request_digest,
+                "recipe_build_request_snapshot": deepcopy(request),
+                "registered_recipe_ids": registered_recipe_ids,
+                "matched_recipe_ids": [
+                    str(item["plugin_id"])
+                    for item in matches
+                    if item.get("plugin_id")
+                ],
+            },
+            rule={
+                "requires_verified_recipe": True,
+                "matched_recipe_count": len(matches),
+                "run_creation_allowed": False,
+            },
+            evidence_refs=[
+                f"/tasks/{task_id}",
+                (
+                    f"/tasks/{task_id}/spec/revisions/"
+                    f"{int(task_spec_snapshot['revision'])}"
+                ),
+                "/recipes",
+                "/data-adapters",
+            ],
+            recovery_actions=[
+                "search_model_sources",
+                "build_and_register_recipe",
+                "select_verified_recipe",
+            ],
+            retryable=True,
+        )
+        return request, blocker
+
+    def _resolve_superseded_recipe_evidence(
+        self,
+        task_id: str,
+        task_spec: dict[str, Any],
+    ) -> None:
+        """Close an old capability gap only because its TaskSpec was replaced."""
+
+        selected_digest = _canonical_digest(task_spec)
+        selected_revision_id = str(task_spec.get("revision_id") or "")
+        for blocker in self.blocker_store.list(task_id, active_only=True):
+            is_legacy_gap = (
+                blocker.get("code") == "qualification_failed"
+                and (blocker.get("details") or {}).get("reason_code")
+                == "verified_recipe_unavailable"
+            )
+            if blocker.get("code") == "recipe_unavailable":
+                verified = verify_recipe_unavailable_evidence(
+                    blocker,
+                    allow_active_projection=True,
+                )
+                same_revision = (
+                    verified["facts"].get("task_spec_revision_id")
+                    == selected_revision_id
+                    and verified["facts"].get("task_spec_revision_digest")
+                    == selected_digest
+                )
+                if same_revision:
+                    continue
+            elif not is_legacy_gap:
+                continue
+            self.blocker_store.resolve(
+                task_id,
+                str(blocker["blocker_id"]),
+                action="task_spec_superseded",
+                related_object_type="TaskSpecRevision",
+            )
+
+    def _resolve_missing_recipe_evidence(
+        self,
+        task_id: str,
+        *,
+        action: str,
+        recipe_id: str,
+    ) -> list[dict[str, Any]]:
+        """Resolve a gap only after matching the Recipe to its original spec."""
+
+        active_recipe_blockers = [
+            blocker
+            for blocker in self.blocker_store.list(task_id, active_only=True)
+            if blocker.get("code") == "recipe_unavailable"
+        ]
+        if not active_recipe_blockers:
+            return []
+        task = read_json(self._task_path(task_id))
+        current_spec = self._ensure_spec_revision(task)
+        self.runs.registry.get_recipe(recipe_id)
+        if recipe_id not in self._eligible_recipe_ids_for_capability(
+            deepcopy(current_spec.get("capability_request", {}))
+        ):
+            raise ContractError("所选Recipe与已确认的原始能力规格不匹配")
+        self._resolve_superseded_recipe_evidence(task_id, current_spec)
+        current_spec_digest = _canonical_digest(current_spec)
+        resolutions: list[dict[str, Any]] = []
+        for blocker in active_recipe_blockers:
+            verified = verify_recipe_unavailable_evidence(
+                blocker,
+                allow_active_projection=True,
+            )
+            facts = verified["facts"]
+            if (
+                facts.get("task_spec_revision_id")
+                != current_spec.get("revision_id")
+                or facts.get("task_spec_revision_digest")
+                != current_spec_digest
+            ):
+                continue
+            original_capability = deepcopy(
+                facts.get("original_capability_request", {})
+            )
+            if recipe_id not in self._eligible_recipe_ids_for_capability(
+                original_capability
+            ):
+                raise ContractError(
+                    "所选Recipe不能证明满足产生该Blocker的原始能力规格"
+                )
+            resolutions.append(
+                self.blocker_store.resolve(
+                    task_id,
+                    str(verified["blocker_id"]),
+                    action=action,
+                    related_object_type="RecipePlugin",
+                    related_object_id=recipe_id,
+                )
+            )
+        return resolutions
 
     def _register_audio_runtime(self) -> None:
         """Register only the audited in-process audio implementation."""
@@ -6563,6 +6887,11 @@ class TrainingWorkspace:
                 }
             )
             write_json(request_path, request)
+        self._resolve_missing_recipe_evidence(
+            task_id,
+            action="verified_recipe_registered",
+            recipe_id=str(task["recipe_id"]),
+        )
         write_json(self._task_path(task_id), task)
 
     def _recipe_build_view(self, attempt: dict[str, Any]) -> dict[str, Any]:

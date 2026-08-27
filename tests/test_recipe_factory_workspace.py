@@ -10,6 +10,7 @@ except ImportError:  # pragma: no cover
     TestClient = None  # type: ignore[assignment]
 
 from model_harness.runner import verify_run
+from model_harness.blockers import verify_recipe_unavailable_evidence
 from model_harness.server import create_app
 from tests.contract_confirmation import contract_confirmation_payload
 from tests.run_authorization import AGENT_BRIDGE_HEADERS, start_authorized_task_run
@@ -35,6 +36,21 @@ class RecipeFactoryWorkspaceTests(unittest.TestCase):
                 task = created.json()["task"]
                 task_id = task["task_id"]
                 self.assertEqual(task["status"], "needs_recipe")
+                self.assertEqual(
+                    [item["code"] for item in task["blockers"]],
+                    ["recipe_unavailable"],
+                )
+                capability_blocker = task["blockers"][0]
+                verify_recipe_unavailable_evidence(
+                    capability_blocker,
+                    allow_active_projection=True,
+                )
+                historical_request_digest = capability_blocker["facts"][
+                    "recipe_build_request_digest"
+                ]
+                historical_spec_digest = capability_blocker["facts"][
+                    "task_spec_revision_digest"
+                ]
                 self.assertNotIn(
                     "audio-keyword-classification",
                     app.state.run_service.registry.recipe_ids(),
@@ -144,6 +160,29 @@ class RecipeFactoryWorkspaceTests(unittest.TestCase):
                 self.assertEqual(task["task_id"], task_id)
                 self.assertEqual(task["status"], "awaiting_data")
                 self.assertEqual(task["recipe_id"], "audio-keyword-classification")
+                self.assertEqual(task["blockers"], [])
+                self.assertEqual(task["recipe_request"]["status"], "resolved")
+                historical = client.get(
+                    f"/tasks/{task_id}/blockers/"
+                    f"{capability_blocker['blocker_id']}"
+                )
+                self.assertEqual(historical.status_code, 200, historical.text)
+                historical_blocker = historical.json()["blocker"]
+                verify_recipe_unavailable_evidence(historical_blocker)
+                self.assertEqual(
+                    historical_blocker["facts"]["recipe_build_request_digest"],
+                    historical_request_digest,
+                )
+                self.assertEqual(
+                    historical_blocker["facts"]["task_spec_revision_digest"],
+                    historical_spec_digest,
+                )
+                self.assertEqual(
+                    historical_blocker["facts"]["recipe_build_request_snapshot"][
+                        "status"
+                    ],
+                    "needs_implementation",
+                )
                 self.assertTrue(task["recipe_version_id"].startswith("recipe-version-"))
                 self.assertIn(
                     "audio-keyword-classification",

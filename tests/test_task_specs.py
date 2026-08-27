@@ -10,6 +10,10 @@ except ImportError:  # pragma: no cover
     TestClient = None  # type: ignore[assignment]
 
 from model_harness.server import create_app
+from model_harness.blockers import (
+    verify_blocker_evidence,
+    verify_recipe_unavailable_evidence,
+)
 from model_harness.io_utils import read_json, write_json
 from model_harness.task_specs import (
     TASK_FAMILY_VALUES,
@@ -730,6 +734,119 @@ class TaskSpecRevisionTests(unittest.TestCase):
                         "modality": "audio",
                         "objective": "speech_recognition",
                     },
+                )
+                self.assertEqual(len(unsupported["blockers"]), 1)
+                blocker = unsupported["blockers"][0]
+                verify_blocker_evidence(
+                    blocker,
+                    allow_active_projection=True,
+                )
+                self.assertTrue(blocker["active"])
+                self.assertEqual(blocker["task_id"], asr_task["task_id"])
+                self.assertEqual(blocker["stage"], "build")
+                self.assertEqual(blocker["code"], "recipe_unavailable")
+                self.assertEqual(
+                    blocker["details"]["reason_code"],
+                    "verified_recipe_unavailable",
+                )
+                self.assertEqual(
+                    blocker["related_object_type"],
+                    "RecipeBuildRequest",
+                )
+                self.assertEqual(
+                    blocker["related_object_id"],
+                    unsupported["recipe_request"]["recipe_request_id"],
+                )
+                self.assertEqual(
+                    blocker["related_object_digest"],
+                    blocker["details"]["recipe_request_digest"],
+                )
+                verify_recipe_unavailable_evidence(
+                    blocker,
+                    allow_active_projection=True,
+                )
+                self.assertEqual(
+                    blocker["facts"]["original_capability_request"],
+                    unsupported["capability_request"],
+                )
+                self.assertEqual(
+                    blocker["facts"]["task_spec_revision_id"],
+                    unsupported["task_spec"]["revision_id"],
+                )
+                self.assertEqual(
+                    blocker["facts"]["recipe_build_request_snapshot"],
+                    unsupported["recipe_request"],
+                )
+                self.assertEqual(blocker["facts"]["matched_recipe_ids"], [])
+                self.assertFalse(blocker["rule"]["run_creation_allowed"])
+                self.assertEqual(
+                    unsupported["control"]["blocked_by"][0]["blocker_id"],
+                    blocker["blocker_id"],
+                )
+                listed = client.get(
+                    f"/tasks/{asr_task['task_id']}/blockers?active_only=true"
+                )
+                self.assertEqual(listed.status_code, 200, listed.text)
+                self.assertEqual(
+                    listed.json()["blockers"][0]["content_digest"],
+                    blocker["content_digest"],
+                )
+
+                wrong_recipe = client.post(
+                    f"/tasks/{asr_task['task_id']}/recipe",
+                    json={"recipe_id": "image-folder-classification"},
+                )
+                self.assertEqual(wrong_recipe.status_code, 409, wrong_recipe.text)
+                after_wrong = client.get(
+                    f"/tasks/{asr_task['task_id']}"
+                ).json()["task"]
+                self.assertIsNone(after_wrong["recipe_id"])
+                self.assertEqual(
+                    after_wrong["recipe_request"]["status"],
+                    "needs_implementation",
+                )
+                self.assertEqual(
+                    [item["blocker_id"] for item in after_wrong["blockers"]],
+                    [blocker["blocker_id"]],
+                )
+
+                changed_family = client.patch(
+                    f"/tasks/{asr_task['task_id']}/spec",
+                    json={
+                        "base_revision": 2,
+                        "selected_family": "image_classification",
+                    },
+                )
+                self.assertEqual(
+                    changed_family.status_code,
+                    200,
+                    changed_family.text,
+                )
+                changed_task = changed_family.json()["task"]
+                self.assertEqual(
+                    changed_task["recipe_id"],
+                    "image-folder-classification",
+                )
+                self.assertEqual(changed_task["blockers"], [])
+                historical = client.get(
+                    f"/tasks/{asr_task['task_id']}/blockers/"
+                    f"{blocker['blocker_id']}"
+                )
+                self.assertEqual(historical.status_code, 200, historical.text)
+                verify_recipe_unavailable_evidence(historical.json()["blocker"])
+                resolution_paths = list(
+                    (
+                        app.state.training_workspace.root
+                        / "tasks"
+                        / asr_task["task_id"]
+                        / "blockers"
+                        / "resolutions"
+                    ).glob("*.json")
+                )
+                self.assertEqual(len(resolution_paths), 1)
+                self.assertEqual(
+                    read_json(resolution_paths[0])["action"],
+                    "task_spec_superseded",
                 )
 
                 tts_task = client.post(

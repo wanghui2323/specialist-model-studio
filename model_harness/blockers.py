@@ -16,8 +16,9 @@ from .io_utils import read_json, write_json
 
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")
-BLOCKER_EVIDENCE_SCHEMA_VERSION = "0.2"
+BLOCKER_EVIDENCE_SCHEMA_VERSION = "0.3"
 LEGACY_BLOCKER_SCHEMA_VERSION = "0.1"
+PREVIOUS_BLOCKER_SCHEMA_VERSION = "0.2"
 LEGACY_SUPERSEDED_ACTION = "superseded_by_v0.2_blocker"
 V02_SUPERSEDED_ACTION = "superseded_by_newer_v0.2_blocker"
 _OCCURRENCE_IDENTITY_KEY = "__blocker_store_identity_digest"
@@ -46,7 +47,12 @@ CANONICAL_BLOCKER_CODES = frozenset(
         "blocked_data",
         "blocked_repository",
         "qualification_failed",
+        "recipe_unavailable",
     }
+)
+V02_CANONICAL_BLOCKER_CODES = CANONICAL_BLOCKER_CODES - {"recipe_unavailable"}
+SUPPORTED_BLOCKER_SCHEMA_VERSIONS = frozenset(
+    {PREVIOUS_BLOCKER_SCHEMA_VERSION, BLOCKER_EVIDENCE_SCHEMA_VERSION}
 )
 _SEMANTIC_KEYS = (
     "task_id",
@@ -188,7 +194,8 @@ def verify_blocker_evidence(
     }
     if set(record) != required:
         raise ContractError("incomplete v0.9 blocker evidence")
-    if record["schema_version"] != BLOCKER_EVIDENCE_SCHEMA_VERSION:
+    schema_version = record["schema_version"]
+    if schema_version not in SUPPORTED_BLOCKER_SCHEMA_VERSIONS:
         raise ContractError("unsupported blocker evidence schema")
     if record["blocker_evidence_id"] != record["blocker_id"]:
         raise ContractError("blocker evidence id alias mismatch")
@@ -198,7 +205,12 @@ def verify_blocker_evidence(
         raise ContractError("BlockerEvidence must remain immutable")
     if record["stage"] not in BLOCKER_EVIDENCE_STAGES:
         raise ContractError("invalid blocker stage")
-    if record["code"] not in CANONICAL_BLOCKER_CODES:
+    allowed_codes = (
+        V02_CANONICAL_BLOCKER_CODES
+        if schema_version == PREVIOUS_BLOCKER_SCHEMA_VERSION
+        else CANONICAL_BLOCKER_CODES
+    )
+    if record["code"] not in allowed_codes:
         raise ContractError("non-canonical blocker code")
     _safe_id(record["blocker_id"], "blocker id")
     _safe_task_id(record["task_id"])
@@ -244,8 +256,107 @@ def verify_blocker_evidence(
 
 def _verified_blocker_record(value: Any) -> dict[str, Any]:
     record = _verified(value, "BlockerEvidence")
-    if record.get("schema_version") == BLOCKER_EVIDENCE_SCHEMA_VERSION:
+    if record.get("schema_version") in SUPPORTED_BLOCKER_SCHEMA_VERSIONS:
         return verify_blocker_evidence(record)
+    return record
+
+
+def verify_recipe_unavailable_evidence(
+    value: Any,
+    *,
+    allow_active_projection: bool = False,
+) -> dict[str, Any]:
+    """Verify the immutable snapshots sealed by a recipe capability blocker.
+
+    The task-scoped blocker endpoint is the read path for both historical
+    snapshots after ``recipe_request.json`` moves on to a later mutable state.
+    This verifier recomputes the RecipeBuildRequest and TaskSpecRevision
+    digests so a later resolution cannot erase or rewrite the original gap.
+    """
+
+    record = verify_blocker_evidence(
+        value,
+        allow_active_projection=allow_active_projection,
+    )
+    if record["stage"] != "build" or record["code"] != "recipe_unavailable":
+        raise ContractError("not recipe unavailable evidence")
+    if record["related_object_type"] != "RecipeBuildRequest":
+        raise ContractError("recipe blocker related object mismatch")
+
+    facts = record["facts"]
+    request = _json_mapping(
+        facts.get("recipe_build_request_snapshot"),
+        "recipe build request snapshot",
+    )
+    task_spec = _json_mapping(
+        facts.get("task_spec_revision_snapshot"),
+        "task spec revision snapshot",
+    )
+    request_digest = _safe_text(
+        facts.get("recipe_build_request_digest"),
+        "recipe build request digest",
+        64,
+    )
+    task_spec_digest = _safe_text(
+        facts.get("task_spec_revision_digest"),
+        "task spec revision digest",
+        64,
+    )
+    if not re.fullmatch(r"[0-9a-f]{64}", request_digest):
+        raise ContractError("invalid recipe build request digest")
+    if not re.fullmatch(r"[0-9a-f]{64}", task_spec_digest):
+        raise ContractError("invalid task spec revision digest")
+    if _digest(request) != request_digest:
+        raise ContractError("recipe build request snapshot digest mismatch")
+    if _digest(task_spec) != task_spec_digest:
+        raise ContractError("task spec revision snapshot digest mismatch")
+
+    request_id = _safe_id(
+        request.get("recipe_request_id"),
+        "recipe request id",
+    )
+    revision_id = _safe_text(
+        task_spec.get("revision_id"),
+        "task spec revision id",
+        240,
+    )
+    if request.get("task_id") != record["task_id"]:
+        raise ContractError("recipe request task identity mismatch")
+    if task_spec.get("task_id") != record["task_id"]:
+        raise ContractError("task spec task identity mismatch")
+    if record["related_object_id"] != request_id:
+        raise ContractError("recipe blocker request identity mismatch")
+    if record["related_object_digest"] != request_digest:
+        raise ContractError("recipe blocker request digest mismatch")
+    if request.get("task_spec_revision_id") != revision_id:
+        raise ContractError("recipe request task spec identity mismatch")
+    if request.get("task_spec_revision_digest") != task_spec_digest:
+        raise ContractError("recipe request task spec digest mismatch")
+    if facts.get("task_spec_revision_id") != revision_id:
+        raise ContractError("recipe blocker task spec identity mismatch")
+    if record["details"].get("task_spec_revision_id") != revision_id:
+        raise ContractError("recipe blocker details task spec identity mismatch")
+    if record["details"].get("task_spec_revision_digest") != task_spec_digest:
+        raise ContractError("recipe blocker details task spec digest mismatch")
+    if record["details"].get("recipe_request_id") != request_id:
+        raise ContractError("recipe blocker details request identity mismatch")
+    if record["details"].get("recipe_request_digest") != request_digest:
+        raise ContractError("recipe blocker details request digest mismatch")
+
+    original_capability = _json_mapping(
+        facts.get("original_capability_request"),
+        "original capability request",
+    )
+    requested_capability = _json_mapping(
+        facts.get("requested_capability_request"),
+        "requested capability request",
+    )
+    if task_spec.get("capability_request") != original_capability:
+        raise ContractError("recipe blocker original capability mismatch")
+    if request.get("original_capability_request") != original_capability:
+        raise ContractError("recipe request original capability mismatch")
+    if request.get("capability_request") != requested_capability:
+        raise ContractError("recipe request capability snapshot mismatch")
     return record
 
 
@@ -520,7 +631,10 @@ class BlockerStore:
         resolutions: list[dict[str, Any]] = []
         for blocker in self.list(task_id, active_only=True):
             if (
-                blocker.get("schema_version") == BLOCKER_EVIDENCE_SCHEMA_VERSION
+                blocker.get("schema_version") in {
+                    PREVIOUS_BLOCKER_SCHEMA_VERSION,
+                    BLOCKER_EVIDENCE_SCHEMA_VERSION,
+                }
                 and blocker.get("stage") == stage
                 and blocker.get("code") == code
                 and blocker.get("blocker_id") != superseding_id

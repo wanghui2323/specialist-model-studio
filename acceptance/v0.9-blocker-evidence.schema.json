@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://model-harness.local/acceptance/v0.9-blocker-evidence.schema.json",
   "title": "v0.9 BlockerEvidence",
-  "description": "Immutable blocker fact. Resolution is represented by a separate BlockerResolution object; API-only active is not part of this sealed record.",
+  "description": "Immutable blocker fact (schema 0.3). Resolution is represented by a separate BlockerResolution object; API-only active is not part of this sealed record.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -32,7 +32,7 @@
     "content_digest"
   ],
   "properties": {
-    "schema_version": {"const": "0.2"},
+    "schema_version": {"const": "0.3"},
     "object_type": {"const": "BlockerEvidence"},
     "blocker_id": {
       "type": "string",
@@ -71,7 +71,8 @@
         "blocked_resources",
         "blocked_data",
         "blocked_repository",
-        "qualification_failed"
+        "qualification_failed",
+        "recipe_unavailable"
       ]
     },
     "detector": {"type": "string", "minLength": 1, "maxLength": 160},
@@ -108,5 +109,38 @@
     "created_at_utc": {"type": "string", "format": "date-time"},
     "resolved_by": {"type": "null"},
     "content_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"code": {"const": "recipe_unavailable"}},
+        "required": ["code"]
+      },
+      "then": {
+        "properties": {
+          "stage": {"const": "build"},
+          "related_object_type": {"const": "RecipeBuildRequest"},
+          "facts": {
+            "required": [
+              "original_capability_request",
+              "requested_capability_request",
+              "task_spec_revision_id",
+              "task_spec_revision_digest",
+              "task_spec_revision_snapshot",
+              "recipe_build_request_digest",
+              "recipe_build_request_snapshot"
+            ]
+          },
+          "details": {
+            "required": [
+              "recipe_request_id",
+              "recipe_request_digest",
+              "task_spec_revision_id",
+              "task_spec_revision_digest"
+            ]
+          }
+        }
+      }
+    }
+  ]
 }

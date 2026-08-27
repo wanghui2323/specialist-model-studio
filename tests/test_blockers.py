@@ -86,6 +86,9 @@ def _write_v02_blocker(
             retry_action="retry_resource_probe",
             details={"marker": marker},
         )
+    record["schema_version"] = "0.2"
+    record.pop("content_digest")
+    record["content_digest"] = _digest(record)
     path = (
         Path(root)
         / "tasks"
@@ -387,6 +390,7 @@ class BlockerStoreTests(unittest.TestCase):
             set(schema["properties"]["code"]["enum"]),
             set(CANONICAL_BLOCKER_CODES),
         )
+        self.assertIn("recipe_unavailable", CANONICAL_BLOCKER_CODES)
         with tempfile.TemporaryDirectory() as temporary:
             blocker = BlockerStore(temporary).append(
                 "task-schema",

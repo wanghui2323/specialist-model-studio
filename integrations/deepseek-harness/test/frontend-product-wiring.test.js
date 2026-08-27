@@ -368,6 +368,11 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(app, /"状态说明已降级"/);
   assert.match(app, /"不作为状态"/);
   assert.match(app, /function renderCoordinatorProgress\(item, target = ui\.messageList\)/);
+  const compactProgress = app.slice(app.indexOf("function renderCoordinatorProgress"), app.indexOf("function teamEventTitle"));
+  assert.match(compactProgress, /const completed = item\.status === "completed"/);
+  assert.match(compactProgress, /completed \? "本轮计划" : "当前计划"/);
+  assert.match(compactProgress, /completed \? "已全部完成" : item\.title \|\| "正在梳理下一步"/);
+  assert.match(compactProgress, /completed \? "查看" : "展开"/);
   assert.match(app, /function renderActionTimeline\(actions, delegations = \[\], \{ interactionState = "idle", expertCount = 0, recoveredFailures = new Set\(\), target = ui\.messageList \} = \{\}\)/);
   assert.match(app, /const waitingForHuman = interactionState === "waiting_for_human"/);
   assert.match(app, /waitingForHuman \? "本轮已经做了什么"/);
@@ -904,8 +909,9 @@ test("a backend-resolved historical failure stays auditable without remaining cu
   assert.match(timeline, /\["failed", "identity_error"\]\.includes\(action\.status\) && !recoveredFailures\.has\(action\) && !isUserDeclinedAction\(action\)/);
   assert.doesNotMatch(timeline, /recoveredFailures\.size \? "执行已恢复"/);
   assert.doesNotMatch(timeline, /本轮曾遇到问题，后续执行已经恢复/);
-  assert.match(recoveredRow, /timing\.textContent = "后续执行已恢复"/);
-  assert.match(recoveredRow, /summary\.textContent = "查看当时的技术问题"/);
+  assert.match(recoveredRow, /timing\.textContent = "已由后续正确调用完成"/);
+  assert.match(recoveredRow, /summary\.textContent = "查看初次调用记录"/);
+  assert.match(recoveredRow, /status\.textContent = "已处理"/);
   assert.match(recoveredRow, /evidence\.dataset\.originalStatus = action\.status/);
   assert.match(recoveredRow, /action\.error\?\.message \|\| action\.error\?\.code/);
   assert.match(recoveredRow, /openEventResultRef\(action\.event_result_ref\)/);
@@ -920,7 +926,7 @@ test("sample-inference and expert handoff actions use product language", async (
 });
 
 test("warm editorial visual system keeps dialogue primary and controls consistent", async () => {
-  const { html, visualCss } = await sources();
+  const { html, css, visualCss } = await sources();
   assert.match(html, /MODEL TRAINING AGENT/);
   assert.match(html, /本地优先 · 关键操作需确认 · 结果可追溯/);
   assert.match(visualCss, /--font-sans:\s*-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC"/);
@@ -933,6 +939,8 @@ test("warm editorial visual system keeps dialogue primary and controls consisten
   assert.match(visualCss, /body \.decision-actions\.human-choice-list\s*{[^}]*grid-template-columns:\s*1fr/);
   assert.match(visualCss, /body \.workspace-result-card:not\(button\)\s*{[^}]*cursor:\s*default/);
   assert.match(visualCss, /body \.human-checkpoint\s*,/);
+  assert.match(css, /#datasetButton \.attachment-label\{[^}]*font-size:12px[^}]*font-weight:500/);
+  assert.match(css, /@media\(max-width:720px\)\{#datasetButton\.attachment-button\{[^}]*min-width:44px[^}]*min-height:44px[^}]*justify-content:center/);
 });
 
 test("new-task home stays coordinator-led while verified specialists appear only inside real execution", async () => {
@@ -957,6 +965,56 @@ test("evaluation decisions are explicitly read-only until a real approval checkp
   assert.match(app, /item\.setAttribute\("aria-disabled", "true"\)/);
   assert.match(app, /stateLabel\.textContent = gateState === "recommended" \? "建议" : gateState === "ready" \? "可审阅"/);
   assert.match(visualCss, /body \.workspace-decision-gate > div\s*\{[^}]*cursor:\s*default/);
+});
+
+test("an empty capability match is rendered as an honest boundary, not a system failure", async () => {
+  const { app } = await sources();
+  const summaryStart = app.indexOf("function parseActionResultValue");
+  const summaryEnd = app.indexOf("function actionResultKey");
+  const summary = app.slice(summaryStart, summaryEnd);
+  const summarize = new Function("STATUS_LABELS", `${summary}\nreturn actionResultSummary;`)({});
+  assert.match(summary, /action\?\.tool_name === "model_harness_match_capability" && Array\.isArray\(result\?\.matches\)/);
+  assert.match(summary, /state: result\.matches\.length \? "completed" : "completed_empty"/);
+  assert.match(app, /当前没有匹配项。这是能力边界，不是系统故障/);
+  assert.match(summary, /const searchResult = result\?\.search && typeof result\.search === "object" \? result\.search : result/);
+  assert.match(summary, /return \{ state: "failed", text: `候选模型搜索未返回结果；\$\{providerErrors\.length\} 个模型来源失败/);
+  assert.match(summary, /return \{ state: "completed", text: `候选模型返回 \$\{searchResult\.candidates\.length\} 项结果\$\{partialFailureText\}`/);
+  assert.equal((summary.match(/这是能力边界，不是系统故障/g) || []).length, 1);
+  assert.ok(
+    summary.indexOf("model_harness_match_capability") < summary.indexOf("provider_errors"),
+    "provider errors and other empty collections must not reuse the capability-boundary state",
+  );
+  assert.deepEqual(
+    summarize(
+      { tool_name: "model_harness_match_capability" },
+      { event: { payload: { result: { matches: [] } } } },
+    ),
+    { state: "completed_empty", text: "能力匹配已完成：当前没有匹配项。这是能力边界，不是系统故障。" },
+  );
+  const providerFailure = summarize(
+    { tool_name: "model_harness_search_model_sources" },
+    { event: { payload: { result: { candidates: [], provider_errors: [{ provider: "huggingface", reason: "timeout" }] } } } },
+  );
+  assert.equal(providerFailure.state, "failed");
+  assert.match(providerFailure.text, /候选模型搜索未返回结果；1 个模型来源失败/);
+  assert.doesNotMatch(providerFailure.text, /能力边界|系统故障/);
+  const partialProviderFailure = summarize(
+    { tool_name: "model_harness_search_model_sources" },
+    { event: { payload: { result: { search: { candidates: [{ id: "candidate-1" }], provider_errors: [{ provider: "github", reason: "rate_limit" }] } } } } },
+  );
+  assert.equal(partialProviderFailure.state, "completed");
+  assert.match(partialProviderFailure.text, /候选模型返回 1 项结果；1 个模型来源部分失败/);
+  assert.doesNotMatch(partialProviderFailure.text, /能力边界|系统故障/);
+  assert.deepEqual(
+    summarize(
+      { tool_name: "model_harness_list_recipes" },
+      { event: { payload: { result: { recipes: [] } } } },
+    ),
+    { state: "completed", text: "训练方案返回 0 项结果" },
+  );
+  assert.match(app, /timing\.textContent = "已由后续正确调用完成"/);
+  assert.match(app, /status\.textContent = "已处理"/);
+  assert.doesNotMatch(app, /timing\.textContent = "后续执行已恢复"/);
 });
 
 test("composer queues stable idempotent messages and cancellation stays explicit", async () => {

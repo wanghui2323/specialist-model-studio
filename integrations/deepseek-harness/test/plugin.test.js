@@ -1057,6 +1057,83 @@ test("repository analysis emits only exact task-owned blocker evidence", async (
 });
 
 
+test("task reads and spec updates expose exact task-owned capability blockers", async () => {
+  const taskId = "task-asr-gap";
+  const blocker = {
+    schema_version: "0.3",
+    object_type: "BlockerEvidence",
+    blocker_id: `blocker_${"a".repeat(24)}`,
+    blocker_evidence_id: `blocker_${"a".repeat(24)}`,
+    task_id: taskId,
+    content_digest: DIGEST_A,
+    code: "recipe_unavailable",
+    related_object_type: "RecipeBuildRequest",
+    related_object_id: "recipe-request-asr-gap",
+    related_object_digest: DIGEST_B,
+  };
+  const payload = {
+    task: {
+      task_id: taskId,
+      status: "needs_recipe",
+      blockers: [blocker],
+    },
+  };
+
+  for (const [toolName, args] of [
+    ["model_harness_get_task", { task_id: taskId }],
+    ["model_harness_update_task_spec", {
+      task_id: taskId,
+      base_revision: 1,
+      selected_family: "asr",
+    }],
+  ]) {
+    const result = await executeWithPayload(toolName, args, payload);
+    assert.deepEqual(result.object_refs, [{
+      type: "blocker",
+      id: blocker.blocker_id,
+      task_id: taskId,
+      label: "阻塞证据 · recipe_unavailable",
+      digest: DIGEST_A,
+    }]);
+  }
+
+  for (const invalidTask of [
+    { ...payload.task, task_id: undefined },
+    { ...payload.task, task_id: "other-task" },
+    { ...payload.task, blockers: [{ ...blocker, task_id: undefined }] },
+    { ...payload.task, blockers: [{ ...blocker, task_id: "other-task" }] },
+    { ...payload.task, blockers: [{ ...blocker, schema_version: undefined }] },
+    { ...payload.task, blockers: [{ ...blocker, schema_version: "0.2" }] },
+    { ...payload.task, blockers: [{ ...blocker, object_type: undefined }] },
+    { ...payload.task, blockers: [{ ...blocker, object_type: "BlockerResolution" }] },
+    { ...payload.task, blockers: [{ ...blocker, blocker_id: undefined }] },
+    { ...payload.task, blockers: [{ ...blocker, blocker_id: "blocker-asr-gap-1", blocker_evidence_id: "blocker-asr-gap-1" }] },
+    { ...payload.task, blockers: [{ ...blocker, blocker_evidence_id: "other-blocker" }] },
+    { ...payload.task, blockers: [{ ...blocker, content_digest: undefined }] },
+    { ...payload.task, blockers: [{ ...blocker, content_digest: "bad" }] },
+    { ...payload.task, blockers: [{ ...blocker, content_digest: DIGEST_A.toUpperCase() }] },
+  ]) {
+    await assert.rejects(
+      () => executeWithPayload(
+        "model_harness_get_task",
+        { task_id: taskId },
+        { task: invalidTask },
+      ),
+      /invalid canonical identity/,
+    );
+  }
+
+  await assert.rejects(
+    () => executeWithPayload(
+      "model_harness_get_task",
+      { task_id: taskId },
+      null,
+    ),
+    /invalid canonical identity/,
+  );
+});
+
+
 test("resource feasibility emits exact probe, lock, report, and blocker refs", async () => {
   const taskId = "task-resource";
   const feasibility = {

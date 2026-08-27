@@ -1377,14 +1377,23 @@ class ModelSourceApiTests(unittest.TestCase):
             f"/tasks/{self.task_id}/blockers?active_only=true"
         )
         self.assertEqual(blockers.status_code, 200, blockers.text)
-        self.assertEqual(len(blockers.json()["blockers"]), 1)
+        source_blockers = [
+            item
+            for item in blockers.json()["blockers"]
+            if item["stage"] == "source_snapshot"
+        ]
+        self.assertEqual(len(source_blockers), 1)
         self.assertEqual(
-            blockers.json()["blockers"][0]["stage"], "source_snapshot"
+            source_blockers[0]["code"], "blocked_repository"
+        )
+        self.assertIn(
+            "recipe_unavailable",
+            {item["code"] for item in blockers.json()["blockers"]},
         )
         projected = self.client.get(f"/tasks/{self.task_id}").json()["task"]
-        self.assertEqual(
-            projected["blockers"][0]["blocker_id"],
-            blockers.json()["blockers"][0]["blocker_id"],
+        self.assertIn(
+            source_blockers[0]["blocker_id"],
+            {item["blocker_id"] for item in projected["blockers"]},
         )
 
         other = self.client.post(
