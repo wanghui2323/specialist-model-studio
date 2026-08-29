@@ -34,6 +34,7 @@ class ConversationHarnessStartupTest(unittest.TestCase):
         self.home_dir.mkdir()
         self.dsh_home_log = Path(self.temporary.name) / "dsh-home.log"
         self.dsh_credentials_log = Path(self.temporary.name) / "dsh-credentials.log"
+        self.dsh_artifact_export_log = Path(self.temporary.name) / "dsh-artifact-export.log"
         shutil.copy2(START_SCRIPT, self.root / "scripts" / START_SCRIPT.name)
         (self.root / ".venv" / "bin" / "python").symlink_to(sys.executable)
         self._write_executable(
@@ -119,6 +120,9 @@ fi
 if [[ -n "${{FAKE_DSH_CREDENTIALS_LOG:-}}" ]]; then
   printf '%s\\n' "${{MODEL_HARNESS_DSH_CREDENTIALS_FILE:-<unset>}}" >> "$FAKE_DSH_CREDENTIALS_LOG"
 fi
+if [[ -n "${{FAKE_DSH_ARTIFACT_EXPORT_LOG:-}}" ]]; then
+  printf '%s\\n' "${{MODEL_HARNESS_ARTIFACT_EXPORT_DIR:-<unset>}}" >> "$FAKE_DSH_ARTIFACT_EXPORT_LOG"
+fi
 case " $* " in
   *" --version "*)
     printf '%s\\n' "${{{version_environment}:-{EXPECTED_DSH_VERSION}}}"
@@ -196,6 +200,7 @@ esac
                 "FAKE_RUNTIME_JSON": json.dumps(runtime),
                 "FAKE_DSH_HOME_LOG": str(self.dsh_home_log),
                 "FAKE_DSH_CREDENTIALS_LOG": str(self.dsh_credentials_log),
+                "FAKE_DSH_ARTIFACT_EXPORT_LOG": str(self.dsh_artifact_export_log),
                 "MODEL_HARNESS_AGENT_BRIDGE_TOKEN": "startup-test-bridge-token",
             }
         )
@@ -240,6 +245,18 @@ esac
         )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_rejects_an_invalid_backend_start_attempt_budget(self) -> None:
+        completed = self._run(
+            self._runtime(),
+            {"MODEL_HARNESS_BACKEND_START_ATTEMPTS": "not-a-number"},
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn(
+            "MODEL_HARNESS_BACKEND_START_ATTEMPTS must be a positive integer",
+            completed.stderr,
+        )
 
     def test_rejects_a_wrong_locked_dsh_version(self) -> None:
         completed = self._run(
@@ -442,6 +459,23 @@ esac
         observed_homes = self.dsh_home_log.read_text(encoding="utf-8").splitlines()
         self.assertTrue(observed_homes)
         self.assertEqual(set(observed_homes), {str((configured_runs / ".dsh").resolve())})
+        observed_exports = self.dsh_artifact_export_log.read_text(
+            encoding="utf-8"
+        ).splitlines()
+        self.assertTrue(observed_exports)
+        self.assertEqual(
+            set(observed_exports),
+            {str((configured_runs / "_workspace" / "exports").resolve())},
+        )
+
+    def test_launcher_routes_default_artifact_exports_to_runtime_workspace(self) -> None:
+        script = (self.root / "scripts" / START_SCRIPT.name).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'MODEL_HARNESS_ARTIFACT_EXPORT_DIR:-${WORKSPACE_DIR}/exports',
+            script,
+        )
+        self.assertIn('export MODEL_HARNESS_ARTIFACT_EXPORT_DIR', script)
 
     def test_isolated_runtime_reuses_standard_user_credentials_store(self) -> None:
         credentials_file = self.home_dir / ".dsh" / ".credentials.yaml"

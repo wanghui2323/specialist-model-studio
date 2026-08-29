@@ -1735,6 +1735,7 @@ def create_app(
     async def upload_task_dataset(
         task_id: str,
         request: Request,
+        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
         x_filename: str | None = Header(default=None),
         x_target_column: str | None = Header(default=None),
         x_ignored_columns: str | None = Header(default=None),
@@ -1756,17 +1757,60 @@ def create_app(
                 options["delimiter"] = unquote(x_delimiter)
             if x_data_adapter:
                 options["data_adapter"] = unquote(x_data_adapter)
-            task = workspace.attach_dataset(
-                task_id,
-                await request.body(),
-                filename,
-                options=options,
-            )
+            payload = await request.body()
+            if x_request_id is not None:
+                task, receipt, replayed = workspace.attach_dataset_idempotent(
+                    task_id,
+                    payload,
+                    filename,
+                    request_id=x_request_id,
+                    options=options,
+                )
+            else:
+                task = workspace.attach_dataset(
+                    task_id,
+                    payload,
+                    filename,
+                    options=options,
+                )
+                receipt = None
+                replayed = False
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return JSONResponse(status_code=201, content={"task": task})
+        return JSONResponse(
+            status_code=201,
+            content={
+                "task": task,
+                "dataset_upload": receipt,
+                "idempotent_replay": replayed,
+            },
+        )
+
+    @app.get(
+        "/tasks/{task_id}/dataset-upload-receipts/{request_id}"
+    )
+    def get_task_dataset_upload_receipt(
+        task_id: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return {
+                "task": workspace.get_task(task_id),
+                "dataset_upload": workspace.get_dataset_upload_receipt(
+                    task_id,
+                    request_id,
+                ),
+            }
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ContractError, HarnessError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.patch("/tasks/{task_id}/contract")
     async def update_task_contract(

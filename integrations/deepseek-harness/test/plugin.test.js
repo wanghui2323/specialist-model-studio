@@ -451,7 +451,12 @@ test("plugin registers the complete task-first conversational toolchain", () => 
   assert.match(mounted.sections[0].text, /bundle_request_sha256/);
   assert.match(mounted.sections[0].text, /Never let the child request a second native approval/);
   assert.match(mounted.sections[0].text, /never invent decorative expert activity/);
+  assert.match(mounted.sections[0].text, /workspace default location/);
+  assert.match(mounted.sections[0].text, /configured workspace exports directory/);
+  assert.match(mounted.sections[0].text, /never infer a destination from the process working directory/);
   assert.match(mounted.sections[0].text, /requires the exact existing approval_checkpoint_id/);
+  assert.match(PRESET_SOURCE, /workspace default location/);
+  assert.match(PRESET_SOURCE, /configured workspace exports directory/);
 });
 
 
@@ -996,7 +1001,10 @@ test("repository analysis emits only exact task-owned blocker evidence", async (
     status: "blocked",
   };
   const blocker = {
-    blocker_id: "blocker-analysis-1",
+    schema_version: "0.2",
+    object_type: "BlockerEvidence",
+    blocker_id: `blocker_${"b".repeat(24)}`,
+    blocker_evidence_id: `blocker_${"b".repeat(24)}`,
     task_id: taskId,
     content_digest: DIGEST_A,
     code: "blocked_security",
@@ -1097,13 +1105,40 @@ test("task reads and spec updates expose exact task-owned capability blockers", 
     }]);
   }
 
+  for (const schemaVersion of ["0.1", "0.2"]) {
+    const historicalBlocker = {
+      ...blocker,
+      schema_version: schemaVersion,
+    };
+    if (schemaVersion === "0.1") delete historicalBlocker.blocker_evidence_id;
+    for (const [toolName, args] of [
+      ["model_harness_get_task", { task_id: taskId }],
+      ["model_harness_update_task_spec", {
+        task_id: taskId,
+        base_revision: 1,
+        selected_family: "asr",
+      }],
+    ]) {
+      const result = await executeWithPayload(toolName, args, {
+        task: { ...payload.task, blockers: [historicalBlocker] },
+      });
+      assert.deepEqual(result.object_refs, [{
+        type: "blocker",
+        id: blocker.blocker_id,
+        task_id: taskId,
+        label: "阻塞证据 · recipe_unavailable",
+        digest: DIGEST_A,
+      }]);
+    }
+  }
+
   for (const invalidTask of [
     { ...payload.task, task_id: undefined },
     { ...payload.task, task_id: "other-task" },
     { ...payload.task, blockers: [{ ...blocker, task_id: undefined }] },
     { ...payload.task, blockers: [{ ...blocker, task_id: "other-task" }] },
     { ...payload.task, blockers: [{ ...blocker, schema_version: undefined }] },
-    { ...payload.task, blockers: [{ ...blocker, schema_version: "0.2" }] },
+    { ...payload.task, blockers: [{ ...blocker, schema_version: "9.9" }] },
     { ...payload.task, blockers: [{ ...blocker, object_type: undefined }] },
     { ...payload.task, blockers: [{ ...blocker, object_type: "BlockerResolution" }] },
     { ...payload.task, blockers: [{ ...blocker, blocker_id: undefined }] },
@@ -1153,7 +1188,9 @@ test("resource feasibility emits exact probe, lock, report, and blocker refs", a
       report_sha256: DIGEST_C,
     },
     blockers: [{
-      blocker_id: "blocker-1",
+      schema_version: "0.1",
+      object_type: "BlockerEvidence",
+      blocker_id: `blocker_${"c".repeat(24)}`,
       task_id: taskId,
       content_digest: DIGEST_A,
       code: "blocked_resources",
@@ -1176,7 +1213,7 @@ test("resource feasibility emits exact probe, lock, report, and blocker refs", a
         ["resource_feasibility", "probe-1", "resource_probe"],
         ["resource_feasibility", "lock-1", "environment_lock"],
         ["resource_feasibility", "report-1", "resource_fit_report"],
-        ["blocker", "blocker-1", undefined],
+        ["blocker", `blocker_${"c".repeat(24)}`, undefined],
       ],
     );
   }

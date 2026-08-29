@@ -19,6 +19,9 @@ _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")
 BLOCKER_EVIDENCE_SCHEMA_VERSION = "0.3"
 LEGACY_BLOCKER_SCHEMA_VERSION = "0.1"
 PREVIOUS_BLOCKER_SCHEMA_VERSION = "0.2"
+# Historical values remain readable because they are sealed evidence, but all
+# newly-created supersession resolutions use the version-neutral action.
+SUPERSEDED_BY_NEWER_BLOCKER_ACTION = "superseded_by_newer_blocker"
 LEGACY_SUPERSEDED_ACTION = "superseded_by_v0.2_blocker"
 V02_SUPERSEDED_ACTION = "superseded_by_newer_v0.2_blocker"
 _OCCURRENCE_IDENTITY_KEY = "__blocker_store_identity_digest"
@@ -52,6 +55,13 @@ CANONICAL_BLOCKER_CODES = frozenset(
 )
 V02_CANONICAL_BLOCKER_CODES = CANONICAL_BLOCKER_CODES - {"recipe_unavailable"}
 SUPPORTED_BLOCKER_SCHEMA_VERSIONS = frozenset(
+    {
+        LEGACY_BLOCKER_SCHEMA_VERSION,
+        PREVIOUS_BLOCKER_SCHEMA_VERSION,
+        BLOCKER_EVIDENCE_SCHEMA_VERSION,
+    }
+)
+MODERN_BLOCKER_SCHEMA_VERSIONS = frozenset(
     {PREVIOUS_BLOCKER_SCHEMA_VERSION, BLOCKER_EVIDENCE_SCHEMA_VERSION}
 )
 _SEMANTIC_KEYS = (
@@ -69,6 +79,24 @@ _SEMANTIC_KEYS = (
     "evidence_refs",
     "recovery_actions",
     "retryable",
+)
+_LEGACY_SEMANTIC_KEYS = (
+    "task_id",
+    "stage",
+    "code",
+    "retry_action",
+    "related_object_type",
+    "related_object_id",
+    "related_object_digest",
+    "details",
+)
+_RESOLUTION_SEMANTIC_KEYS = (
+    "task_id",
+    "blocker_id",
+    "blocker_digest",
+    "action",
+    "related_object_type",
+    "related_object_id",
 )
 
 
@@ -195,7 +223,7 @@ def verify_blocker_evidence(
     if set(record) != required:
         raise ContractError("incomplete v0.9 blocker evidence")
     schema_version = record["schema_version"]
-    if schema_version not in SUPPORTED_BLOCKER_SCHEMA_VERSIONS:
+    if schema_version not in MODERN_BLOCKER_SCHEMA_VERSIONS:
         raise ContractError("unsupported blocker evidence schema")
     if record["blocker_evidence_id"] != record["blocker_id"]:
         raise ContractError("blocker evidence id alias mismatch")
@@ -254,10 +282,100 @@ def verify_blocker_evidence(
     return record
 
 
+def verify_legacy_blocker_evidence(value: Any) -> dict[str, Any]:
+    """Verify one immutable schema 0.1 BlockerEvidence for read compatibility."""
+
+    record = _verified(value, "BlockerEvidence")
+    required = {
+        "schema_version",
+        "object_type",
+        "blocker_id",
+        *_LEGACY_SEMANTIC_KEYS,
+        "message",
+        "semantic_digest",
+        "created_at_utc",
+        "content_digest",
+    }
+    if set(record) != required:
+        raise ContractError("incomplete legacy blocker evidence")
+    if record["schema_version"] != LEGACY_BLOCKER_SCHEMA_VERSION:
+        raise ContractError("unsupported blocker evidence schema")
+    if record["stage"] not in BLOCKER_EVIDENCE_STAGES:
+        raise ContractError("invalid blocker stage")
+    _safe_task_id(record["task_id"])
+    _safe_text(record["code"], "blocker code", 120)
+    _safe_text(record["message"], "blocker message", 500)
+    _safe_text(record["retry_action"], "retry action", 120)
+    _json_mapping(record["details"], "blocker details")
+    if record["related_object_type"] is not None:
+        _safe_text(record["related_object_type"], "related object type", 80)
+    if record["related_object_id"] is not None:
+        _safe_id(record["related_object_id"], "related object id")
+    if record["related_object_digest"] is not None and not re.fullmatch(
+        r"[0-9a-f]{64}", str(record["related_object_digest"])
+    ):
+        raise ContractError("invalid related object digest")
+    try:
+        created_at = datetime.fromisoformat(record["created_at_utc"])
+    except (TypeError, ValueError) as exc:
+        raise ContractError("invalid blocker created-at timestamp") from exc
+    if created_at.tzinfo is None:
+        raise ContractError("invalid blocker created-at timestamp")
+    semantic = {key: record[key] for key in _LEGACY_SEMANTIC_KEYS}
+    if record["semantic_digest"] != _digest(semantic):
+        raise ContractError("blocker semantic digest mismatch")
+    if record["blocker_id"] != f"blocker_{record['semantic_digest'][:24]}":
+        raise ContractError("blocker id does not match semantic digest")
+    return record
+
+
 def _verified_blocker_record(value: Any) -> dict[str, Any]:
     record = _verified(value, "BlockerEvidence")
-    if record.get("schema_version") in SUPPORTED_BLOCKER_SCHEMA_VERSIONS:
+    schema_version = record.get("schema_version")
+    if schema_version == LEGACY_BLOCKER_SCHEMA_VERSION:
+        return verify_legacy_blocker_evidence(record)
+    if schema_version in MODERN_BLOCKER_SCHEMA_VERSIONS:
         return verify_blocker_evidence(record)
+    raise ContractError("unsupported blocker evidence schema")
+
+
+def _verified_blocker_resolution(value: Any) -> dict[str, Any]:
+    record = _verified(value, "BlockerResolution")
+    required = {
+        "schema_version",
+        "object_type",
+        "resolution_id",
+        *_RESOLUTION_SEMANTIC_KEYS,
+        "semantic_digest",
+        "created_at_utc",
+        "content_digest",
+    }
+    if set(record) != required:
+        raise ContractError("incomplete blocker resolution")
+    if record["schema_version"] not in SUPPORTED_BLOCKER_SCHEMA_VERSIONS:
+        raise ContractError("unsupported blocker resolution schema")
+    _safe_task_id(record["task_id"])
+    _safe_id(record["blocker_id"], "blocker id")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(record["blocker_digest"])):
+        raise ContractError("invalid blocker resolution digest")
+    _safe_text(record["action"], "blocker resolution action", 160)
+    if record["related_object_type"] is not None:
+        _safe_text(record["related_object_type"], "related object type", 80)
+    if record["related_object_id"] is not None:
+        _safe_id(record["related_object_id"], "related object id")
+    try:
+        created_at = datetime.fromisoformat(record["created_at_utc"])
+    except (TypeError, ValueError) as exc:
+        raise ContractError("invalid blocker resolution timestamp") from exc
+    if created_at.tzinfo is None:
+        raise ContractError("invalid blocker resolution timestamp")
+    semantic = {key: record[key] for key in _RESOLUTION_SEMANTIC_KEYS}
+    if record["semantic_digest"] != _digest(semantic):
+        raise ContractError("blocker resolution semantic digest mismatch")
+    if record["resolution_id"] != (
+        f"blocker_resolution_{record['semantic_digest'][:24]}"
+    ):
+        raise ContractError("blocker resolution id does not match semantic digest")
     return record
 
 
@@ -577,13 +695,13 @@ class BlockerStore:
                     write_json(path, record)
                     selected_record = record
                     created = True
-            self._supersede_active_v01_stage(
+            self._supersede_active_legacy_stage(
                 selected_task,
                 selected_stage,
                 superseding_blocker=selected_record,
             )
             if created:
-                self._supersede_active_v02_identity(
+                self._supersede_active_older_identity(
                     selected_task,
                     selected_stage,
                     selected_code,
@@ -591,14 +709,14 @@ class BlockerStore:
                 )
             return selected_record
 
-    def _supersede_active_v01_stage(
+    def _supersede_active_legacy_stage(
         self,
         task_id: str,
         stage: str,
         *,
         superseding_blocker: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
-        """Resolve only active v0.1 blockers replaced by this v0.2 stage fact."""
+        """Resolve active legacy blockers replaced by a current stage fact."""
 
         resolutions: list[dict[str, Any]] = []
         for blocker in self.list(task_id, active_only=True):
@@ -610,14 +728,14 @@ class BlockerStore:
                     self.resolve(
                         task_id,
                         str(blocker["blocker_id"]),
-                        action=LEGACY_SUPERSEDED_ACTION,
+                        action=SUPERSEDED_BY_NEWER_BLOCKER_ACTION,
                         related_object_type="BlockerEvidence",
                         related_object_id=str(superseding_blocker["blocker_id"]),
                     )
                 )
         return resolutions
 
-    def _supersede_active_v02_identity(
+    def _supersede_active_older_identity(
         self,
         task_id: str,
         stage: str,
@@ -625,7 +743,7 @@ class BlockerStore:
         *,
         superseding_blocker: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
-        """Resolve older active v0.2 facts for the same task/stage/code only."""
+        """Resolve older active modern facts for the same task/stage/code."""
 
         superseding_id = str(superseding_blocker["blocker_id"])
         resolutions: list[dict[str, Any]] = []
@@ -643,7 +761,7 @@ class BlockerStore:
                     self.resolve(
                         task_id,
                         str(blocker["blocker_id"]),
-                        action=V02_SUPERSEDED_ACTION,
+                        action=SUPERSEDED_BY_NEWER_BLOCKER_ACTION,
                         related_object_type="BlockerEvidence",
                         related_object_id=superseding_id,
                     )
@@ -734,7 +852,7 @@ class BlockerStore:
 
     def _read_resolution_path(self, task_id: str, path: Path) -> dict[str, Any]:
         selected_task = _safe_task_id(task_id)
-        record = _verified(read_json(path), "BlockerResolution")
+        record = _verified_blocker_resolution(read_json(path))
         if record.get("task_id") != selected_task:
             raise ContractError("blocker resolution task identity mismatch")
         if record.get("resolution_id") != path.stem:

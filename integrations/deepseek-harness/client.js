@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, readFile, stat, unlink, writeFile } from "node:fs/promises";
-import { basename, extname, resolve } from "node:path";
+import { link, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { basename, extname, isAbsolute, resolve } from "node:path";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:8765";
 const MAX_DATASET_BYTES = 200 * 1024 * 1024;
@@ -74,9 +74,15 @@ export class ModelHarnessClient {
   constructor(
     baseUrl = process.env.MODEL_HARNESS_URL || DEFAULT_BASE_URL,
     agentBridgeToken = process.env.MODEL_HARNESS_AGENT_BRIDGE_TOKEN || "",
+    artifactExportDir = process.env.MODEL_HARNESS_ARTIFACT_EXPORT_DIR || "",
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.agentBridgeToken = String(agentBridgeToken || "").trim();
+    const selectedExportDir = String(artifactExportDir || "").trim();
+    if (selectedExportDir && !isAbsolute(selectedExportDir)) {
+      throw new Error("Artifact Bundle export directory must be absolute");
+    }
+    this.artifactExportDir = selectedExportDir ? resolve(selectedExportDir) : null;
   }
 
   agentBridgeApprovalHeaders() {
@@ -854,9 +860,25 @@ export class ModelHarnessClient {
     options = {},
     signal,
   ) {
-    const resolved = resolve(destinationPath);
+    const selectedDestination = String(destinationPath || "").trim();
+    if (!selectedDestination) {
+      throw new Error("Artifact Bundle destination is required");
+    }
+    const userSelectedAbsolutePath = isAbsolute(selectedDestination);
+    if (!userSelectedAbsolutePath && /[\\/]/.test(selectedDestination)) {
+      throw new Error("Workspace export destinations must use a filename only");
+    }
+    if (!userSelectedAbsolutePath && !this.artifactExportDir) {
+      throw new Error("Runtime workspace export directory is unavailable");
+    }
+    const resolved = userSelectedAbsolutePath
+      ? resolve(selectedDestination)
+      : resolve(this.artifactExportDir, selectedDestination);
     if (extname(resolved).toLowerCase() !== ".zip") {
       throw new Error("Artifact Bundle destination must use a .zip filename");
+    }
+    if (!userSelectedAbsolutePath) {
+      await mkdir(this.artifactExportDir, { recursive: true });
     }
     const detail = await this.getArtifactBundle(taskId, runId, bundleId, signal);
     const expectedSha256 = detail?.artifact_bundle?.archive?.sha256;
@@ -927,6 +949,9 @@ export class ModelHarnessClient {
       bundle_id: bundleId,
       status: "downloaded",
       filename: basename(resolved),
+      destination_scope: userSelectedAbsolutePath
+        ? "user_selected_path"
+        : "workspace_exports",
       size_bytes: payload.length,
       sha256,
       artifact_bundle_download_authorization_id: options.authorizationId,

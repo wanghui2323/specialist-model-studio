@@ -104,12 +104,25 @@
         </section>
 
         <footer class="composer-wrap" id="composerWrap">
-          <div class="composer-notice" id="composerNotice" hidden></div>
+          <div class="composer-notice" id="composerNotice" role="status" aria-live="polite" hidden></div>
+          <div class="composer-retry" id="composerRetry" hidden>
+            <span id="composerRetryHint">请求没有完成。</span>
+            <button id="composerRetryButton" type="button">重试发送</button>
+          </div>
           <div class="composer-delivery" id="composerDelivery" hidden role="status" aria-live="polite">
             <b id="composerDeliveryLabel">将在本轮结束后继续</b>
             <span id="composerDeliveryDetail">当前消息只会排队，不会改变正在执行的本轮。</span>
           </div>
           <form class="composer" id="composerForm">
+            <div class="composer-attachment" id="composerAttachment" data-state="pending" role="group" aria-label="所选文件" hidden>
+              <span class="attachment-type" id="attachmentType" aria-hidden="true">FILE</span>
+              <span class="attachment-copy"><b id="attachmentName"></b><small id="attachmentMeta"></small></span>
+              <span class="attachment-status" id="attachmentStatus" role="status" aria-live="polite">待处理</span>
+              <button class="attachment-retry" id="retryAttachmentButton" type="button" hidden>重试</button>
+              <button class="attachment-remove" id="removeAttachmentButton" type="button" aria-label="从输入框移除文件">
+                <svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#close"></use></svg>
+              </button>
+            </div>
             <textarea id="messageInput" rows="1" maxlength="2000" placeholder="描述你希望模型帮你完成什么…" aria-label="向 Specialist Model Studio 描述模型任务"></textarea>
             <div class="composer-actions">
               <div><button class="attachment-button" id="datasetButton" type="button" title="导入图片、音频 ZIP 或 CSV"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#paperclip"></use></svg><span class="attachment-label" id="datasetButtonLabel">导入数据</span></button><input id="datasetInput" type="file" accept=".zip,.csv,application/zip,text/csv" hidden /><input id="recipeSampleInput" type="file" accept=".zip,application/zip" hidden /></div>
@@ -277,11 +290,12 @@
               </label>
               <div class="training-plan-facts" id="trainingPlanFacts"></div>
               <button class="secondary-button full-button" id="createTrainingPlanButton" type="button">生成不可变计划草案</button>
-              <button class="primary-button full-button" id="approveTrainingPlanButton" type="button" hidden>批准当前计划 Digest</button>
+              <button class="secondary-button full-button" id="approveTrainingPlanButton" type="button" data-confirmation-mode="checkpoint-only" hidden>回到对话确认</button>
               <div class="plan-decision-actions" id="trainingPlanDecisionActions" hidden>
-                <button class="text-button" id="rejectTrainingPlanButton" type="button">拒绝此计划</button>
-                <button class="text-button" id="cancelTrainingPlanButton" type="button">取消此计划</button>
+                <button class="text-button" id="rejectTrainingPlanButton" type="button" data-confirmation-mode="checkpoint-only" hidden disabled>回到对话确认</button>
+                <button class="text-button" id="cancelTrainingPlanButton" type="button" data-confirmation-mode="checkpoint-only" hidden disabled>回到对话确认</button>
               </div>
+              <p class="checkpoint-only-note" id="trainingPlanConfirmationNote" hidden></p>
             </section>
             <section class="inspector-card resource-card" id="resourceFeasibilityCard" hidden>
               <div class="card-heading"><span>本机训练可行性</span><b id="resourceFeasibilityState">未检查</b></div>
@@ -337,20 +351,21 @@
           <section class="inspector-card" id="contractCard" hidden>
             <div class="card-heading"><span>训练合同</span><b id="contractState">待确认</b></div>
             <div class="gate-grid" id="gateGrid"></div>
-            <div class="confirmations" id="confirmations">
-              <label><input type="checkbox" data-confirm="data_authorized" /> 数据可用于本地训练</label>
-              <label><input type="checkbox" data-confirm="labels_reviewed" /> 标签或目标字段已经检查</label>
-              <label><input type="checkbox" data-confirm="gates_reviewed" /> 验收门槛已经确认</label>
-              <button class="secondary-button" id="confirmContractButton" type="button">确认并冻结合同</button>
+            <div class="confirmations" id="confirmations" data-confirmation-mode="read-only">
+              <label><input type="checkbox" data-confirm="data_authorized" disabled /> 数据可用于本地训练</label>
+              <label><input type="checkbox" data-confirm="labels_reviewed" disabled /> 标签或目标字段已经检查</label>
+              <label><input type="checkbox" data-confirm="gates_reviewed" disabled /> 验收门槛已经确认</label>
+              <button class="secondary-button" id="confirmContractButton" type="button" data-confirmation-mode="checkpoint-only" hidden>回到对话确认</button>
             </div>
-            <button class="secondary-button full-button" id="approveRunProposalButton" type="button" hidden>批准当前训练方案并启动</button>
+            <button class="secondary-button full-button" id="approveRunProposalButton" type="button" data-confirmation-mode="checkpoint-only" hidden>回到对话确认</button>
+            <p class="checkpoint-only-note" id="contractConfirmationNote" hidden></p>
           </section>
           </section>
           <section class="context-panel" data-context-panel="run">
             <section class="inspector-card" id="runCard">
               <div class="card-heading run-card-heading"><span>运行事件</span><div><b id="runEventCount">0</b><button class="danger-button" id="cancelRunButton" type="button" hidden>取消训练</button></div></div>
               <div class="run-control-status" id="runControlStatus" hidden><i></i><span><b id="runControlLabel">训练运行中</b><small id="runControlDescription">取消请求会在当前阶段边界生效。</small></span></div>
-              <button class="secondary-button full-button retry-run-button" id="retryRunButton" type="button" hidden>保留证据并重新训练</button>
+              <button class="secondary-button full-button retry-run-button" id="retryRunButton" type="button" hidden>回到对话确认恢复</button>
               <div class="inspector-events" id="inspectorEvents"><p>启动后显示后端事件序列。</p></div>
             </section>
           </section>

@@ -8,15 +8,30 @@ import json
 import os
 import re
 import shutil
+import time
 import zipfile
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from threading import RLock
 from typing import Any, Mapping
 from uuid import uuid4
+
+try:  # POSIX local workspaces
+    import fcntl  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - exercised on Windows
+    fcntl = None  # type: ignore[assignment]
+
+try:  # Windows local workspaces
+    import msvcrt  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - exercised on POSIX
+    msvcrt = None  # type: ignore[assignment]
+
+DATASET_UPLOAD_LOCK_TIMEOUT_SECONDS = 300.0
+DATASET_UPLOAD_LOCK_POLL_SECONDS = 0.05
 
 from PIL import Image, UnidentifiedImageError
 
@@ -532,27 +547,26 @@ class TrainingWorkspace:
         capability_status = decision_status
         if recipe_id:
             plugin = self.runs.registry.get_recipe(recipe_id)
-            if (
-                decision_status == "resolved"
-                and recipe_id
-                not in self._eligible_recipe_ids_for_capability(capability)
-            ):
-                raise ContractError("所选Recipe与已确认的原始能力规格不匹配")
-            selected_recipe = plugin.manifest.plugin_id
-            capability = self._capability_for_recipe(plugin, capability)
-            spec = build_task_spec_revision(
-                task_id=task_id,
-                revision=1,
-                name=selected_name,
-                business_goal=selected_goal,
-                capability_request=capability,
-                created_at_utc=now,
-                source="task_created_with_recipe",
-                supersedes_revision=None,
-            )
-            decision_status = spec["capability_decision"]["status"]
-            recipe_source = "explicit"
-            capability_status = "matched"
+            if decision_status == "resolved":
+                if (
+                    recipe_id
+                    in self._eligible_recipe_ids_for_capability(
+                        deepcopy(spec["capability_request"])
+                    )
+                ):
+                    selected_recipe = plugin.manifest.plugin_id
+                    recipe_source = "explicit"
+                    capability_status = "matched"
+                else:
+                    # A caller-supplied Recipe is never evidence that the
+                    # original goal changed.  Preserve the TaskSpec and the
+                    # typed capability gap instead of manufacturing an
+                    # awaiting-data image/tabular task from an unsupported
+                    # ASR, TTS, OCR, forecasting, or other specialist goal.
+                    capability_status = "needs_recipe"
+            # ``needs_confirmation`` and ``needs_clarification`` are
+            # human-owned TaskSpec gates.  A Recipe id cannot answer either
+            # gate or rewrite the original capability on the caller's behalf.
         elif decision_status == "resolved":
             selected_recipe = self._select_recipe_for_capability(capability)
             if selected_recipe:
@@ -3330,6 +3344,8 @@ class TrainingWorkspace:
         payload: bytes,
         filename: str,
         options: dict[str, Any] | None = None,
+        *,
+        upload_request_digest_sha256: str | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             task = read_json(self._task_path(task_id))
@@ -3392,6 +3408,15 @@ class TrainingWorkspace:
                 },
             )
             report = imported.report
+            # Persist the exact upload identity before the task projection is
+            # committed.  A processing receipt can then be reconciled after a
+            # process crash without guessing from history length alone.
+            report["source_payload_sha256"] = hashlib.sha256(payload).hexdigest()
+            if upload_request_digest_sha256:
+                report["upload_request_digest_sha256"] = str(
+                    upload_request_digest_sha256
+                )
+            write_json(imported.dataset_dir / "dataset_report.json", report)
             if task.get("recipe_source") != "recipe-factory":
                 self._append_spec_for_recipe(task, plugin, "dataset_import")
             template = deepcopy(plugin.template())
@@ -3457,6 +3482,317 @@ class TrainingWorkspace:
             self._record_contract_revision(task, template)
             write_json(self._task_path(task_id), task)
         return self.get_task(task_id)
+
+    @staticmethod
+    def _normalize_dataset_upload_request_id(request_id: str) -> str:
+        selected = str(request_id or "").strip()
+        if not selected:
+            raise ContractError("x-request-id不能为空")
+        if len(selected) > 256 or any(ord(character) < 32 for character in selected):
+            raise ContractError("x-request-id格式无效")
+        return selected
+
+    @staticmethod
+    def _dataset_upload_request_digest(
+        task_id: str,
+        request_id: str,
+        payload: bytes,
+        filename: str,
+        options: Mapping[str, Any],
+    ) -> tuple[str, str]:
+        payload_sha256 = hashlib.sha256(payload).hexdigest()
+        request_digest = _canonical_digest(
+            {
+                "task_id": task_id,
+                "request_id": request_id,
+                "payload_sha256": payload_sha256,
+                "filename": filename,
+                "options": deepcopy(dict(options)),
+            }
+        )
+        return payload_sha256, request_digest
+
+    @staticmethod
+    def _seal_dataset_upload_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
+        selected = deepcopy(dict(receipt))
+        selected.pop("receipt_sha256", None)
+        selected["receipt_sha256"] = _canonical_digest(selected)
+        return selected
+
+    def _read_dataset_upload_receipt(
+        self,
+        task_id: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        selected_request_id = self._normalize_dataset_upload_request_id(request_id)
+        path = self._dataset_upload_receipt_path(task_id, selected_request_id)
+        if not path.is_file():
+            raise FileNotFoundError("dataset upload receipt not found")
+        receipt = read_json(path)
+        if (
+            receipt.get("task_id") != task_id
+            or receipt.get("request_id") != selected_request_id
+        ):
+            raise HarnessError("dataset upload receipt identity mismatch")
+        expected_seal = str(receipt.get("receipt_sha256") or "")
+        unsigned = {
+            key: value for key, value in receipt.items() if key != "receipt_sha256"
+        }
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", expected_seal)
+            or expected_seal != _canonical_digest(unsigned)
+        ):
+            raise HarnessError("dataset upload receipt integrity mismatch")
+        if receipt.get("status") == "completed":
+            dataset_id = str(receipt.get("dataset_id") or "")
+            task = read_json(self._task_path(task_id))
+            report_path = (
+                self._task_dir(task_id)
+                / "datasets"
+                / dataset_id
+                / "dataset_report.json"
+            )
+            if (
+                dataset_id not in task.get("dataset_history", [])
+                or not report_path.is_file()
+            ):
+                raise HarnessError(
+                    "dataset upload receipt points to unavailable dataset"
+                )
+        return receipt
+
+    @contextmanager
+    def _dataset_upload_process_lock(self, task_id: str) -> Any:
+        """Serialize dataset receipt allocation across local server processes."""
+
+        lock_path = self._task_dir(task_id) / "dataset_upload_receipts" / ".upload.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+        lock_acquired = False
+        try:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                lock_acquired = True
+            elif msvcrt is not None:  # pragma: no cover - Windows only
+                if handle.tell() == 0 and lock_path.stat().st_size == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                deadline = time.monotonic() + DATASET_UPLOAD_LOCK_TIMEOUT_SECONDS
+                while True:
+                    try:
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                        lock_acquired = True
+                        break
+                    except OSError as error:
+                        if time.monotonic() >= deadline:
+                            raise HarnessError(
+                                "另一进程正在导入该任务的数据，请稍后用同一请求重试"
+                            ) from error
+                        time.sleep(DATASET_UPLOAD_LOCK_POLL_SECONDS)
+            else:  # pragma: no cover - unsupported Python platform
+                raise HarnessError("当前平台不支持安全的数据导入进程锁")
+            yield
+        finally:
+            if lock_acquired and fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            elif lock_acquired and msvcrt is not None:  # pragma: no cover - Windows only
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            handle.close()
+
+    def _reconcile_processing_dataset_upload_receipt(
+        self,
+        task_id: str,
+        receipt_path: Path,
+        receipt: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Recover a receipt interrupted around the task commit boundary.
+
+        ``attach_dataset`` commits the inspected dataset and task projection
+        before the receipt becomes ``completed``.  After a process crash, the
+        immutable task history therefore tells us whether that commit happened.
+        We only recover when exactly one new task-owned Dataset appeared; any
+        ambiguous history fails closed instead of binding the request to the
+        wrong data.
+        """
+
+        if receipt.get("status") != "processing":
+            return deepcopy(dict(receipt))
+        task = read_json(self._task_path(task_id))
+        current_history = list(task.get("dataset_history", []))
+        history_before = receipt.get("dataset_history_before")
+        if history_before is not None:
+            if not isinstance(history_before, list) or any(
+                not isinstance(item, str) or not item for item in history_before
+            ):
+                raise HarnessError("数据导入收据缺少可核对的历史快照")
+            if current_history[: len(history_before)] != history_before:
+                raise HarnessError("数据导入期间任务历史发生冲突，不能自动恢复")
+            history_size_before = len(history_before)
+        else:
+            # Read compatibility for processing receipts created before the
+            # exact history snapshot was introduced.
+            history_size_before = int(receipt.get("dataset_history_size_before", -1))
+            if history_size_before < 0 or len(current_history) < history_size_before:
+                raise HarnessError("数据导入收据的历史边界无效")
+
+        added_dataset_ids = current_history[history_size_before:]
+        if not added_dataset_ids:
+            # The dataset never reached the authoritative task projection.
+            # Retrying the same exact request is safe; an orphan temporary or
+            # unreferenced dataset directory is not treated as committed data.
+            receipt_path.unlink(missing_ok=True)
+            return None
+        if (
+            len(added_dataset_ids) != 1
+            or task.get("dataset_id") != added_dataset_ids[0]
+        ):
+            raise HarnessError("数据导入期间出现多个任务版本，不能自动恢复")
+
+        dataset_id = added_dataset_ids[0]
+        report_path = (
+            self._task_dir(task_id)
+            / "datasets"
+            / dataset_id
+            / "dataset_report.json"
+        )
+        if not report_path.is_file():
+            raise HarnessError("数据导入任务已提交，但数据体检报告不可用")
+        report = read_json(report_path)
+        expected_filename = Path(str(receipt.get("filename") or "")).name
+        if (
+            report.get("dataset_id") != dataset_id
+            or report.get("source_filename") != expected_filename
+            or report.get("source_payload_sha256") != receipt.get("payload_sha256")
+            or report.get("upload_request_digest_sha256")
+            != receipt.get("request_digest_sha256")
+        ):
+            raise HarnessError("数据导入任务已提交，但上传身份无法核对")
+        completed_receipt = self._seal_dataset_upload_receipt(
+            {
+                **dict(receipt),
+                "status": "completed",
+                "dataset_id": dataset_id,
+                "completed_at_utc": _utc_now(),
+                "recovered_after_restart": True,
+            }
+        )
+        write_json(receipt_path, completed_receipt)
+        return completed_receipt
+
+    def get_dataset_upload_receipt(
+        self,
+        task_id: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        with self._lock:
+            # Resolve the task first so a request id can never probe another
+            # task directory through a 404 side channel.
+            read_json(self._task_path(task_id))
+            return self._read_dataset_upload_receipt(task_id, request_id)
+
+    def attach_dataset_idempotent(
+        self,
+        task_id: str,
+        payload: bytes,
+        filename: str,
+        *,
+        request_id: str,
+        options: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any], bool]:
+        selected_request_id = self._normalize_dataset_upload_request_id(request_id)
+        selected_options = dict(options or {})
+        payload_sha256, request_digest = self._dataset_upload_request_digest(
+            task_id,
+            selected_request_id,
+            payload,
+            filename,
+            selected_options,
+        )
+        with self._lock, self._dataset_upload_process_lock(task_id):
+            task_before = read_json(self._task_path(task_id))
+            receipt_path = self._dataset_upload_receipt_path(
+                task_id,
+                selected_request_id,
+            )
+            if receipt_path.is_file():
+                receipt = self._read_dataset_upload_receipt(
+                    task_id,
+                    selected_request_id,
+                )
+                if receipt.get("request_digest_sha256") != request_digest:
+                    raise HarnessError(
+                        "x-request-id已绑定另一份数据或导入选项，不能复用"
+                    )
+                if receipt.get("status") == "processing":
+                    receipt = self._reconcile_processing_dataset_upload_receipt(
+                        task_id,
+                        receipt_path,
+                        receipt,
+                    )
+                    if receipt is None:
+                        task_before = read_json(self._task_path(task_id))
+                    else:
+                        return self.get_task(task_id), receipt, True
+                elif receipt.get("status") != "completed":
+                    raise HarnessError("同一数据导入请求尚未形成可核对结果")
+                else:
+                    return self.get_task(task_id), receipt, True
+
+            now = _utc_now()
+            pending_receipt = self._seal_dataset_upload_receipt(
+                {
+                    "schema_version": "1.0",
+                    "object_type": "DatasetUploadReceipt",
+                    "task_id": task_id,
+                    "request_id": selected_request_id,
+                    "request_digest_sha256": request_digest,
+                    "payload_sha256": payload_sha256,
+                    "filename": filename,
+                    "options": deepcopy(selected_options),
+                    "status": "processing",
+                    "dataset_id": None,
+                    "dataset_history_size_before": len(
+                        task_before.get("dataset_history", [])
+                    ),
+                    "dataset_history_before": list(
+                        task_before.get("dataset_history", [])
+                    ),
+                    "recovered_after_restart": False,
+                    "created_at_utc": now,
+                    "completed_at_utc": None,
+                }
+            )
+            write_json(receipt_path, pending_receipt)
+            try:
+                task = self.attach_dataset(
+                    task_id,
+                    payload,
+                    filename,
+                    options=selected_options,
+                    upload_request_digest_sha256=request_digest,
+                )
+            except Exception:
+                # Validation failures have no successful response to replay.
+                # Remove only this pending marker; successful receipts remain
+                # immutable and replayable.
+                receipt_path.unlink(missing_ok=True)
+                raise
+            dataset_id = str(task.get("dataset_id") or "")
+            if not dataset_id:
+                receipt_path.unlink(missing_ok=True)
+                raise HarnessError("数据导入完成但没有返回dataset_id")
+            completed_receipt = self._seal_dataset_upload_receipt(
+                {
+                    **pending_receipt,
+                    "status": "completed",
+                    "dataset_id": dataset_id,
+                    "completed_at_utc": _utc_now(),
+                }
+            )
+            write_json(receipt_path, completed_receipt)
+            return task, completed_receipt, False
 
     def update_contract(self, task_id: str, changes: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
@@ -7008,6 +7344,19 @@ class TrainingWorkspace:
 
     def _contract_path(self, task_id: str) -> Path:
         return self._task_dir(task_id) / "task_contract.json"
+
+    def _dataset_upload_receipt_path(
+        self,
+        task_id: str,
+        request_id: str,
+    ) -> Path:
+        selected_request_id = self._normalize_dataset_upload_request_id(request_id)
+        request_key = hashlib.sha256(selected_request_id.encode("utf-8")).hexdigest()
+        return (
+            self._task_dir(task_id)
+            / "dataset_upload_receipts"
+            / f"{request_key}.json"
+        )
 
     def _contract_revision_path(
         self, task_id: str, contract_revision_id: str

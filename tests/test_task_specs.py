@@ -684,6 +684,106 @@ class TaskSpecRevisionTests(unittest.TestCase):
                             expected_family,
                         )
 
+    def test_create_task_recipe_cannot_rewrite_original_capability(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = create_app(Path(temp_dir) / "runs")
+            with TestClient(app) as client:  # type: ignore[misc]
+                raw_asr = client.post(
+                    "/tasks",
+                    json={
+                        "name": "企业录音转写",
+                        "business_goal": "训练ASR模型把会议录音转写为文字",
+                        "recipe_id": "image-folder-classification",
+                    },
+                )
+                self.assertEqual(raw_asr.status_code, 201, raw_asr.text)
+                raw_asr_task = raw_asr.json()["task"]
+                self.assertEqual(raw_asr_task["status"], "needs_confirmation")
+                self.assertIsNone(raw_asr_task["recipe_id"])
+                self.assertEqual(raw_asr_task["capability_request"], {})
+                self.assertEqual(
+                    raw_asr_task["task_spec"]["source"],
+                    "task_created",
+                )
+                self.assertNotEqual(raw_asr_task["status"], "awaiting_data")
+
+                confirmed_asr = client.patch(
+                    f"/tasks/{raw_asr_task['task_id']}/spec",
+                    json={"base_revision": 1, "confirm": True},
+                )
+                self.assertEqual(
+                    confirmed_asr.status_code,
+                    200,
+                    confirmed_asr.text,
+                )
+                confirmed_asr_task = confirmed_asr.json()["task"]
+                self.assertEqual(confirmed_asr_task["status"], "needs_recipe")
+                self.assertIsNone(confirmed_asr_task["recipe_id"])
+                self.assertEqual(len(confirmed_asr_task["blockers"]), 1)
+                verify_recipe_unavailable_evidence(
+                    confirmed_asr_task["blockers"][0],
+                    allow_active_projection=True,
+                )
+
+                explicit_asr = client.post(
+                    "/tasks",
+                    json={
+                        "name": "已确认的录音转写",
+                        "business_goal": "把录音转写为文字",
+                        "capability_request": {"family": "asr"},
+                        "recipe_id": "image-folder-classification",
+                    },
+                )
+                self.assertEqual(explicit_asr.status_code, 201, explicit_asr.text)
+                explicit_asr_task = explicit_asr.json()["task"]
+                self.assertEqual(explicit_asr_task["status"], "needs_recipe")
+                self.assertEqual(
+                    explicit_asr_task["capability_request"],
+                    {"family": "asr"},
+                )
+                self.assertIsNone(explicit_asr_task["recipe_id"])
+                self.assertNotEqual(explicit_asr_task["status"], "awaiting_data")
+                verify_recipe_unavailable_evidence(
+                    explicit_asr_task["blockers"][0],
+                    allow_active_projection=True,
+                )
+
+                clarifying = client.post(
+                    "/tasks",
+                    json={
+                        "name": "时序任务",
+                        "business_goal": "训练一个时序模型",
+                        "recipe_id": "image-folder-classification",
+                    },
+                )
+                self.assertEqual(clarifying.status_code, 201, clarifying.text)
+                clarifying_task = clarifying.json()["task"]
+                self.assertEqual(clarifying_task["status"], "needs_clarification")
+                self.assertIsNone(clarifying_task["recipe_id"])
+                self.assertEqual(clarifying_task["capability_request"], {})
+                self.assertNotEqual(clarifying_task["status"], "awaiting_data")
+
+                compatible = client.post(
+                    "/tasks",
+                    json={
+                        "name": "明确图片分类",
+                        "business_goal": "对零件图片输出唯一类别",
+                        "capability_request": {"family": "image_classification"},
+                        "recipe_id": "image-folder-classification",
+                    },
+                )
+                self.assertEqual(compatible.status_code, 201, compatible.text)
+                compatible_task = compatible.json()["task"]
+                self.assertEqual(compatible_task["status"], "awaiting_data")
+                self.assertEqual(
+                    compatible_task["recipe_id"],
+                    "image-folder-classification",
+                )
+                self.assertEqual(
+                    compatible_task["task_spec"]["capability_request"],
+                    {"family": "image_classification"},
+                )
+
     def test_unsupported_and_unknown_families_never_fake_recipe_support(self) -> None:
         self.assertEqual(
             set(TASK_FAMILY_VALUES),

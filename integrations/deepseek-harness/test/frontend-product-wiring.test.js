@@ -75,39 +75,22 @@ test("L4 evaluation and raw sample use task-owned APIs while Artifact Bundle mut
   assert.match(app, /capability_unavailable/);
 });
 
-test("contract confirmation binds the exact immutable revision and fails closed when it is unavailable", async () => {
-  const { app } = await sources();
-  const start = app.indexOf("async function confirmContract()");
-  const end = app.indexOf("function activateContext", start);
-  assert.ok(start >= 0 && end > start, "confirmContract must remain a separately auditable action");
-  const confirmContract = app.slice(start, end);
-
-  const identityDeclaration = confirmContract.match(/const identityFields = (\[[^;]+\]);/);
-  assert.ok(identityDeclaration, "confirmContract must declare the immutable contract identity fields");
-  assert.deepEqual(JSON.parse(identityDeclaration[1]), [
-    "contract_revision_id",
-    "contract_sha256",
-    "task_id",
-    "spec_revision_id",
-    "dataset_id",
-    "dataset_fingerprint_sha256",
-  ]);
-  assert.match(confirmContract, /expected_contract_revision:\s*Object\.fromEntries\(identityFields\.map\(\(field\) => \[field, revision\[field\]\]\)\)/);
-  assert.match(confirmContract, /approval:\s*\{[\s\S]*?actor:\s*"user"/);
-  assert.match(confirmContract, /checkpoint_id:\s*checkpoint\?\.checkpoint_id \|\| checkpoint\?\.rpc_id \|\| `workspace-confirm:\$\{revision\.contract_revision_id\}`/);
-
-  const missingRevisionGuard = confirmContract.match(/if \(!revision \|\| identityFields\.some\(\(field\) => !revision\[field\]\)\) \{([\s\S]*?)\n  \}/);
-  assert.ok(missingRevisionGuard, "missing or incomplete revisions must be rejected in the browser");
-  assert.match(missingRevisionGuard[1], /return;/);
-  assert.doesNotMatch(missingRevisionGuard[1], /request\(/);
-  assert.ok(
-    confirmContract.indexOf("if (!revision") < confirmContract.indexOf("const payload"),
-    "revision validation must happen before payload construction",
-  );
-  assert.ok(
-    confirmContract.indexOf("if (!revision") < confirmContract.indexOf("/confirm`"),
-    "revision validation must happen before the confirmation request",
-  );
+test("Inspector contract review is read-only while DSH HumanCheckpoint keeps the writable approval path", async () => {
+  const { app, html } = await sources();
+  const renderContract = app.slice(app.indexOf("function renderContract"), app.indexOf("function releaseVerdict"));
+  const policy = app.slice(app.indexOf("function syncLegacyConfirmationControls"), app.indexOf("function returnToHumanCheckpoint"));
+  const navigation = app.slice(app.indexOf("function returnToHumanCheckpoint"), app.indexOf("const BACKGROUND_TRAINING_STATUSES"));
+  assert.match(html, /id="confirmations" data-confirmation-mode="read-only"/);
+  assert.equal((html.match(/data-confirm="[^"]+" disabled/g) || []).length, 3);
+  assert.match(renderContract, /input\.disabled = true/);
+  assert.match(policy, /contractAwaitingConfirmation/);
+  assert.match(policy, /runAwaitingConfirmation/);
+  assert.match(policy, /hasCanonicalCheckpoint/);
+  assert.match(navigation, /currentHumanCheckpoint\(state\.conversation\)/);
+  assert.doesNotMatch(navigation, /request\(|postQuestionAnswers\(|answerApproval\(/);
+  assert.doesNotMatch(app, /async function confirmContract\(\)/);
+  assert.doesNotMatch(app, /workspace-confirm:/);
+  assert.match(app, /conversation\/approvals\/\$\{encodeURIComponent\(item\.rpc_id\)\}/);
 });
 
 test("regression contract gates explain raw target units and their human-reviewed baseline", async () => {
@@ -210,17 +193,21 @@ test("desktop primary training actions expose 44px interaction targets", async (
   assert.match(css, /\.send-button\{width:44px;height:44px\}/);
 });
 
-test("terminal runs expose a human-approved task-owned recovery path", async () => {
+test("terminal run recovery navigates to the canonical conversation checkpoint without mutating runs", async () => {
   const { html, app } = await sources();
   assert.match(html, /id="retryRunButton"[^>]*hidden/);
+  assert.match(html, /id="retryRunButton"[^>]*>回到对话确认恢复<\/button>/);
   assert.match(app, /TERMINAL_RETRY_STATUSES = new Set\(\["failed", "cancelled", "interrupted"\]\)/);
   assert.match(app, /retry_training_run/);
-  assert.match(app, /function approveTrainingRecovery\(\)/);
-  assert.match(app, /request\(`\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/runs`, \{ method: "POST" \}\)/);
-  assert.match(app, /旧事件、错误和产物不会被覆盖/);
-  assert.match(app, /页面也不会在后端返回前伪造运行状态/);
+  const recovery = app.slice(app.indexOf("function navigateToTrainingRecoveryCheckpoint"), app.indexOf("async function answerApproval"));
+  assert.match(recovery, /function navigateToTrainingRecoveryCheckpoint\(\)/);
+  assert.match(recovery, /currentHumanCheckpoint\(state\.conversation\)/);
+  assert.match(recovery, /\.human-checkpoint/);
+  assert.match(recovery, /只有随后出现的 HumanCheckpoint 才能授权创建新 Run/);
+  assert.doesNotMatch(recovery, /request\(|\/runs|openSimpleDialog|submitMessage|answerApproval/);
   assert.match(app, /TERMINAL_RETRY_STATUSES\.has\(result\.status\) && task\.control\?\.next_action\?\.id === "retry_training_run"/);
-  assert.match(app, /ui\.retryRunButton\.addEventListener\("click", approveTrainingRecovery\)/);
+  assert.match(app, /ui\.retryRunButton\.addEventListener\("click", navigateToTrainingRecoveryCheckpoint\)/);
+  assert.doesNotMatch(app, /function approveTrainingRecovery\(|addEventListener\("click", approveTrainingRecovery\)/);
   assert.doesNotMatch(app, /state\.task\.status\s*=\s*"running"/);
 });
 
@@ -263,9 +250,12 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(app, /RUNNING_STATUSES\.has\(task\.current_result\?\.status\)\) return \{ label: "后台训练\/评测进行中"/);
   assert.match(app, /\(conversation && state\.conversationStreamDegraded\) \|\| conversation\?\.projection_health/);
   assert.match(app, /function syncTaskHeader\(task, conversation = state\.conversation, projection = null\)/);
-  assert.match(app, /const taskConversation = task\.task_id === state\.selectedTaskId \? state\.conversation : null; const workflow = workflowStatus\(task, taskConversation\)/);
+  assert.match(app, /function taskListStatus\(task, conversation = null\)/);
+  assert.match(app, /const taskOwnedConversation = conversation\?\.task_id === task\?\.task_id \? conversation : null/);
+  assert.match(app, /return taskOwnedConversation \? interactionPresentation\(task, taskOwnedConversation\) : workflowStatus\(task, null\)/);
+  assert.match(app, /const taskConversation = task\.task_id === state\.selectedTaskId \? state\.conversation : null; const workflow = taskListStatus\(task, taskConversation\)/);
   assert.match(app, /function syncSelectedTaskListStatus\(conversation = state\.conversation\)/);
-  assert.match(app, /syncTaskHeader\(state\.task, conversation, projection\); syncTaskSpecCheckpointOwnership\(conversation\); syncSelectedTaskListStatus\(conversation\)/);
+  assert.match(app, /syncTaskHeader\(state\.task, conversation, projection\); syncTaskSpecCheckpointOwnership\(conversation\); syncLegacyConfirmationControls\(state\.task, conversation\); syncSelectedTaskListStatus\(conversation\)/);
   assert.match(app, /stage === "environment_lock"\) return \{ label: blocked \? "训练环境阻断"/);
   assert.match(app, /label: "固定模型来源记录"/);
   assert.match(app, /time\.textContent = formatRelativeTime\(task\.updated_at_utc\)/);
@@ -360,7 +350,7 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.doesNotMatch(app, /任务已创建并交给训练协调器。它会先读取 TrainingTask/);
   assert.match(css, /body \.send-button\s*\{[^}]*width:\s*var\(--control-lg\)[^}]*height:\s*var\(--control-lg\)[^}]*border-radius:\s*50%/);
   assert.match(app, /function renderCoordinatorPlan\(item, target = ui\.messageList\)/);
-  assert.match(app, /item\.kind === "coordinator_plan" \? \{ \.\.\.item, compact: true, truthConflict, failedActionTitle:/);
+  assert.match(app, /item\.kind === "coordinator_plan" \? \{ \.\.\.item, compact: true, currentInteraction: current, truthConflict, failedActionTitle:/);
   assert.match(app, /const latestPlanIndex = items\.reduce\(\(latest, item, index\) => item\.kind === "coordinator_plan" \? index : latest, -1\)/);
   assert.match(app, /if \(item\.kind === "coordinator_plan" && itemIndex !== latestPlanIndex\) return/);
   assert.match(app, /const truthConflict = item\.kind === "coordinator_plan" && Boolean\(failedAction\)/);
@@ -369,10 +359,11 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(app, /"不作为状态"/);
   assert.match(app, /function renderCoordinatorProgress\(item, target = ui\.messageList\)/);
   const compactProgress = app.slice(app.indexOf("function renderCoordinatorProgress"), app.indexOf("function teamEventTitle"));
-  assert.match(compactProgress, /const completed = item\.status === "completed"/);
-  assert.match(compactProgress, /completed \? "本轮计划" : "当前计划"/);
-  assert.match(compactProgress, /completed \? "已全部完成" : item\.title \|\| "正在梳理下一步"/);
-  assert.match(compactProgress, /completed \? "查看" : "展开"/);
+  assert.match(app, /function coordinatorProgressPresentation\(item, canonical = null\)/);
+  assert.match(app, /currentInteraction: current/);
+  assert.match(compactProgress, /item\.currentInteraction \? canonicalInteractionPresentation\(state\.conversation\) : null/);
+  assert.match(compactProgress, /coordinatorProgressPresentation\(item, canonical\)/);
+  assert.doesNotMatch(compactProgress, /item\.status === "completed"/);
   assert.match(app, /function renderActionTimeline\(actions, delegations = \[\], \{ interactionState = "idle", expertCount = 0, recoveredFailures = new Set\(\), target = ui\.messageList \} = \{\}\)/);
   assert.match(app, /const waitingForHuman = interactionState === "waiting_for_human"/);
   assert.match(app, /waitingForHuman \? "本轮已经做了什么"/);
@@ -749,7 +740,7 @@ test("live Agent and cancellation truth outrank persisted blockers", async () =>
 test("CSV data checkpoints upload first and resume the same Agent question without exposing host paths", async () => {
   const { css, app } = await sources();
   const checkpointRenderer = app.slice(app.indexOf("function renderHumanCheckpoint"), app.indexOf("function renderTurnTerminal"));
-  const upload = app.slice(app.indexOf("function datasetCoordinatorContinuation"), app.indexOf("async function confirmContract"));
+  const upload = app.slice(app.indexOf("function datasetCoordinatorContinuation"), app.indexOf("function activateContext"));
   const uploadRecognition = app.slice(app.indexOf("const DATA_UPLOAD_QUESTION_IDS"), app.indexOf("function syncTaskSpecCheckpointOwnership"));
   const datasetRenderer = app.slice(app.indexOf("function renderDataset"), app.indexOf("function gateEntries"));
   assert.match(app, /function dataUploadQuestionCheckpoint\(item\)/);
@@ -761,7 +752,10 @@ test("CSV data checkpoints upload first and resume the same Agent question witho
   assert.match(checkpointRenderer, /ui\.datasetInput\.value = ""; ui\.datasetInput\.click\(\)/);
   assert.match(checkpointRenderer, /协调器只会收到导入后的数据集编号和你选择的预测列/);
   assert.doesNotMatch(checkpointRenderer, /绝对路径|相对于工作区|\/Users\//);
-  assert.match(app, /const datasetId = response\?\.task\?\.dataset_id \|\| null/);
+  assert.match(app, /const receiptDatasetId = response\?\.dataset_upload\?\.dataset_id \|\| null/);
+  assert.match(app, /const datasetId = receiptDatasetId \|\| response\?\.task\?\.dataset_id \|\| null/);
+  assert.match(app, /function datasetUploadReceiptMatches\(response, taskId, requestId\)/);
+  assert.match(app, /dataset-upload-receipts/);
   assert.match(app, /function dataUploadCheckpointAnswers\(item, datasetId, targetColumn\)/);
   assert.match(app, /isDatasetUploadQuestionId\(question\.id\)/);
   assert.match(app, /question\.id === "target_column"/);
@@ -787,9 +781,11 @@ test("CSV data checkpoints upload first and resume the same Agent question witho
   assert.match(datasetRenderer, /const blocked = !uploadCheckpoint && \(task\.status === "running" \|\| task\.status === "needs_recipe" \|\| !specReady\)/);
   assert.match(datasetRenderer, /ui\.datasetButton\.disabled = recipeSamplesNeeded \? false : blocked; ui\.inspectorDatasetButton\.disabled = blocked/);
   const contractRenderer = app.slice(app.indexOf("function renderContract"), app.indexOf("function releaseVerdict"));
-  assert.match(contractRenderer, /const checkpointWriteLocked = Boolean\(currentHumanCheckpoint\(state\.conversation\)\)/);
-  assert.match(contractRenderer, /ui\.confirmContractButton\.disabled = contractWriteLocked; ui\.approveRunProposalButton\.disabled = contractWriteLocked/);
-  assert.match(contractRenderer, /input\.disabled = contractWriteLocked/);
+  const legacyConfirmationPolicy = app.slice(app.indexOf("function syncLegacyConfirmationControls"), app.indexOf("function returnToHumanCheckpoint"));
+  assert.match(contractRenderer, /input\.disabled = true/);
+  assert.match(legacyConfirmationPolicy, /ui\.confirmContractButton\.hidden = true; ui\.confirmContractButton\.disabled = true/);
+  assert.match(legacyConfirmationPolicy, /ui\.approveRunProposalButton\.hidden = true; ui\.approveRunProposalButton\.disabled = true/);
+  assert.match(legacyConfirmationPolicy, /const hasCanonicalCheckpoint = Boolean\(checkpoint\?\.rpc_id && isPendingHumanCheckpoint\(checkpoint\)\)/);
   assert.match(app, /checkpoint\.questions\?\.length !== 1\) \{ openQuestionDialog\(checkpoint\)/);
   assert.match(css, /\.data-upload-actions\{display:grid/);
   assert.match(css, /\.data-upload-actions \.checkpoint-upload-button\{/);
@@ -1061,4 +1057,86 @@ test("composer queues stable idempotent messages and cancellation stays explicit
   assert.match(css, /\.composer-delivery\{display:grid/);
   assert.match(css, /\.composer-wrap\[data-delivery="queue_after_turn"\] \.composer/);
   assert.match(css, /\.cancel-reason-field/);
+});
+
+test("composer attachment chip exposes honest states and retries the same request identity", async () => {
+  const { html, visualCss, app } = await sources();
+  for (const id of [
+    "composerAttachment", "attachmentType", "attachmentName", "attachmentMeta", "attachmentStatus",
+    "retryAttachmentButton", "removeAttachmentButton", "composerRetry", "composerRetryButton", "composerRetryHint",
+  ]) assert.match(html, new RegExp(`id="${id}"`));
+
+  assert.match(html, /id="composerAttachment"[^>]*data-state="pending"[^>]*role="group"[^>]*aria-label="所选文件"/);
+  assert.match(html, /id="attachmentStatus"[^>]*role="status"[^>]*aria-live="polite"/);
+  assert.match(app, /const COMPOSER_ATTACHMENT_STATUS = \{ pending: "待核对", validating: "校验中", ready: "已就绪", failed: "失败" \}/);
+  assert.match(app, /function stageComposerAttachment\(file\)/);
+  assert.match(app, /request_id: createConversationRequestId\(\), status: "pending"/);
+  assert.match(app, /function retryComposerAttachment\(\)/);
+  assert.match(app, /attachment\.status === "failed" && attachment\.can_retry === true/);
+  assert.match(app, /await uploadDataset\(attachment\.file, \{ \.\.\.attachment\.options, attachment \}\)/);
+  assert.match(app, /headers\["x-request-id"\] = attachment\.request_id/);
+  assert.match(app, /const responseMayBeLost = !Number\.isFinite\(error\.status\) \|\| error\.status === 408 \|\| error\.status >= 500/);
+  assert.match(app, /response = await reconcileDatasetUploadReceipt\(taskId, attachment\)/);
+  assert.match(app, /awaitReceipt\(`数据请求的响应未能确认：\$\{error\.message\}`\)/);
+  assert.match(app, /status: "pending", error: message, retry_stage: "reconcile"/);
+  assert.match(app, /不会先把它标成失败/);
+  assert.match(app, /updateComposerAttachment\(attachment, \{ status: "validating"/);
+  assert.match(app, /updateComposerAttachment\(attachment, \{ status: "ready", dataset_id: datasetId/);
+  assert.match(app, /retry_stage: "continuation"/);
+  assert.match(app, /failed\.request_id !== continuation\.request_id/);
+  assert.match(app, /重试只会续接原问题，不会重复上传/);
+  assert.match(app, /showComposerRetry\(\{ label: "重试发送"/);
+  assert.match(app, /failed\.request_id !== failedSubmission\.request_id/);
+  assert.match(app, /await submitMessage\(failed\.text\)/);
+  assert.match(app, /importedDatasetId \? "文件条目已从输入框移除；已经导入当前任务的数据仍然保留。" : "文件已从输入框移除。"/);
+  assert.match(app, /status: "pending", error: "等待选择预测目标", retry_stage: "upload", can_retry: true/);
+  assert.doesNotMatch(app, /setInterval\([^\n]*composerAttachment|setTimeout\([^\n]*status:\s*"ready"/);
+
+  assert.match(visualCss, /body \.composer-attachment\s*\{/);
+  assert.match(visualCss, /body \.composer-attachment\[data-state="validating"\]/);
+  assert.match(visualCss, /body \.composer-attachment\[data-state="ready"\]/);
+  assert.match(visualCss, /body \.composer-attachment\[data-state="failed"\]/);
+  assert.match(visualCss, /body \.attachment-retry\[hidden\]\s*\{[\s\S]*?display: none;/);
+  assert.match(visualCss, /body \.attachment-copy b\s*\{[\s\S]*?font-size: var\(--text-md\);[\s\S]*?line-height: var\(--leading-md\);/);
+});
+
+test("terminal synthesis adds one compact result card only for exact task-owned result objects", async () => {
+  const { visualCss, app } = await sources();
+  const modelStart = app.indexOf("function terminalResultCardModel(item, projection)");
+  const modelEnd = app.indexOf("function appendTerminalResultCard", modelStart);
+  assert.ok(modelStart >= 0 && modelEnd > modelStart, "terminal result model must remain separately auditable");
+  const model = app.slice(modelStart, modelEnd);
+  const refs = app.slice(app.indexOf("function terminalResultRefs"), app.indexOf("function reportForTerminalRef"));
+
+  assert.match(model, /item\?\.kind !== "final_synthesis"/);
+  assert.match(model, /item\.completion_eligible !== true/);
+  assert.match(model, /runtimeStatusToken\(item\.status\) !== "completed"/);
+  assert.match(model, /projection\?\.phase !== "result_ready"/);
+  assert.match(model, /projection\.background\?\.running === true/);
+  assert.match(model, /projection\.result\?\.final\?\.event_id !== item\.event_id/);
+  assert.match(refs, /ref\.task_id === taskId/);
+  assert.match(refs, /ref\.run_id === runId/);
+  assert.match(refs, /typeof ref\.digest === "string" && EVIDENCE_SHA256\.test\(ref\.digest\)/);
+  assert.match(refs, /result\.status !== "completed"/);
+  assert.match(model, /if \(!report && !bundle\) return null/);
+  assert.match(app, /return metrics\.slice\(0, 3\)/);
+  assert.match(model, /bundle && state\.runtimeReady \? \{ kind: "download", label: "下载现有交付包"/);
+  assert.match(model, /\{ kind: "open", label: "打开结果", ref: primaryRef \}/);
+  assert.match(app, /state\.selectedTaskId !== model\.taskId \|\| state\.task\?\.current_result\?\.run_id !== model\.runId/);
+  assert.match(app, /requestArtifactBundleDownload\(\{ run_id: model\.runId \}, model\.cta\.bundle\)/);
+  assert.match(app, /if \(!appendTerminalResultCard\(item, body, projection\)\) appendObjectRefs\(body, finalSynthesisFallbackRefs\(item\)\)/);
+  assert.match(app, /function returnedObjectMatchesRef\(ref, payload\)/);
+  assert.match(app, /returnedObjectMatchesRef\(normalized, payload\)/);
+  assert.match(app, /returnedObjectMatchesRef\(ref, payload\)/);
+  assert.doesNotMatch(model, /innerHTML|dataset_id|report_sha256|manifest_sha256/);
+
+  assert.match(visualCss, /--text-body: 15px;[\s\S]*?--leading-body: 24px;[\s\S]*?--leading-lg: 24px;/);
+  assert.match(visualCss, /body \.message-copy\s*\{[\s\S]*?font-size: var\(--text-body\);[\s\S]*?line-height: var\(--leading-body\);/);
+  assert.match(visualCss, /body \.rich-message h2,[\s\S]*?body \.rich-message h4\s*\{[\s\S]*?font-size: 16px;[\s\S]*?line-height: 24px;/);
+  assert.match(visualCss, /body \.turn-result-card\s*\{[\s\S]*?border-radius: 16px;[\s\S]*?box-shadow: 0 8px 24px/);
+  assert.match(visualCss, /body \.turn-result-card h3\s*\{[\s\S]*?font-size: 16px;[\s\S]*?line-height: 24px;/);
+  assert.match(visualCss, /body \.turn-result-conclusion\s*\{[\s\S]*?font-size: 15px;[\s\S]*?line-height: 24px;/);
+  assert.match(visualCss, /body \.turn-result-card > footer button\s*\{[\s\S]*?background: var\(--brand\);/);
+  const mobile = visualCss.slice(visualCss.indexOf("@media (max-width: 720px)"));
+  assert.doesNotMatch(mobile, /--text-body\s*:\s*(?:1[0-4]|\d)px|\.message-copy\s*\{[^}]*font-size\s*:\s*(?:1[0-4]|\d)px|turn-result-conclusion\s*\{[^}]*font-size\s*:\s*(?:1[0-4]|\d)px/);
 });

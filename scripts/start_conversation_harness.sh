@@ -27,6 +27,7 @@ REUSED_BACKEND=0
 AGENT_BRIDGE_TOKEN="${MODEL_HARNESS_AGENT_BRIDGE_TOKEN:-}"
 PUBLIC_START="${SPECIALIST_MODEL_STUDIO_PUBLIC_START:-0}"
 L6_ACCEPTANCE="${SPECIALIST_MODEL_STUDIO_L6_ACCEPTANCE:-0}"
+BACKEND_START_ATTEMPTS="${MODEL_HARNESS_BACKEND_START_ATTEMPTS:-180}"
 REQUIRE_PROVIDER_READY=0
 if [[ "${PUBLIC_START}" == "1" || "${L6_ACCEPTANCE}" == "1" ]]; then
   REQUIRE_PROVIDER_READY=1
@@ -55,8 +56,16 @@ if [[ ! -x "${HARNESS_PYTHON}" ]]; then
   exit 1
 fi
 
+if ! [[ "${BACKEND_START_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "MODEL_HARNESS_BACKEND_START_ATTEMPTS must be a positive integer." >&2
+  exit 1
+fi
+
 RUNS_DIR="$("${HARNESS_PYTHON}" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "${RUNS_DIR_INPUT}")"
 WORKSPACE_DIR="${RUNS_DIR}/_workspace"
+ARTIFACT_EXPORT_DIR_INPUT="${MODEL_HARNESS_ARTIFACT_EXPORT_DIR:-${WORKSPACE_DIR}/exports}"
+MODEL_HARNESS_ARTIFACT_EXPORT_DIR="$("${HARNESS_PYTHON}" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve(strict=False))' "${ARTIFACT_EXPORT_DIR_INPUT}")"
+export MODEL_HARNESS_ARTIFACT_EXPORT_DIR
 BACKEND_LOG="${RUNS_DIR}/.conversation-backend.log"
 DSH_ROOT_INPUT="${DSH_HOME:-${RUNS_DIR}/.dsh}"
 DSH_ROOT="$("${HARNESS_PYTHON}" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "${DSH_ROOT_INPUT}")"
@@ -395,8 +404,15 @@ else
   BACKEND_PID="$!"
   STARTED_BACKEND=1
 
-  for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+  # A pristine environment may spend tens of seconds importing NumPy, SciPy,
+  # and scikit-learn before Uvicorn can bind the port.  Keep the health gate,
+  # but give a real cold start up to 90 seconds by default instead of declaring
+  # a healthy checkout dead after five seconds.
+  for ((_attempt=1; _attempt<=BACKEND_START_ATTEMPTS; _attempt++)); do
     if curl --fail --silent --max-time 2 "${BACKEND_URL}/health" >/dev/null 2>&1; then
+      break
+    fi
+    if ! kill -0 "${BACKEND_PID}" >/dev/null 2>&1; then
       break
     fi
     sleep 0.5

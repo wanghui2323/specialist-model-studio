@@ -631,6 +631,88 @@ test("Artifact Bundle download verifies SHA-256 and returns no host path", async
   }
 });
 
+test("relative Artifact Bundle destinations stay inside runtime workspace exports", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "model-harness-bundle-workspace-"));
+  const bundleBytes = Buffer.from("workspace-artifact-bundle-bytes");
+  const sha256 = createHash("sha256").update(bundleBytes).digest("hex");
+  const exportRoot = join(temp, "runtime", "_workspace", "exports");
+  const filename = "housing-price-bundle.zip";
+  try {
+    globalThis.fetch = async (url, options = {}) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/download")) {
+        return new Response(bundleBytes, {
+          status: 200,
+          headers: {
+            "Content-Type": "application/zip",
+            "X-Delivery-Authorization-Id": "download-auth-workspace",
+            "X-Delivery-Request-Sha256": "d".repeat(64),
+          },
+        });
+      }
+      return new Response(JSON.stringify({
+        artifact_bundle: {
+          manifest_sha256: "e".repeat(64),
+          archive: { sha256 },
+        },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+    const client = new ModelHarnessClient(baseUrl, "", exportRoot);
+    const result = await client.downloadArtifactBundle(
+      "task-one",
+      "run-one",
+      "bundle-one",
+      filename,
+      {
+        authorizationId: "download-auth-workspace",
+        authorizationToken: "download-token",
+        downloadRequestSha256: "d".repeat(64),
+        manifestSha256: "e".repeat(64),
+        archiveSha256: sha256,
+      },
+    );
+
+    assert.deepEqual(await readFile(join(exportRoot, filename)), bundleBytes);
+    assert.equal(result.destination_scope, "workspace_exports");
+    assert.equal(JSON.stringify(result).includes(temp), false);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("relative Artifact Bundle destinations reject path traversal", async () => {
+  const client = new ModelHarnessClient(baseUrl, "", join(tmpdir(), "model-harness-exports"));
+  await assert.rejects(
+    client.downloadArtifactBundle(
+      "task-one",
+      "run-one",
+      "bundle-one",
+      "../outside.zip",
+    ),
+    /must use a filename only/,
+  );
+});
+
+test("relative Artifact Bundle destinations fail closed without a runtime workspace", async () => {
+  let requested = false;
+  globalThis.fetch = async () => {
+    requested = true;
+    throw new Error("network must not be reached");
+  };
+  const client = new ModelHarnessClient(baseUrl, "", "");
+
+  await assert.rejects(
+    client.downloadArtifactBundle(
+      "task-one",
+      "run-one",
+      "bundle-one",
+      "delivery.zip",
+    ),
+    /runtime workspace export directory is unavailable/i,
+  );
+  assert.equal(requested, false);
+});
+
 test("Artifact Bundle download never overwrites an existing destination or leaves a partial file", async () => {
   const temp = await mkdtemp(join(tmpdir(), "model-harness-bundle-existing-"));
   const bundleBytes = Buffer.from("new-bundle-bytes");

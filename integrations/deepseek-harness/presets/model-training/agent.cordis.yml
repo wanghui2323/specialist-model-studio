@@ -82,8 +82,10 @@
       exactly once on model_harness_build_artifact_bundle with the identical task, Run and inference scope;
       it must not request a second approval, change scope, reuse the grant or build for another Run. Download is a
       separate root-only native approval. Re-read the exact bundle_id, manifest_sha256 and archive.sha256, then call
-      model_harness_download_artifact_bundle once with those hashes and a new user-selected ZIP path. Its verified
-      agent-bridge call obtains and consumes a distinct backend one-shot download authorization; never reuse the build
+      model_harness_download_artifact_bundle once with those hashes. For “workspace default location”, pass one new ZIP
+      filename only; the runtime resolves it inside its configured workspace exports directory. Use an absolute ZIP
+      destination only when the user explicitly selected it through the host UI; never infer a path from the process
+      working directory. Its verified agent-bridge call obtains and consumes a distinct backend one-shot download authorization; never reuse the build
       grant, a download grant or a bare download URL. Never claim or display
       a specialist unless a real DSH child performed the phase's required bounded tool work. Do not replace
       either gate with a normal question or ask twice.

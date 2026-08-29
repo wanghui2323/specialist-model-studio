@@ -19,8 +19,8 @@ const ui = Object.fromEntries([
   "sidebar", "sidebarScrim", "menuButton", "newTaskButton", "refreshButton", "taskList", "taskEyebrow", "taskTitle", "runtimePill", "conversationMain",
   "emptyState", "conversation", "conversationIntro", "messageList",
   "workspaceToggleButton", "workspaceExperience", "workspaceEyebrow", "workspaceTitle", "workspacePhaseBadge", "workspaceSummary", "workspaceTeam", "workspaceTeamTitle", "workspaceTeamCount", "workspaceTeamList", "workspaceResults", "workspaceResultsTitle", "workspaceResultCount", "workspaceResultList", "workspaceTechnicalButton", "workspaceTruthNote", "agentCheckpoint", "agentCheckpointStage", "agentCheckpointTitle", "agentCheckpointState", "agentCheckpointSummary", "agentCheckpointBody", "agentCheckpointActions", "agentCheckpointWorkspaceButton", "agentCheckpointWorkspaceLabel", "agentCheckpointWorkspaceHint", "homeComposerSlot", "homeBoundary", "homeTrainingProof", "composerWrap",
-  "agentWorking", "agentWorkingLabel", "cancelAgentButton", "composerForm", "composerNotice", "composerDelivery", "composerDeliveryLabel", "composerDeliveryDetail", "messageInput", "sendButton", "composerMode", "composerModeLabel",
-  "datasetButton", "datasetButtonLabel", "datasetInput", "recipeSampleInput", "inspectorDatasetButton", "inspectorEmpty", "inspectorContent", "objectViewer", "objectViewerTitle", "objectViewerState", "objectViewerSummary", "objectViewerIdentity", "objectViewerJson", "taskStatus", "contextTabs",
+  "agentWorking", "agentWorkingLabel", "cancelAgentButton", "composerForm", "composerNotice", "composerRetry", "composerRetryHint", "composerRetryButton", "composerDelivery", "composerDeliveryLabel", "composerDeliveryDetail", "messageInput", "sendButton", "composerMode", "composerModeLabel",
+  "composerAttachment", "attachmentType", "attachmentName", "attachmentMeta", "attachmentStatus", "retryAttachmentButton", "removeAttachmentButton", "datasetButton", "datasetButtonLabel", "datasetInput", "recipeSampleInput", "inspectorDatasetButton", "inspectorEmpty", "inspectorContent", "objectViewer", "objectViewerTitle", "objectViewerState", "objectViewerSummary", "objectViewerIdentity", "objectViewerJson", "taskStatus", "contextTabs",
   "capabilityState", "capabilitySummary", "capabilityFacts", "capabilityAxes", "diagnosticCapabilityState", "diagnosticCapabilityReason", "trainingCapabilityState", "trainingCapabilityReason", "capabilityRecovery", "capabilityNonAction", "datasetCard", "datasetCount", "datasetSummary", "contractCard", "contractState",
   "scaffoldRecipeButton",
   "gateGrid", "confirmations", "confirmContractButton", "approveRunProposalButton", "runEventCount", "inspectorEvents", "resultCard",
@@ -48,15 +48,15 @@ const ui = Object.fromEntries([
   "repositoryAnalysisCard", "repositoryAnalysisState", "repositoryAnalysisSummary", "repositoryAnalysisFacts", "repositoryAnalysisEvidence",
   "repositoryAnalysisEvidenceList", "repositoryAnalysisRiskPanel", "repositoryAnalysisRiskList", "repositoryManualMapping", "repositoryManualEntrypointInput",
   "repositoryDatasetArgumentInput", "applyRepositoryManualMappingButton", "trainingPlanCard", "trainingPlanState", "trainingPlanSummary", "manualEntrypointField",
-  "manualEntrypointInput", "trainingPlanFacts", "createTrainingPlanButton", "approveTrainingPlanButton", "trainingPlanDecisionActions", "rejectTrainingPlanButton", "cancelTrainingPlanButton",
+  "manualEntrypointInput", "trainingPlanFacts", "createTrainingPlanButton", "approveTrainingPlanButton", "trainingPlanDecisionActions", "rejectTrainingPlanButton", "cancelTrainingPlanButton", "trainingPlanConfirmationNote",
   "resourceFeasibilityCard", "resourceFeasibilityState", "resourceFeasibilitySummary", "resourceFeasibilityFacts", "baseImageDigestField",
-  "baseImageDigestInput", "resourceFeasibilityReasons", "checkResourceFeasibilityButton",
+  "baseImageDigestInput", "resourceFeasibilityReasons", "checkResourceFeasibilityButton", "contractConfirmationNote",
 ].map((id) => [id, document.getElementById(id)]));
 const state = {
   tasks: [], task: null, selectedTaskId: null, conversation: null, runEvents: [], runtimeReady: false, pollTimer: null,
   conversationStream: null, conversationStreamCursor: null, conversationStreamRevision: null, conversationStreamTaskId: null, conversationStreamDegraded: false, conversationFallbackTimer: null, conversationReconnectTimer: null,
   conversationReconcileInFlight: false, conversationReconcileSeq: 0, conversationReconcilePromise: null,
-  pendingMessage: null, messageSubmission: null, messageRequestSequence: 0, cancelRequestInFlight: false, lastRenderKey: "", selectionToken: 0, hfCapability: null, hfModels: [], hfCard: null,
+  pendingMessage: null, messageSubmission: null, messageRequestSequence: 0, composerRetryAction: null, composerRetryKind: null, composerAttachment: null, cancelRequestInFlight: false, lastRenderKey: "", selectionToken: 0, hfCapability: null, hfModels: [], hfCard: null,
   modelAssetVerification: null, evidenceRunId: null, evidenceLoaded: false, evaluationReport: null, sampleInferences: [], artifactBundles: [],
   refreshInFlight: false, refreshSeq: 0,
   evidenceErrors: {},
@@ -84,6 +84,7 @@ const STAGE_LABELS = {
   training_plan: "确认训练计划", resource_probe: "检查本机资源", environment_lock: "冻结训练环境", resource_fit: "判断训练可行性",
 };
 const IMMUTABLE_COMMIT = /^[0-9a-f]{40}$/;
+const EVIDENCE_SHA256 = /^[0-9a-f]{64}$/;
 const HF_CHECK_LABELS = {
   known_license: "许可证明确", onnx_payload: "包含 ONNX", preprocess_config: "包含预处理配置",
   local_cpu_runtime: "本机 CPU Runtime", within_local_size_budget: "符合本地大小预算", image_classification_tag: "图像分类标签",
@@ -148,6 +149,101 @@ function showTransientNotice(message, tone = "ok", durationMs = 6_000) {
   state.noticeDismissTimer = window.setTimeout(() => { state.noticeDismissTimer = null; ui.composerNotice.hidden = true; ui.composerNotice.textContent = ""; }, durationMs);
 }
 function setButtonBusy(button, busy, busyText) { if (!button.dataset.label) button.dataset.label = button.textContent; button.disabled = busy; button.textContent = busy ? busyText : button.dataset.label; }
+function clearComposerRetry(kind = null) {
+  if (kind && state.composerRetryKind !== kind) return;
+  state.composerRetryAction = null; state.composerRetryKind = null; ui.composerRetry.hidden = true; ui.composerRetryHint.textContent = ""; ui.composerRetryButton.textContent = "重试"; delete ui.composerRetryButton.dataset.label;
+}
+function showComposerRetry({ label, hint, kind, action }) {
+  state.composerRetryAction = action; state.composerRetryKind = kind; ui.composerRetry.hidden = false; ui.composerRetryHint.textContent = hint; ui.composerRetryButton.textContent = label; delete ui.composerRetryButton.dataset.label;
+}
+async function invokeComposerRetry() {
+  const action = state.composerRetryAction; if (typeof action !== "function") { clearComposerRetry(); return; }
+  setButtonBusy(ui.composerRetryButton, true, "重试中");
+  try { await action(); }
+  finally { if (!ui.composerRetry.hidden) setButtonBusy(ui.composerRetryButton, false, ""); }
+}
+const COMPOSER_ATTACHMENT_STATUS = { pending: "待核对", validating: "校验中", ready: "已就绪", failed: "失败" };
+function attachmentTypeLabel(file) {
+  const extension = String(file?.name || "").split(".").pop()?.toUpperCase();
+  if (extension === "CSV" || extension === "ZIP") return extension;
+  return String(file?.type || "FILE").split("/").pop()?.slice(0, 8).toUpperCase() || "FILE";
+}
+function renderComposerAttachment() {
+  const attachment = state.composerAttachment; ui.composerAttachment.hidden = !attachment;
+  if (!attachment) return;
+  const status = COMPOSER_ATTACHMENT_STATUS[attachment.status] || COMPOSER_ATTACHMENT_STATUS.pending;
+  ui.composerAttachment.dataset.state = attachment.status || "pending"; ui.attachmentType.textContent = attachmentTypeLabel(attachment.file); ui.attachmentName.textContent = attachment.file?.name || "未命名文件"; ui.attachmentName.title = attachment.file?.name || "";
+  const details = [attachment.file?.type || attachmentTypeLabel(attachment.file), formatBytes(attachment.file?.size)];
+  if (attachment.dataset_id) details.push("已写入当前任务"); if (attachment.error) details.push(attachment.error);
+  ui.attachmentMeta.textContent = details.filter(Boolean).join(" · "); ui.attachmentMeta.title = attachment.error || ""; ui.attachmentStatus.textContent = status; ui.attachmentStatus.dataset.state = attachment.status || "pending";
+  const canRetry = (attachment.status === "failed" && attachment.can_retry === true) || attachment.retry_stage === "continuation" || (attachment.status === "pending" && attachment.can_retry === true);
+  ui.retryAttachmentButton.hidden = !canRetry; ui.retryAttachmentButton.textContent = attachment.retry_stage === "continuation" ? "重试续接" : attachment.retry_stage === "reconcile" ? "核对导入" : attachment.status === "pending" ? "继续处理" : "重试导入";
+  ui.removeAttachmentButton.disabled = attachment.status === "validating"; ui.removeAttachmentButton.title = attachment.status === "validating" ? "正在校验，返回结果前不能移除" : attachment.dataset_id ? "从输入框移除；已导入的数据不会被删除" : "从输入框移除文件";
+  ui.removeAttachmentButton.setAttribute("aria-label", ui.removeAttachmentButton.title);
+}
+function updateComposerAttachment(attachment, patch) {
+  if (!attachment || state.composerAttachment?.request_id !== attachment.request_id) return false;
+  Object.assign(attachment, patch); renderComposerAttachment(); return true;
+}
+function datasetUploadReceiptMatches(response, taskId, requestId) {
+  const receipt = response?.dataset_upload; const task = response?.task;
+  if (!receipt || !task || receipt.object_type !== "DatasetUploadReceipt" || receipt.status !== "completed") return false;
+  if (receipt.task_id !== taskId || receipt.request_id !== requestId || task.task_id !== taskId) return false;
+  if (typeof receipt.dataset_id !== "string" || !receipt.dataset_id || task.dataset_id !== receipt.dataset_id) return false;
+  return Array.isArray(task.dataset_history) && task.dataset_history.includes(receipt.dataset_id);
+}
+async function reconcileDatasetUploadReceipt(taskId, attachment) {
+  if (!taskId || !attachment?.request_id || attachment.task_id !== taskId) throw new Error("数据请求缺少当前任务身份");
+  const response = await request(`/tasks/${encodeURIComponent(taskId)}/dataset-upload-receipts/${encodeURIComponent(attachment.request_id)}`);
+  if (!datasetUploadReceiptMatches(response, taskId, attachment.request_id)) throw new Error("服务端回执与当前任务数据集不一致");
+  return response;
+}
+async function reconcileComposerDatasetUpload(task) {
+  const attachment = state.composerAttachment;
+  if (!attachment || attachment.task_id !== task?.task_id || attachment.dataset_id || attachment.retry_stage !== "reconcile") return false;
+  try {
+    const response = await reconcileDatasetUploadReceipt(task.task_id, attachment);
+    updateComposerAttachment(attachment, { status: "ready", dataset_id: response.dataset_upload.dataset_id, error: null, retry_stage: null, can_retry: false });
+    showNotice(`已根据服务端回执确认数据集 ${shortId(response.dataset_upload.dataset_id)}；没有重复上传。`, "ok");
+    return true;
+  } catch (_error) {
+    updateComposerAttachment(attachment, { status: "pending", error: "仍在等待服务端回执；可再次核对或安全重试原请求", retry_stage: "reconcile", can_retry: true });
+    return false;
+  }
+}
+function clearComposerAttachment({ force = false } = {}) {
+  if (!force && state.composerAttachment?.status === "validating") { showNotice("文件正在校验。请等待真实请求返回后再移除，避免误判是否已经导入。", "ok"); return; }
+  const importedDatasetId = state.composerAttachment?.dataset_id || null;
+  state.composerAttachment = null; ui.datasetInput.value = ""; renderComposerAttachment();
+  if (!force) showNotice(importedDatasetId ? "文件条目已从输入框移除；已经导入当前任务的数据仍然保留。" : "文件已从输入框移除。", "ok");
+}
+function syncComposerAttachmentOwner(taskId) {
+  const attachment = state.composerAttachment; if (!attachment) return;
+  if (!taskId) { if (attachment.task_id) clearComposerAttachment({ force: true }); return; }
+  if (!attachment.task_id) { attachment.task_id = taskId; renderComposerAttachment(); return; }
+  if (attachment.task_id !== taskId) clearComposerAttachment({ force: true });
+}
+function stageComposerAttachment(file) {
+  if (!file) return;
+  if (state.composerAttachment?.status === "validating") { showNotice("当前文件仍在校验，返回结果前没有替换它。", "ok"); ui.datasetInput.value = ""; return; }
+  const attachment = { file, task_id: state.selectedTaskId, request_id: createConversationRequestId(), status: "pending", options: {}, dataset_id: null, error: null, retry_stage: null, can_retry: false, continuation: null };
+  state.composerAttachment = attachment; renderComposerAttachment(); ui.datasetInput.value = "";
+  if (!state.selectedTaskId) { updateComposerAttachment(attachment, { can_retry: true, retry_stage: "upload", error: "发送任务目标后再导入" }); showNotice("文件已放入输入框，尚未上传。先发送任务目标；任务理解确认后再继续处理这个文件。", "ok"); return; }
+  void uploadDataset(file, { attachment });
+}
+async function retryComposerAttachment() {
+  const attachment = state.composerAttachment;
+  if (!attachment?.file || !attachment.request_id) { showNotice("没有可重试的文件请求；请重新选择文件。", "error"); return; }
+  if (!state.selectedTaskId) { showNotice("请先发送任务目标创建任务；文件仍保持待处理。", "ok"); return; }
+  if (attachment.task_id && attachment.task_id !== state.selectedTaskId) { showNotice("这个文件请求属于另一项任务，已拒绝跨任务重试。请移除后重新选择。", "error"); return; }
+  attachment.task_id = state.selectedTaskId;
+  if (attachment.retry_stage === "continuation") { await retryAttachmentContinuation(attachment); return; }
+  if (attachment.retry_stage === "reconcile") {
+    const reconciled = await reconcileComposerDatasetUpload(state.task);
+    if (reconciled) return;
+  }
+  await uploadDataset(attachment.file, { ...attachment.options, attachment });
+}
 function formatBytes(value) { if (!Number.isFinite(value)) return "大小未知"; if (value < 1024) return `${value} B`; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`; if (value < 1024 ** 4) return `${(value / 1024 ** 3).toFixed(1)} GB`; return `${(value / 1024 ** 4).toFixed(1)} TB`; }
 function fixedCommit(value) { return typeof value === "string" && IMMUTABLE_COMMIT.test(value.toLowerCase()); }
 function statusLabel(value) { return EVIDENCE_STATUS_LABELS[value] || String(value || "未知"); }
@@ -200,9 +296,62 @@ function syncTaskSpecCheckpointOwnership(conversation = state.conversation) {
     if (ownedByDsh && !control.disabled) { control.disabled = true; control.dataset.disabledByDshCheckpoint = "true"; }
     else if (!ownedByDsh && control.dataset.disabledByDshCheckpoint === "true") { control.disabled = false; delete control.dataset.disabledByDshCheckpoint; }
   });
-  [ui.confirmContractButton, ui.approveRunProposalButton, ui.datasetButton, ui.inspectorDatasetButton].filter(Boolean).forEach((control) => {
+  [ui.datasetButton, ui.inspectorDatasetButton].filter(Boolean).forEach((control) => {
     if (ownedByDsh && !control.disabled) { control.disabled = true; control.dataset.disabledByDshCheckpoint = "true"; }
     else if (!ownedByDsh && control.dataset.disabledByDshCheckpoint === "true") { control.disabled = false; delete control.dataset.disabledByDshCheckpoint; }
+  });
+}
+function syncLegacyConfirmationControls(task = state.task, conversation = state.conversation) {
+  const checkpoint = currentHumanCheckpoint(conversation);
+  const hasCanonicalCheckpoint = Boolean(checkpoint?.rpc_id && isPendingHumanCheckpoint(checkpoint));
+  const planAwaitingConfirmation = task?.training_plan?.effective_status === "awaiting_approval" && task.training_plan.stale !== true;
+  const contractAwaitingConfirmation = Boolean(task?.contract) && task.contract_confirmed !== true;
+  const runAwaitingConfirmation = task?.contract_confirmed === true && task.control?.next_action?.id === "start_training_run" && task.status !== "running";
+  const observationDegraded = state.conversationStreamDegraded || conversation?.projection_health?.status === "observation_degraded";
+
+  ui.approveTrainingPlanButton.hidden = true; ui.approveTrainingPlanButton.disabled = true;
+  ui.rejectTrainingPlanButton.hidden = true; ui.rejectTrainingPlanButton.disabled = true;
+  ui.cancelTrainingPlanButton.hidden = true; ui.cancelTrainingPlanButton.disabled = true;
+  ui.confirmContractButton.hidden = true; ui.confirmContractButton.disabled = true;
+  ui.approveRunProposalButton.hidden = true; ui.approveRunProposalButton.disabled = true;
+  ui.trainingPlanDecisionActions.hidden = true;
+
+  const checkpointCopy = observationDegraded || !state.runtimeReady
+    ? "确认仍保留在对话的 HumanCheckpoint 中；当前连接或观察链路不可用，检查点保持只读，恢复后再处理。"
+    : "当前确认由对话中的 HumanCheckpoint 接管；这张卡只用于核对证据。";
+  const coordinatorCopy = "这张卡只用于核对证据。训练协调器会在对话中提出 HumanCheckpoint；在此之前不会改变任务状态，也不会降低任何 gate。";
+
+  ui.trainingPlanConfirmationNote.hidden = !planAwaitingConfirmation;
+  if (planAwaitingConfirmation) {
+    ui.trainingPlanConfirmationNote.textContent = hasCanonicalCheckpoint ? checkpointCopy : coordinatorCopy;
+    if (hasCanonicalCheckpoint) { ui.approveTrainingPlanButton.hidden = false; ui.approveTrainingPlanButton.disabled = false; }
+  }
+
+  const contractNeedsConversation = contractAwaitingConfirmation || runAwaitingConfirmation;
+  ui.contractConfirmationNote.hidden = !contractNeedsConversation;
+  if (contractNeedsConversation) {
+    ui.contractConfirmationNote.textContent = hasCanonicalCheckpoint ? checkpointCopy : coordinatorCopy;
+    const navigation = contractAwaitingConfirmation ? ui.confirmContractButton : ui.approveRunProposalButton;
+    if (hasCanonicalCheckpoint) { navigation.hidden = false; navigation.disabled = false; }
+  }
+}
+function returnToHumanCheckpoint() {
+  const checkpoint = currentHumanCheckpoint(state.conversation);
+  if (!checkpoint?.rpc_id || !isPendingHumanCheckpoint(checkpoint)) {
+    syncLegacyConfirmationControls();
+    showNotice("当前没有可验证的 HumanCheckpoint。训练协调器会在对话中提出确认；本卡不会代替它写入决定。", "ok");
+    return;
+  }
+  closeInspector({ userInitiated: false });
+  window.requestAnimationFrame(() => {
+    const target = [...ui.messageList.querySelectorAll('.human-checkpoint[data-rpc-id]')]
+      .find((card) => card.dataset.rpcId === checkpoint.rpc_id);
+    if (!target) {
+      showNotice("待确认检查点仍在任务中，但当前对话尚未完整呈现。请刷新或恢复连接；本卡没有写入任何决定。", "error");
+      return;
+    }
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    target.focus({ preventScroll: true });
   });
 }
 const BACKGROUND_TRAINING_STATUSES = new Set(["created", "queued", "starting", "preflight", "active", "running", "training", "evaluating", "packaging", "cancel_requested", "cancelling", "stopping"]);
@@ -375,6 +524,14 @@ function interactionPresentation(task, conversation = state.conversation, projec
     can_cancel: conversation?.can_cancel_agent === true && !backgroundCancellationPending(conversation),
   };
 }
+function taskListStatus(task, conversation = null) {
+  // The selected task owns the only hydrated conversation in this view. Its
+  // canonical interaction projection must win over the coarser domain stage;
+  // unselected tasks deliberately fall back to persisted task truth instead
+  // of borrowing another task's conversation state.
+  const taskOwnedConversation = conversation?.task_id === task?.task_id ? conversation : null;
+  return taskOwnedConversation ? interactionPresentation(task, taskOwnedConversation) : workflowStatus(task, null);
+}
 function syncTaskHeader(task, conversation = state.conversation, projection = null) {
   const workflow = interactionPresentation(task, conversation, projection);
   ui.taskEyebrow.textContent = workflow.label;
@@ -502,7 +659,7 @@ function renderTaskList() {
     const button = document.createElement("button"); button.type = "button"; button.className = "task-item"; button.dataset.action = "select-task"; button.dataset.taskId = task.task_id; button.setAttribute("aria-current", String(task.task_id === state.selectedTaskId));
     const title = document.createElement("b"); title.textContent = task.name;
     const meta = document.createElement("span"); meta.className = "task-meta";
-    const taskConversation = task.task_id === state.selectedTaskId ? state.conversation : null; const workflow = workflowStatus(task, taskConversation); const status = document.createElement("span"); status.className = "task-workflow"; const dot = document.createElement("i"); dot.dataset.status = workflow.tone; status.append(dot, document.createTextNode(workflow.label));
+    const taskConversation = task.task_id === state.selectedTaskId ? state.conversation : null; const workflow = taskListStatus(task, taskConversation); const status = document.createElement("span"); status.className = "task-workflow"; const dot = document.createElement("i"); dot.dataset.status = workflow.tone; status.append(dot, document.createTextNode(workflow.label));
     const time = document.createElement("time"); time.dateTime = task.updated_at_utc || ""; time.textContent = formatRelativeTime(task.updated_at_utc); meta.append(status, time);
     button.append(title, meta);
     const archive = document.createElement("button"); archive.type = "button"; archive.className = "task-archive-button icon-button"; archive.dataset.action = "archive-task"; archive.dataset.taskId = task.task_id;
@@ -514,7 +671,7 @@ function renderTaskList() {
 function syncSelectedTaskListStatus(conversation = state.conversation) {
   const task = state.tasks.find((item) => item.task_id === state.selectedTaskId); if (!task) return;
   const button = [...ui.taskList.querySelectorAll(".task-item")].find((item) => item.dataset.taskId === task.task_id); const status = button?.querySelector(".task-workflow"); const dot = status?.querySelector("i"); if (!status || !dot) return;
-  const workflow = workflowStatus(task, conversation); dot.dataset.status = workflow.tone; status.replaceChildren(dot, document.createTextNode(workflow.label));
+  const workflow = taskListStatus(task, conversation); dot.dataset.status = workflow.tone; status.replaceChildren(dot, document.createTextNode(workflow.label));
 }
 function confirmTaskArchive(task) {
   if (task.status === "running") { showNotice("真实训练运行中，暂不能归档任务。请等待运行结束或先取消训练。"); return; }
@@ -535,19 +692,20 @@ function confirmTaskArchive(task) {
   });
 }
 function enterHomeState({ focusComposer = true } = {}) {
+  syncComposerAttachmentOwner(null); clearComposerRetry();
   history.replaceState(null, "", location.pathname); document.body.dataset.view = "home"; ui.homeComposerSlot.append(ui.composerWrap); ui.emptyState.hidden = false; ui.conversation.hidden = true;
   ui.inspector.hidden = true; ui.workspaceToggleButton.hidden = true; ui.mobileViewNav.hidden = true; ui.agentCheckpoint.hidden = true; ui.inspectorEmpty.hidden = false; ui.inspectorContent.hidden = true; ui.taskEyebrow.textContent = "SPECIALIST MODEL STUDIO"; ui.taskTitle.textContent = "开始一个训练任务";
   renderRuntimeMode(runtimeDisplayMode()); syncComposerDelivery(null); restoreDraft(null); renderTaskList(); closeSidebar(); closeInspector(); if (focusComposer && state.runtimeReady) ui.messageInput.focus();
 }
 function openNewTask() {
-  saveDraft(); clearDraft(null); ui.messageInput.value = ""; resizeComposer(); stopPolling(); state.selectionToken += 1; Object.assign(state, { selectedTaskId: null, task: null, conversation: null, runEvents: [], pendingMessage: null, lastRenderKey: "", taskSpecRevisions: [], taskSpecDescriptionMode: false, taskSpecQuickReplyKey: "", taskSpecAlternativesOpen: false });
+  saveDraft(); clearDraft(null); clearComposerAttachment({ force: true }); clearComposerRetry(); ui.messageInput.value = ""; resizeComposer(); stopPolling(); state.selectionToken += 1; Object.assign(state, { selectedTaskId: null, task: null, conversation: null, runEvents: [], pendingMessage: null, lastRenderKey: "", taskSpecRevisions: [], taskSpecDescriptionMode: false, taskSpecQuickReplyKey: "", taskSpecAlternativesOpen: false });
   restoreCheckpointCard(); state.workspaceAutoKey = null; state.workspaceDismissedKey = null; state.workspaceProjection = null; state.inspectorAutoOpened = false;
   resetHfDiscovery(); resetModelSourceDiscovery(); resetRunEvidence();
   enterHomeState();
 }
 async function selectTask(taskId, { saveCurrentDraft = true } = {}) {
   if (taskId !== state.selectedTaskId) { if (saveCurrentDraft) saveDraft(); restoreCheckpointCard(); resetHfDiscovery(); resetModelSourceDiscovery(); resetRunEvidence(); state.conversation = null; state.workspaceAutoKey = null; state.workspaceDismissedKey = null; state.workspaceProjection = null; state.inspectorAutoOpened = false; state.taskSpecRevisions = []; state.taskSpecDescriptionMode = false; state.taskSpecQuickReplyKey = ""; state.taskSpecAlternativesOpen = false; }
-  stopPolling(); hideNotice(); const token = ++state.selectionToken; state.selectedTaskId = taskId; state.lastRenderKey = ""; state.pendingMessage = state.pendingMessage?.task_id === taskId ? state.pendingMessage : null; history.replaceState(null, "", `${location.pathname}?task=${encodeURIComponent(taskId)}`);
+  syncComposerAttachmentOwner(taskId); clearComposerRetry(); stopPolling(); hideNotice(); const token = ++state.selectionToken; state.selectedTaskId = taskId; state.lastRenderKey = ""; state.pendingMessage = state.pendingMessage?.task_id === taskId ? state.pendingMessage : null; history.replaceState(null, "", `${location.pathname}?task=${encodeURIComponent(taskId)}`);
   document.body.dataset.view = "task"; ui.conversationMain.append(ui.composerWrap); renderTaskList(); ui.emptyState.hidden = true; ui.conversation.hidden = false; ui.inspector.hidden = false; ui.workspaceToggleButton.hidden = false; ui.mobileViewNav.hidden = false; ui.inspectorEmpty.hidden = true; ui.inspectorContent.hidden = false; closeSidebar(); closeInspector();
   restoreDraft(taskId); await refreshSelected({ force: true, token });
   if (state.selectedTaskId === taskId && state.selectionToken === token) {
@@ -562,7 +720,7 @@ async function refreshSelected({ force = false, token = state.selectionToken, in
   try {
     try {
       const previousSpecRevision = state.task?.task_id === taskId ? state.task.current_spec_revision : null;
-      const response = await request(`/tasks/${encodeURIComponent(taskId)}`); if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return; state.task = response.task;
+      const response = await request(`/tasks/${encodeURIComponent(taskId)}`); if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return; state.task = response.task; await reconcileComposerDatasetUpload(response.task); if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
       const sourceStage = ["capability_resolution", "source_discovery", "source_resolution", "source_snapshot", "repository_analysis"].includes(response.task.control?.current_stage);
       const specChanged = previousSpecRevision !== null && previousSpecRevision !== response.task.current_spec_revision;
       if (force || state.modelSourceLoadedTaskId !== taskId || specChanged || (sourceStage && !state.modelSourceSearchInFlight)) {
@@ -837,6 +995,7 @@ function syncConversationComposerPlaceholder(conversation = state.conversation, 
 function renderTask(task) {
   syncTaskHeader(task);
   renderTaskSpec(task); renderCapability(task); renderModelSource(task); renderRepositoryAnalysis(task); renderTrainingPlan(task); renderResourceFeasibility(task); renderModelAsset(task); renderDataset(task); renderContract(task); renderResult(task); renderRunEvents(); renderRunControl(task);
+  syncLegacyConfirmationControls(task, state.conversation);
   syncAgentCheckpoint(task); syncWorkspaceForTask(task);
   syncConversationComposerPlaceholder(state.conversation, task);
   syncComposerDelivery(state.conversation);
@@ -1288,7 +1447,6 @@ function renderTrainingPlan(task) {
   const plan = view.plan || {}; const status = view.stale ? "已过期" : view.effective_status === "approved" ? "已批准" : view.effective_status === "awaiting_approval" ? "待批准" : statusLabel(view.effective_status);
   ui.trainingPlanState.textContent = status; ui.trainingPlanSummary.textContent = view.stale ? "任务规格或模型来源已经变化，旧计划和审批仍保留但不能继续使用。" : "计划已绑定当前来源和分析；批准只对下面显示的精确 digest 生效。";
   appendFact(ui.trainingPlanFacts, "Revision", `r${plan.revision || "—"} · ${shortId(plan.training_plan_revision_id)}`); appendFact(ui.trainingPlanFacts, "入口", (plan.entrypoint?.argv || []).join(" "), { code: true }); appendFact(ui.trainingPlanFacts, "资源预算", `${formatBytes(plan.resource_budget?.ram_bytes)} RAM · ${formatBytes(plan.resource_budget?.disk_bytes)} 磁盘`); appendFact(ui.trainingPlanFacts, "执行边界", `${plan.execution_policy?.backend || "—"} · CPU-only`); appendFact(ui.trainingPlanFacts, "Plan Digest", plan.plan_sha256, { code: true });
-  ui.approveTrainingPlanButton.hidden = view.effective_status !== "awaiting_approval" || view.stale; ui.approveTrainingPlanButton.disabled = view.stale; ui.trainingPlanDecisionActions.hidden = view.effective_status !== "awaiting_approval" || view.stale;
 }
 async function createTrainingPlan() {
   if (!state.task?.model_binding) { showNotice("请先选择并绑定模型来源。"); return; }
@@ -1320,15 +1478,6 @@ function reviseTrainingPlan(changes = {}) {
       await refreshSelected({ force: true });
     },
   });
-}
-function approveTrainingPlan() {
-  const plan = state.task?.training_plan?.plan; if (!plan) { showNotice("当前没有可批准的训练计划。"); return; }
-  openSimpleDialog({ kicker: "批准不可变训练计划", title: "确认批准当前 Plan Digest？", body: `你批准的是 ${plan.plan_sha256}。任何入口、参数、资源或权限变化都会生成新 revision，并使本次批准失效。批准后只进行本机资源检查，不会执行仓库代码。`, allowLabel: "批准当前 Digest", onAllow: async () => { await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/training-plans/${encodeURIComponent(plan.training_plan_revision_id)}/decisions`, { method: "POST", json: { decision: "approve", expected_plan_sha256: plan.plan_sha256, reason: "用户在产品界面确认" } }); showNotice("当前训练计划 digest 已批准；下一步检查本机资源。", "ok"); await refreshSelected({ force: true }); } });
-}
-function decideTrainingPlan(decision) {
-  const plan = state.task?.training_plan?.plan; if (!plan) { showNotice("当前没有可处理的训练计划。"); return; }
-  const rejected = decision === "reject";
-  openSimpleDialog({ kicker: "训练计划决策", title: rejected ? "拒绝当前训练计划？" : "取消当前训练计划？", body: `该决策只绑定当前 digest ${plan.plan_sha256}，不会删除历史证据。后续必须创建或重新批准有效 revision 才能继续。`, allowLabel: rejected ? "确认拒绝" : "确认取消", onAllow: async () => { await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/training-plans/${encodeURIComponent(plan.training_plan_revision_id)}/decisions`, { method: "POST", json: { decision, expected_plan_sha256: plan.plan_sha256, reason: rejected ? "用户在产品界面拒绝当前计划" : "用户在产品界面取消当前计划" } }); showNotice(rejected ? "当前计划已拒绝，未授权后续资源检查。" : "当前计划已取消，未授权后续资源检查。", "ok"); await refreshSelected({ force: true }); } });
 }
 function renderResourceFeasibility(task) {
   const planView = task.training_plan; const feasibility = task.resource_feasibility || {}; const probe = feasibility.resource_probe; const lock = feasibility.environment_lock; const report = feasibility.resource_fit_report; const blockers = feasibility.blockers || [];
@@ -1519,11 +1668,8 @@ function renderContract(task) {
     const improvement = Number(regressionBasis.required_improvement_fraction); const improvementText = Number.isFinite(improvement) ? `，默认要求至少改善 ${Math.round(improvement * 100)}%` : "";
     const basis = document.createElement("p"); basis.className = "gate-basis"; basis.textContent = `系统按当前数据的常数均值基线建议${improvementText}，仍需你确认。`; ui.gateGrid.append(basis);
   }
-  const confirmed = task.contract_confirmed === true; const nextAction = task.control?.next_action?.id; const checkpointWriteLocked = Boolean(currentHumanCheckpoint(state.conversation)); const contractWriteLocked = task.status === "running" || checkpointWriteLocked; ui.confirmations.hidden = confirmed;
-  ui.approveRunProposalButton.hidden = !confirmed || nextAction !== "start_training_run" || task.status === "running";
-  ui.confirmContractButton.disabled = contractWriteLocked; ui.approveRunProposalButton.disabled = contractWriteLocked;
-  ui.approveRunProposalButton.textContent = "批准当前训练方案并启动";
-  ui.confirmations.querySelectorAll("input").forEach((input) => { input.disabled = contractWriteLocked; input.checked = task.confirmations?.[input.dataset.confirm] === true; });
+  ui.confirmations.hidden = false;
+  ui.confirmations.querySelectorAll("input").forEach((input) => { input.disabled = true; input.checked = task.confirmations?.[input.dataset.confirm] === true; });
 }
 function releaseVerdict(task) {
   const result = task?.current_result;
@@ -1683,9 +1829,16 @@ async function buildArtifactBundle() {
   } finally { setButtonBusy(ui.buildArtifactBundleButton, false, ""); if (state.task) renderResult(state.task); }
 }
 async function requestArtifactBundleDownload(result, bundle) {
-  if (!state.selectedTaskId || !result?.run_id || !bundle?.bundle_id) return;
-  closeInspector();
-  await submitMessage(`请下载当前运行 ${result.run_id} 的交付包 ${bundle.bundle_id}。请先核对交付包摘要与完整性，并在真正下载前让我单独确认；不要复用构建授权。`);
+  const taskId = state.selectedTaskId; const runId = result?.run_id; const bundleId = bundle?.bundle_id; const digest = bundle?.manifest_sha256;
+  if (!taskId || !runId || !bundleId || !EVIDENCE_SHA256.test(String(digest || ""))) { showNotice("交付包引用缺少可核对身份，已停止下载请求。", "error"); return; }
+  const ref = { type: "artifact_bundle", id: bundleId, task_id: taskId, run_id: runId, digest };
+  try {
+    const payload = await request(objectRefEndpoint(ref));
+    if (state.selectedTaskId !== taskId || !returnedObjectMatchesRef(ref, payload)) { showNotice("服务端返回的交付包身份与点击对象不一致，已停止下载请求。", "error"); return; }
+    const exactBundle = payload.artifact_bundle;
+    closeInspector();
+    await submitMessage(`请下载当前运行 ${exactBundle.run_id} 的交付包 ${exactBundle.bundle_id}。请先核对交付包摘要与完整性，并在真正下载前让我单独确认；不要复用构建授权。`);
+  } catch (error) { showNotice(`交付包身份复核失败：${error.message}`, "error"); }
 }
 
 function eventDetail(event) {
@@ -1963,7 +2116,7 @@ function renderConversation(force = false) {
     ui.composerMode.title = activeSpecialists.length ? "只统计当前仍在执行、且父子会话身份已验证的专家" : "当前没有专家在执行；历史专家记录不会冒充当前参与者";
   }
   syncComposerDelivery(conversation);
-  if (state.task) { syncTaskHeader(state.task, conversation, projection); syncTaskSpecCheckpointOwnership(conversation); syncSelectedTaskListStatus(conversation); }
+  if (state.task) { syncTaskHeader(state.task, conversation, projection); syncTaskSpecCheckpointOwnership(conversation); syncLegacyConfirmationControls(state.task, conversation); syncSelectedTaskListStatus(conversation); }
   const observation = conversationObservationKey(conversation);
   const optimistic = state.pendingMessage?.task_id === state.selectedTaskId ? state.pendingMessage : null;
   const items = [...(conversation.items || [])];
@@ -2048,6 +2201,7 @@ function renderConversationTurn(turn, projection, conversation, workItems) {
   const actions = actionsForTurn(turn, projection); let actionsRendered = false; let aiTurn = null;
   const resolvedCheckpoints = [];
   const items = turn.render_items || turn.items || [];
+  const current = projection.current_turn?.group_key === turn.group_key;
   const latestPlanIndex = items.reduce((latest, item, index) => item.kind === "coordinator_plan" ? index : latest, -1);
   const finalNarrativeIndex = items.reduce((latest, item, index) => item.kind === "final_synthesis" ? index : latest, -1);
   const latestNoteIndex = items.reduce((latest, item, index) => item.kind === "coordinator_note" ? index : latest, -1);
@@ -2082,11 +2236,10 @@ function renderConversationTurn(turn, projection, conversation, workItems) {
     if (["final_synthesis", "turn_error", "turn_cancelled", "failed", "blocker"].includes(item.kind)) renderActions();
     const planText = `${item.title || ""} ${item.summary || item.text || ""}`;
     const truthConflict = item.kind === "coordinator_plan" && Boolean(failedAction) && /(?:正在后台运行|已经.{0,8}(?:启动|运行|完成)|训练中|已进入训练)/u.test(planText);
-    renderConversationItem(item.kind === "coordinator_plan" ? { ...item, compact: true, truthConflict, failedActionTitle: failedAction ? actionTitle(failedAction) : null } : item, ensureAiTurn());
+    renderConversationItem(item.kind === "coordinator_plan" ? { ...item, compact: true, currentInteraction: current, truthConflict, failedActionTitle: failedAction ? actionTitle(failedAction) : null } : item, ensureAiTurn());
   });
   renderActions();
   if (resolvedCheckpoints.length) renderCheckpointHistory(resolvedCheckpoints, turnTarget("assistant"));
-  const current = projection.current_turn?.group_key === turn.group_key;
   if (!aiTurn && current && ["executing", "clarifying", "awaiting_approval"].includes(projection.phase)) ensureAiTurn();
   if (aiTurn) appendAiTurnPlaceholder(aiTurn.content, aiTurn.presentation);
 }
@@ -2346,10 +2499,96 @@ function renderRichText(container, text) {
     const paragraph = document.createElement("p"); appendInlineMarkdown(paragraph, paragraphLines.join(" ")); container.append(paragraph);
   }
 }
+const TERMINAL_RESULT_REF_TYPES = new Set(["evaluation_report", "artifact_bundle"]);
+function terminalResultRefs(item, task, result) {
+  const taskId = task?.task_id; const runId = result?.run_id;
+  if (!taskId || !runId || result.status !== "completed") return [];
+  return (item.object_refs || []).filter((ref) => (
+    TERMINAL_RESULT_REF_TYPES.has(ref?.type)
+    && typeof ref.id === "string" && ref.id.length > 0
+    && ref.task_id === taskId
+    && ref.run_id === runId
+    && typeof ref.digest === "string" && EVIDENCE_SHA256.test(ref.digest)
+  ));
+}
+function reportForTerminalRef(ref, task, result) {
+  if (!ref) return null;
+  const fresh = state.evidenceRunId === result.run_id ? state.evaluationReport : null;
+  const report = fresh || result.evaluation_report || null;
+  if (!report || report.task_id !== task.task_id || report.run_id !== result.run_id || report.report_id !== ref.id || report.report_sha256 !== ref.digest) return null;
+  return report;
+}
+function bundleForTerminalRef(ref, task, result) {
+  if (!ref || state.evidenceRunId !== result.run_id) return null;
+  return state.artifactBundles.find((bundle) => bundle?.bundle_id === ref.id && bundle.task_id === task.task_id && bundle.run_id === result.run_id && bundle.manifest_sha256 === ref.digest) || null;
+}
+function terminalResultMetrics(task, result) {
+  const clean = result?.metrics?.clean_test || {}; const gates = task?.contract?.release_gates || {};
+  const definitions = [
+    ["accuracy", "Accuracy", "clean_test_accuracy_min", "min"],
+    ["macro_f1", "Macro-F1", "clean_test_macro_f1_min", "min"],
+    ["worst_class_recall", "最差类 Recall", "clean_test_worst_class_recall_min", "min"],
+    ["mae", "MAE", "clean_test_mae_max", "max"],
+    ["rmse", "RMSE", "clean_test_rmse_max", "max"],
+    ["r2", "R²", "clean_test_r2_min", "min"],
+  ];
+  const metrics = definitions.flatMap(([key, label, gateKey, direction]) => {
+    const value = clean[key]; if (!Number.isFinite(value)) return [];
+    const gate = gates[gateKey]; const hasGate = Number.isFinite(gate); const passed = hasGate ? direction === "max" ? value <= gate : value >= gate : null;
+    return [{ key, label, value: value.toFixed(3), gate: hasGate ? `${direction === "max" ? "≤" : "≥"} ${gate.toFixed(3)}` : null, passed }];
+  });
+  return metrics.slice(0, 3);
+}
+function terminalResultCardModel(item, projection) {
+  const task = state.task; const result = task?.current_result;
+  if (item?.kind !== "final_synthesis" || item.completion_eligible !== true || runtimeStatusToken(item.status) !== "completed") return null;
+  if (projection?.phase !== "result_ready" || projection.background?.running === true || projection.result?.final?.event_id !== item.event_id) return null;
+  const refs = terminalResultRefs(item, task, result); if (!refs.length) return null;
+  const evaluationCandidate = refs.find((ref) => ref.type === "evaluation_report") || null; const bundleCandidate = refs.find((ref) => ref.type === "artifact_bundle") || null;
+  const report = reportForTerminalRef(evaluationCandidate, task, result); const bundle = bundleForTerminalRef(bundleCandidate, task, result);
+  if (!report && !bundle) return null;
+  const evaluationRef = report ? evaluationCandidate : null; const bundleRef = bundle ? bundleCandidate : null;
+  const conclusion = report
+    ? report.release_ready === true ? "这次评测证据已满足当前交付门槛。" : `这次评测已完成，当前结论为“${statusLabel(report.conclusion || "not_evaluated")}”。`
+    : "本轮已生成可追溯交付产物；是否发布仍以完整评测证据为准。";
+  const artifactStatus = bundle ? `${bundle.release_ready ? "可进入交付审阅" : "交付包已生成"} · ${bundle.manifest?.files?.length || 0} 个文件` : "评测报告已就绪";
+  const primaryRef = evaluationRef || bundleRef;
+  return {
+    conclusion,
+    metrics: terminalResultMetrics(task, result),
+    artifactStatus,
+    state: report?.release_ready === true || bundle?.release_ready === true ? "ready" : "review",
+    taskId: task.task_id,
+    runId: result.run_id,
+    cta: bundle && state.runtimeReady ? { kind: "download", label: "下载现有交付包", bundle } : { kind: "open", label: "打开结果", ref: primaryRef },
+  };
+}
+function appendTerminalResultCard(item, target, projection) {
+  const model = terminalResultCardModel(item, projection); if (!model) return false;
+  const card = document.createElement("section"); card.className = "turn-result-card"; card.dataset.state = model.state; card.dataset.interactionKind = "result-summary";
+  const header = document.createElement("header"); const heading = document.createElement("div"); const kicker = document.createElement("span"); kicker.textContent = "RESULT"; const title = document.createElement("h3"); title.textContent = "本轮结果"; heading.append(kicker, title); const stateLabel = document.createElement("b"); stateLabel.textContent = model.artifactStatus; header.append(heading, stateLabel);
+  const conclusion = document.createElement("p"); conclusion.className = "turn-result-conclusion"; conclusion.textContent = model.conclusion; card.append(header, conclusion);
+  if (model.metrics.length) {
+    const metrics = document.createElement("dl"); metrics.className = "turn-result-metrics";
+    model.metrics.forEach((metric) => { const row = document.createElement("div"); if (metric.passed !== null) row.dataset.passed = String(metric.passed); const term = document.createElement("dt"); term.textContent = metric.label; const value = document.createElement("dd"); const actual = document.createElement("b"); actual.textContent = metric.value; const gate = document.createElement("small"); gate.textContent = metric.gate ? `门槛 ${metric.gate}` : "当前评测值"; value.append(actual, gate); row.append(term, value); metrics.append(row); });
+    card.append(metrics);
+  }
+  const footer = document.createElement("footer"); const hint = document.createElement("span"); hint.textContent = "完整证据与身份信息保留在任务工作区"; const action = document.createElement("button"); action.type = "button"; action.textContent = model.cta.label;
+  action.addEventListener("click", () => {
+    if (state.selectedTaskId !== model.taskId || state.task?.current_result?.run_id !== model.runId) { showNotice("结果身份已经变化，已停止操作。请刷新当前任务后重新打开结果。", "error"); return; }
+    if (model.cta.kind === "download") requestArtifactBundleDownload({ run_id: model.runId }, model.cta.bundle); else openObjectRef(model.cta.ref);
+  });
+  footer.append(hint, action); card.append(footer); target.append(card); return true;
+}
+function finalSynthesisFallbackRefs(item) {
+  return (item?.object_refs || []).filter((ref) => !TERMINAL_RESULT_REF_TYPES.has(ref?.type));
+}
 function renderFinalSynthesis(item, target = ui.messageList) {
   const row = document.createElement("article"); row.className = "message"; row.dataset.role = "assistant"; row.dataset.messageType = "final_synthesis"; row.dataset.interactionKind = "natural-dialogue"; const avatar = document.createElement("span"); avatar.className = "message-avatar"; avatar.textContent = "AI";
   const body = document.createElement("div"); body.className = "message-body"; const meta = document.createElement("div"); meta.className = "message-meta"; const author = document.createElement("b"); author.textContent = "训练协调器"; const time = document.createElement("time"); time.textContent = formatTime(item.time); meta.append(author, time);
-  const copy = document.createElement("div"); copy.className = "message-copy"; renderRichText(copy, item.text || item.summary || "训练协调器没有返回综合结论。"); body.append(meta, copy); appendObjectRefs(body, item.object_refs); row.append(avatar, body); target.append(row);
+  const copy = document.createElement("div"); copy.className = "message-copy"; renderRichText(copy, item.text || item.summary || "训练协调器没有返回综合结论。"); body.append(meta, copy);
+  const projection = interactionProjection(state.task, conversationView(state.task, state.conversation)); if (!appendTerminalResultCard(item, body, projection)) appendObjectRefs(body, finalSynthesisFallbackRefs(item));
+  row.append(avatar, body); target.append(row);
 }
 function humanizeCoordinatorText(value) {
   return String(value || "")
@@ -2438,10 +2677,34 @@ function renderCoordinatorPlan(item, target = ui.messageList) {
   if (steps.length) { const list = document.createElement("ol"); list.className = "coordinator-plan-steps"; steps.forEach((step) => { const row = document.createElement("li"); row.dataset.status = step.status || "queued"; const mark = document.createElement("i"); mark.textContent = step.status === "completed" ? "✓" : step.status === "failed" ? "!" : String(step.order || step.index || list.children.length + 1); const copy = document.createElement("span"); const name = document.createElement("b"); name.textContent = step.title || step.goal || "计划步骤"; const owner = document.createElement("small"); owner.textContent = roleLabel(step.owner_role || step.role); copy.append(name, owner); row.append(mark, copy); list.append(row); }); card.append(list); }
   appendObjectRefs(card, item.object_refs); target.append(card);
 }
-function renderCoordinatorProgress(item, target = ui.messageList) {
-  const details = document.createElement("details"); details.className = "coordinator-progress"; details.dataset.status = item.status; details.dataset.interactionKind = "lightweight-plan"; details.dataset.truthConflict = String(Boolean(item.truthConflict));
+function coordinatorProgressPresentation(item, canonical = null) {
+  if (item.truthConflict) return { label: "状态说明已降级", hint: `与“${item.failedActionTitle || "失败工具"}”的真实证据冲突`, action: "不作为状态", tone: "failed" };
+  const byCanonicalPhase = ({
+    observation_degraded: { label: "当前计划", hint: "计划状态不可确认 · 需要重新连接", action: "查看" },
+    stopping: { label: "当前计划", hint: "正在停止", action: "展开" },
+    waiting_question: { label: "本轮计划", hint: "计划步骤已处理 · 等待你的回答", action: "查看" },
+    waiting_approval: { label: "本轮计划", hint: "计划步骤已处理 · 等待你的批准", action: "查看" },
+    agent_working: { label: "当前计划", hint: "计划仍在推进 · AI 正在处理", action: "展开" },
+    background_working: { label: "当前计划", hint: "计划仍在推进 · 后台训练/评测进行中", action: "展开" },
+    blocked: { label: "本轮计划", hint: "计划已暂停 · 当前受阻", action: "查看" },
+    failed: { label: "本轮计划", hint: "计划已停止 · 运行异常", action: "查看" },
+    stopped: { label: "本轮计划", hint: "本轮已停止", action: "查看" },
+    completed: { label: "本轮计划", hint: "已全部完成", action: "查看" },
+  })[canonical?.phase];
+  if (byCanonicalPhase) return { ...byCanonicalPhase, tone: canonical.tone };
   const completed = item.status === "completed";
-  const summary = document.createElement("summary"); const copy = document.createElement("span"); const label = document.createElement("b"); label.textContent = item.truthConflict ? "状态说明已降级" : completed ? "本轮计划" : "当前计划"; const hint = document.createElement("small"); hint.textContent = item.truthConflict ? `与“${item.failedActionTitle || "失败工具"}”的真实证据冲突` : completed ? "已全部完成" : item.title || "正在梳理下一步"; copy.append(label, hint); const stateLabel = document.createElement("em"); stateLabel.textContent = item.truthConflict ? "不作为状态" : completed ? "查看" : "展开"; summary.append(copy, stateLabel); details.append(summary);
+  return {
+    label: completed ? "本轮计划" : "当前计划",
+    hint: completed ? "已全部完成" : item.title || "正在梳理下一步",
+    action: completed ? "查看" : "展开",
+    tone: completed ? "completed" : item.status || "unknown",
+  };
+}
+function renderCoordinatorProgress(item, target = ui.messageList) {
+  const canonical = item.currentInteraction ? canonicalInteractionPresentation(state.conversation) : null;
+  const presentation = coordinatorProgressPresentation(item, canonical);
+  const details = document.createElement("details"); details.className = "coordinator-progress"; details.dataset.status = presentation.tone; details.dataset.planStatus = item.status; details.dataset.interactionKind = "lightweight-plan"; details.dataset.truthConflict = String(Boolean(item.truthConflict));
+  const summary = document.createElement("summary"); const copy = document.createElement("span"); const label = document.createElement("b"); label.textContent = presentation.label; const hint = document.createElement("small"); hint.textContent = presentation.hint; copy.append(label, hint); const stateLabel = document.createElement("em"); stateLabel.textContent = presentation.action; summary.append(copy, stateLabel); details.append(summary);
   const body = document.createElement("div"); body.className = "coordinator-progress-body"; if (item.truthConflict) { const warning = document.createElement("p"); warning.className = "coordinator-conflict-note"; warning.textContent = "下面是协调器当时的过程说明。系统已经检测到同轮工具失败，因此不会把其中的“已启动”或“正在运行”当作任务真相。"; body.append(warning); } const content = document.createElement("div"); renderRichText(content, item.summary || "协调器没有提供补充说明。"); body.append(content); appendObjectRefs(body, item.object_refs); details.append(body); target.append(details);
 }
 function teamEventTitle(item) {
@@ -2493,13 +2756,13 @@ function appendInferenceInputActions(actions, checkpoint) {
   actions.append(picker, choose, hint);
 }
 function renderHumanCheckpoint(item, { interactive = true, target = ui.messageList } = {}) {
-  const card = document.createElement("article"); card.className = "decision-card human-checkpoint"; card.dataset.status = item.status; card.dataset.interactionKind = "human-checkpoint"; const pending = item.status === "pending" || item.status === "waiting" || !item.status; const canRespond = pending && interactive; card.dataset.interactive = String(canRespond); const uploadCheckpoint = canRespond ? dataUploadQuestionCheckpoint(item) : null; const inferenceCheckpoint = canRespond ? inferenceInputQuestionCheckpoint(item) : null; const approval = item.kind === "approval" ? approvalPresentation(item) : null;
+  const card = document.createElement("article"); card.className = "decision-card human-checkpoint"; card.dataset.status = item.status; card.dataset.interactionKind = "human-checkpoint"; if (item.rpc_id) card.dataset.rpcId = item.rpc_id; card.tabIndex = -1; const pending = item.status === "pending" || item.status === "waiting" || !item.status; const canRespond = pending && interactive && state.runtimeReady; card.dataset.interactive = String(canRespond); const uploadCheckpoint = canRespond ? dataUploadQuestionCheckpoint(item) : null; const inferenceCheckpoint = canRespond ? inferenceInputQuestionCheckpoint(item) : null; const approval = item.kind === "approval" ? approvalPresentation(item) : null;
   if (uploadCheckpoint) card.classList.add("data-upload-checkpoint");
   if (inferenceCheckpoint) card.classList.add("inference-input-checkpoint");
   const cancelling = state.cancelRequestInFlight === true || backgroundCancellationPending(state.conversation);
-  const kicker = document.createElement("span"); kicker.textContent = cancelling && pending ? "正在停止 · 暂不可操作" : !interactive && pending ? "连接恢复后再处理" : uploadCheckpoint ? "下一步：准备数据" : inferenceCheckpoint ? "下一步：验证新样本" : pending ? item.kind === "approval" ? "需要你的批准" : "需要你的回答" : "人工检查点已处理";
+  const kicker = document.createElement("span"); kicker.textContent = cancelling && pending ? "正在停止 · 暂不可操作" : (!interactive || !state.runtimeReady) && pending ? "连接恢复后再处理" : uploadCheckpoint ? "下一步：准备数据" : inferenceCheckpoint ? "下一步：验证新样本" : pending ? item.kind === "approval" ? "需要你的批准" : "需要你的回答" : "人工检查点已处理";
   const title = document.createElement("h3"); title.textContent = uploadCheckpoint ? "选择数据文件，系统会先识别字段" : inferenceCheckpoint ? "选择一份没参与训练的新样本" : item.kind === "approval" ? approval.title : item.title || item.questions?.[0]?.header || "补充训练信息";
-  const copy = document.createElement("p"); copy.textContent = cancelling && pending ? "停止请求已经提交。为避免旧确认继续改变任务，本卡会在后端确认最终状态前保持只读。" : !interactive && pending ? "当前观察链路不完整，这个待办可能已经变化。请先重新连接并刷新，恢复后再作答。" : uploadCheckpoint ? "选择 CSV 后，我会先读取真实表头并推荐预测列；你确认后再导入和体检，不需要手填电脑路径。" : inferenceCheckpoint ? "先提供一份全新的样本。系统只做安全暂存；协调器核对范围并征得你批准后，才会交给评测专家执行。" : item.kind === "approval" ? approval.copy : item.summary || item.questions?.[0]?.question || "请回答协调器提出的问题。"; card.append(kicker, title, copy);
+  const copy = document.createElement("p"); copy.textContent = cancelling && pending ? "停止请求已经提交。为避免旧确认继续改变任务，本卡会在后端确认最终状态前保持只读。" : (!interactive || !state.runtimeReady) && pending ? "当前连接或观察链路不完整，这个待办可能已经变化。请先重新连接并刷新，恢复后再作答。" : uploadCheckpoint ? "选择 CSV 后，我会先读取真实表头并推荐预测列；你确认后再导入和体检，不需要手填电脑路径。" : inferenceCheckpoint ? "先提供一份全新的样本。系统只做安全暂存；协调器核对范围并征得你批准后，才会交给评测专家执行。" : item.kind === "approval" ? approval.copy : item.summary || item.questions?.[0]?.question || "请回答协调器提出的问题。"; card.append(kicker, title, copy);
   if (item.kind === "approval") appendApprovalScope(card, item);
   if (canRespond && item.rpc_id) {
     const actions = document.createElement("div"); actions.className = "decision-actions";
@@ -2562,6 +2825,17 @@ function setObjectViewerState(ref, { stateLabel, summary, payload = null }) {
   identity.filter(([, value]) => value !== undefined && value !== null && value !== "").forEach(([label, value]) => { const row = document.createElement("div"); const term = document.createElement("dt"); term.textContent = label; const detail = document.createElement("dd"); detail.textContent = String(value); row.append(term, detail); ui.objectViewerIdentity.append(row); });
   ui.objectViewerJson.textContent = payload ? JSON.stringify(payload, null, 2) : "";
 }
+function returnedObjectMatchesRef(ref, payload) {
+  const type = normalizeObjectRefType(ref?.type);
+  if (!TERMINAL_RESULT_REF_TYPES.has(type)) return true;
+  if (payload?.task?.task_id !== ref.task_id || payload?.run_id !== ref.run_id) return false;
+  if (type === "evaluation_report") {
+    const report = payload.evaluation_report;
+    return Boolean(report && report.task_id === ref.task_id && report.run_id === ref.run_id && report.report_id === ref.id && report.report_sha256 === ref.digest);
+  }
+  const bundle = payload.artifact_bundle;
+  return Boolean(bundle && bundle.task_id === ref.task_id && bundle.run_id === ref.run_id && bundle.bundle_id === ref.id && bundle.manifest_sha256 === ref.digest);
+}
 async function openObjectRef(ref) {
   const type = normalizeObjectRefType(ref?.type); const id = String(ref?.id || ref?.object_id || ""); const normalized = { ...ref, type, id };
   if (!state.selectedTaskId || !id) { showNotice("对象引用缺少当前任务或 canonical id，已拒绝打开。", "error"); return; }
@@ -2569,7 +2843,7 @@ async function openObjectRef(ref) {
   const endpoint = objectRefEndpoint(normalized); state.activeObjectRef = normalized; openInspector("object-viewer", { objectRef: normalized });
   if (!endpoint) { setObjectViewerState(normalized, { stateLabel: "暂不支持", summary: `当前版本没有 ${type || "未知类型"} 的精确读取端点；没有回退到通用方案或当前对象。` }); return; }
   const requestSeq = ++state.objectViewerRequestSeq; const taskId = state.selectedTaskId; setObjectViewerState(normalized, { stateLabel: "读取中", summary: "正在读取被点击的历史对象；不会触发新的外部调用。" });
-  try { const payload = await request(endpoint); if (requestSeq !== state.objectViewerRequestSeq || taskId !== state.selectedTaskId) return; setObjectViewerState(normalized, { stateLabel: "读取成功", summary: "以下是服务端按 canonical identity 返回的 task-owned 只读对象。", payload }); }
+  try { const payload = await request(endpoint); if (requestSeq !== state.objectViewerRequestSeq || taskId !== state.selectedTaskId) return; if (!returnedObjectMatchesRef(normalized, payload)) { setObjectViewerState(normalized, { stateLabel: "身份不匹配", summary: "服务端返回对象的 task、run、id 或 digest 与点击引用不一致；没有展示该对象。" }); showNotice("结果对象身份复核失败，已拒绝打开。", "error"); return; } setObjectViewerState(normalized, { stateLabel: "读取成功", summary: "以下是服务端按 canonical identity 返回的 task-owned 只读对象。", payload }); }
   catch (error) { if (requestSeq !== state.objectViewerRequestSeq || taskId !== state.selectedTaskId) return; setObjectViewerState(normalized, { stateLabel: "读取失败", summary: `${error.status || "请求"}：${error.message}` }); }
 }
 async function openEventResultRef(ref) {
@@ -2585,7 +2859,7 @@ function appendObjectRefs(container, refs = []) {
   refs.forEach((ref) => { const label = ref.label || `${ref.type || "对象"} · ${shortId(ref.id || ref.object_id || ref.digest)}`; if (typeof ref.url === "string" && (/^https?:\/\//.test(ref.url) || ref.url.startsWith("/"))) { const link = document.createElement("a"); link.href = ref.url; link.textContent = label; list.append(link); } else { const button = document.createElement("button"); button.type = "button"; button.textContent = label; button.addEventListener("click", () => openObjectRef(ref)); list.append(button); } }); container.append(list);
 }
 async function submitMessage(message) {
-  const text = message.trim(); if (!text) return; let attemptedTaskId = state.selectedTaskId; hideNotice(); ui.sendButton.disabled = true; ui.sendButton.dataset.busy = "true";
+  const text = message.trim(); if (!text) return; let attemptedTaskId = state.selectedTaskId; clearComposerRetry("message"); hideNotice(); ui.sendButton.disabled = true; ui.sendButton.dataset.busy = "true";
   try {
     if (!state.runtimeReady) { if (state.runtimeIssue === "provider") showRuntimeSetupNotice("模型服务尚未配置。请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动；在此之前不会创建训练任务。"); else showNotice("训练协调器未连接：没有创建或修改任务，也没有启动固定流程替代智能协作。请先恢复连接。", "error"); return; }
     if (state.cancelRequestInFlight || backgroundCancellationPending(state.conversation)) { showNotice("当前执行正在停止。为避免新消息与取消请求发生竞态，请等待后端确认最终状态。", "ok"); return; }
@@ -2593,7 +2867,7 @@ async function submitMessage(message) {
       const created = await request("/tasks", { method: "POST", json: { name: deriveTaskName(text), business_goal: text } }); state.tasks.unshift(created.task); clearDraft(null); ui.messageInput.value = ""; resizeComposer(); await selectTask(created.task.task_id, { saveCurrentDraft: false }); attemptedTaskId = created.task.task_id; ui.messageInput.value = text; saveDraft(attemptedTaskId); resizeComposer();
       if (state.runtimeReady) {
         const taskId = created.task.task_id;
-        await postQueuedConversationMessage(taskId, text); clearDraft(taskId); if (state.selectedTaskId === taskId) { ui.messageInput.value = ""; resizeComposer(); }
+        await postQueuedConversationMessage(taskId, text); clearComposerRetry("message"); clearDraft(taskId); if (state.selectedTaskId === taskId) { ui.messageInput.value = ""; resizeComposer(); }
         showTransientNotice("任务已创建。协调器会先理解你的目标，再决定下一步；需要你做决定时会停下来问你。", "ok"); window.setTimeout(() => refreshSelected({ force: true }), 250); return;
       }
       showTransientNotice(created.task.capability_decision?.status === "needs_clarification" ? "任务已创建，但输出形式仍有歧义。请先提交澄清；系统尚未绑定训练方案。" : "任务已创建。请先检查并确认任务理解；确认前不会进入数据或训练。", "ok"); return;
@@ -2608,14 +2882,22 @@ async function submitMessage(message) {
       await postQuestionAnswers(checkpoint, [{ id: question.id, selected: [], custom: text }]); clearDraft(state.selectedTaskId); ui.messageInput.value = ""; resizeComposer(); showNotice("回答已提交给当前问题，协调器会从同一任务继续。", "ok"); await refreshSelected({ force: true }); return;
     }
     const taskId = state.selectedTaskId; attemptedTaskId = taskId; const queuedAfterTurn = conversationAgentResponseRunning(state.conversation);
-    await postQueuedConversationMessage(taskId, text); clearDraft(taskId); if (state.selectedTaskId === taskId) { ui.messageInput.value = ""; resizeComposer(); }
+    await postQueuedConversationMessage(taskId, text); clearComposerRetry("message"); clearDraft(taskId); if (state.selectedTaskId === taskId) { ui.messageInput.value = ""; resizeComposer(); }
     showTransientNotice(queuedAfterTurn ? "消息已排队，将在本轮结束后继续。" : "消息已提交给训练协调器。", "ok"); window.setTimeout(() => refreshSelected({ force: true }), 250);
   } catch (error) {
     if (state.pendingMessage?.task_id === state.selectedTaskId) state.pendingMessage = null;
     const failedSubmission = state.messageSubmission?.status === "failed" ? state.messageSubmission : null;
     if (failedSubmission?.task_id === state.selectedTaskId && !ui.messageInput.value.trim()) { ui.messageInput.value = failedSubmission.text; resizeComposer(); }
     saveDraft(attemptedTaskId); renderConversation(true);
-    showNotice(failedSubmission ? `消息发送失败：${error.message}。再次发送同一条消息会复用请求编号，不会创建第二条排队请求。` : `${error.message}。任务事实不会被伪造。`);
+    if (failedSubmission) {
+      showNotice(`消息发送失败：${error.message}。再次发送同一条消息会复用请求编号；“重试发送”不会创建第二条排队请求。`);
+      showComposerRetry({ label: "重试发送", hint: "复用原请求身份与原消息；不会新建第二条排队请求。", kind: "message", action: async () => {
+        const failed = state.messageSubmission;
+        if (!failed || failed.status !== "failed" || failed.task_id !== state.selectedTaskId || failed.request_id !== failedSubmission.request_id) { clearComposerRetry("message"); showNotice("原发送请求已经变化，已停止重试。请刷新任务后确认当前状态。", "error"); return; }
+        if (ui.messageInput.value.trim() !== failed.text) { showNotice("输入内容已经变化。为避免用旧请求身份发送新内容，请恢复原消息或直接发送为新消息。", "error"); return; }
+        await submitMessage(failed.text);
+      } });
+    } else { clearComposerRetry("message"); showNotice(`${error.message}。任务事实不会被伪造；请先刷新任务确认服务端是否已创建记录。`); }
   }
   finally { ui.sendButton.disabled = !state.runtimeReady || state.cancelRequestInFlight === true || backgroundCancellationPending(state.conversation); ui.sendButton.dataset.busy = "false"; }
 }
@@ -2674,25 +2956,19 @@ function openCancelAgentDialog() {
   });
   ui.dialogActions.append(back, allow); ui.decisionDialog.showModal(); window.requestAnimationFrame(() => reason.focus());
 }
-function approveProposedTrainingRun() {
-  openSimpleDialog({ kicker: "启动真实计算", title: "批准本次训练运行？", body: `系统将使用已冻结合同启动 ${state.task?.recipe_id || "当前训练方案"}，并把事件、指标和模型产物写入本地运行目录。`, allowLabel: "批准并启动", onAllow: async () => { await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/runs`, { method: "POST" }); showNotice("真实训练已经进入后台队列，运行事件会持续刷新。", "ok"); activateContext("run"); await refreshSelected({ force: true }); } });
-}
-function approveTrainingRecovery() {
+function navigateToTrainingRecoveryCheckpoint() {
   const taskId = state.selectedTaskId; const result = state.task?.current_result;
-  if (!taskId || !result || !TERMINAL_RETRY_STATUSES.has(result.status)) { showNotice("只有失败、取消或中断的 Run 可以从这里重新训练；请先刷新任务状态。"); return; }
-  openInspector("run");
-  const reason = result.error || result.cancel_reason || "后端没有记录补充原因";
-  openSimpleDialog({
-    kicker: "保留旧 Run 证据", title: "基于同一冻结合同重新训练？",
-    body: `旧 Run：${result.run_id}；状态：${result.status}；原因：${reason}。确认后会调用当前任务的启动接口创建一个新的 Run；旧事件、错误和产物不会被覆盖，页面也不会在后端返回前伪造运行状态。`,
-    allowLabel: "保留证据并重新训练",
-    onAllow: async () => {
-      const response = await request(`/tasks/${encodeURIComponent(taskId)}/runs`, { method: "POST" });
-      const newRunId = response.task?.current_run_id;
-      showNotice(newRunId ? `后端已创建新 Run ${shortId(newRunId)}；真实事件会持续刷新。` : "后端已接受重新训练请求；正在读取新 Run。", "ok");
-      activateContext("run"); await refreshSelected({ force: true });
-    },
-  });
+  if (!taskId || !result || !TERMINAL_RETRY_STATUSES.has(result.status) || state.task?.control?.next_action?.id !== "retry_training_run") { showNotice("当前没有可恢复的终态 Run；请先刷新任务状态。", "error"); return; }
+  closeInspector();
+  const checkpoint = currentHumanCheckpoint(state.conversation);
+  const checkpointCard = [...ui.messageList.querySelectorAll(".human-checkpoint")].find((card) => card.dataset.rpcId === checkpoint?.rpc_id) || null;
+  if (checkpoint && checkpointCard) {
+    checkpointCard.scrollIntoView({ block: "center", behavior: "smooth" }); checkpointCard.focus({ preventScroll: true });
+    showNotice("请在训练协调器给出的人工确认卡中处理恢复；运行面板不会直接创建新 Run。", "ok");
+    return;
+  }
+  ui.messageInput.focus();
+  showNotice(`请在对话中让训练协调器核对旧 Run ${shortId(result.run_id)} 的失败证据并提出恢复方案。只有随后出现的 HumanCheckpoint 才能授权创建新 Run。`, "ok");
 }
 async function answerApproval(item, outcome, button) { setButtonBusy(button, true, "提交中"); try { await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/conversation/approvals/${encodeURIComponent(item.rpc_id)}`, { method: "POST", json: { outcome } }); await refreshSelected({ force: true }); } catch (error) { showNotice(error.message); } finally { setButtonBusy(button, false, ""); } }
 async function postQuestionAnswers(item, answers, { taskId = state.selectedTaskId } = {}) {
@@ -2781,11 +3057,13 @@ async function inspectCsvSchema(file) {
     : null;
   return { columns: selected.columns, delimiter: selected.delimiter, recommended, recommendation };
 }
-async function askCsvOptions(file) {
+async function askCsvOptions(file, attachment = state.composerAttachment) {
+  updateComposerAttachment(attachment, { status: "validating", error: null, can_retry: false, retry_stage: null });
   clear(ui.dialogBody); clear(ui.dialogActions); ui.dialogKicker.textContent = "CSV 数据合同"; ui.dialogTitle.textContent = "确认要预测的字段";
   let schema;
   try { schema = await inspectCsvSchema(file); }
-  catch (error) { showNotice(`读取 CSV 表头失败：${error.message}`); ui.datasetInput.value = ""; return; }
+  catch (error) { updateComposerAttachment(attachment, { status: "failed", error: `表头校验失败：${error.message}`, retry_stage: "upload", can_retry: true }); showNotice(`读取 CSV 表头失败：${error.message}。可在文件条目中重试，仍会复用原请求身份。`); ui.datasetInput.value = ""; return; }
+  updateComposerAttachment(attachment, { status: "pending", error: "等待选择预测目标", retry_stage: "upload", can_retry: true });
   const overview = document.createElement("section"); overview.className = "csv-schema-overview"; const fileName = document.createElement("b"); fileName.textContent = file.name; const meta = document.createElement("span"); const delimiterLabel = schema.delimiter === "\t" ? "Tab" : schema.delimiter; meta.textContent = `${formatBytes(file.size)} · 识别到 ${schema.columns.length} 个字段 · 分隔符 ${delimiterLabel}`; overview.append(fileName, meta); ui.dialogBody.append(overview);
   const targetBlock = document.createElement("section"); targetBlock.className = "question-block csv-target-block"; const targetTitle = document.createElement("b"); targetTitle.textContent = "哪一列是模型要预测的结果？"; const targetHint = document.createElement("small"); targetHint.textContent = schema.recommended ? `${schema.recommendation.message} 请核对后再导入。` : schema.recommendation.message || "任务里还没有唯一的预测目标，请手动选择后再导入。"; targetBlock.append(targetTitle, targetHint);
   let targetControl;
@@ -2797,9 +3075,31 @@ async function askCsvOptions(file) {
   }
   targetBlock.append(targetControl); ui.dialogBody.append(targetBlock);
   const advanced = document.createElement("details"); advanced.className = "csv-advanced-options"; const advancedSummary = document.createElement("summary"); advancedSummary.textContent = "高级设置（可选）"; const ignoredBlock = document.createElement("section"); ignoredBlock.className = "question-block"; const ignoredTitle = document.createElement("b"); ignoredTitle.textContent = "忽略字段"; const ignoredInput = document.createElement("input"); ignoredInput.className = "question-custom"; ignoredInput.placeholder = "多个字段用逗号分隔"; ignoredBlock.append(ignoredTitle, ignoredInput); advanced.append(advancedSummary, ignoredBlock); ui.dialogBody.append(advanced);
-  const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "reject"; cancel.textContent = "取消"; cancel.addEventListener("click", () => { ui.decisionDialog.close(); ui.datasetInput.value = ""; });
-  const submit = document.createElement("button"); submit.type = "button"; submit.className = "allow"; submit.textContent = "确认并导入体检"; submit.addEventListener("click", async () => { const selected = targetControl.matches?.("select") ? targetControl.value : targetControl.querySelector('input[name="csv-target-column"]:checked')?.value; if (!selected) { showNotice("请选择一个预测目标字段。"); return; } ui.decisionDialog.close(); await uploadDataset(file, { targetColumn: selected, ignoredColumns: ignoredInput.value.trim(), delimiter: schema.delimiter }); });
+  const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "reject"; cancel.textContent = "稍后处理"; cancel.addEventListener("click", () => { ui.decisionDialog.close(); updateComposerAttachment(attachment, { status: "pending", error: "尚未选择预测目标", retry_stage: "upload", can_retry: true }); ui.datasetInput.value = ""; });
+  const submit = document.createElement("button"); submit.type = "button"; submit.className = "allow"; submit.textContent = "确认并导入体检"; submit.addEventListener("click", async () => { const selected = targetControl.matches?.("select") ? targetControl.value : targetControl.querySelector('input[name="csv-target-column"]:checked')?.value; if (!selected) { showNotice("请选择一个预测目标字段。"); return; } const selectedOptions = { targetColumn: selected, ignoredColumns: ignoredInput.value.trim(), delimiter: schema.delimiter }; if (attachment) attachment.options = selectedOptions; ui.decisionDialog.close(); await uploadDataset(file, { ...selectedOptions, attachment }); });
   ui.dialogActions.append(cancel, submit); ui.decisionDialog.showModal();
+}
+async function retryAttachmentContinuation(attachment) {
+  const continuation = attachment?.continuation;
+  if (!attachment?.dataset_id || !continuation || attachment.task_id !== state.selectedTaskId) { showNotice("原续接请求身份已经变化，已停止重试。请刷新任务确认数据与当前问题。", "error"); return; }
+  const retryIdentity = attachment.request_id; updateComposerAttachment(attachment, { retry_stage: null, error: null, can_retry: false });
+  try {
+    if (continuation.kind === "question") {
+      const checkpoint = currentHumanCheckpoint(state.conversation);
+      if (!checkpoint || checkpoint.rpc_id !== continuation.rpc_id) throw new Error("当前问题已变化，不能把旧答案写入新的检查点");
+      await postQuestionAnswers(checkpoint, continuation.answers, { taskId: attachment.task_id });
+    } else if (continuation.kind === "message") {
+      if (currentHumanCheckpoint(state.conversation)) throw new Error("当前出现新的人工确认，不能继续发送旧续接消息");
+      const failed = state.messageSubmission;
+      if (!failed || failed.status !== "failed" || failed.task_id !== attachment.task_id || failed.text !== continuation.text || failed.request_id !== continuation.request_id) throw new Error("原消息请求身份已变化");
+      await postQueuedConversationMessage(attachment.task_id, continuation.text);
+    } else throw new Error("未知续接类型");
+    if (state.composerAttachment?.request_id === retryIdentity) updateComposerAttachment(attachment, { continuation: null, retry_stage: null, error: null, status: "ready" });
+    showNotice("数据保持已就绪，协调器已从原请求继续。", "ok"); await refreshSelected({ force: true });
+  } catch (error) {
+    updateComposerAttachment(attachment, { status: "ready", retry_stage: "continuation", can_retry: true, error: `续接失败：${error.message}` });
+    showNotice(`数据已真实导入，没有重复上传；续接失败：${error.message}。重试会复用原问题或消息身份。`, "error");
+  }
 }
 function datasetCoordinatorContinuation(targetColumn) {
   const readableTarget = String(targetColumn || "").replace(/[「」\r\n]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
@@ -2807,36 +3107,62 @@ function datasetCoordinatorContinuation(targetColumn) {
   return `数据已经上传好了${targetNote}。请先检查数据并给我一版容易理解的训练方案；在我确认方案和启动前，不要开始训练。`;
 }
 async function uploadDataset(file, options = {}) {
+  const attachment = options.attachment?.request_id ? options.attachment : state.composerAttachment?.file === file ? state.composerAttachment : null;
+  const selectedOptions = { targetColumn: options.targetColumn, ignoredColumns: options.ignoredColumns, delimiter: options.delimiter };
   const taskId = state.selectedTaskId; const activeCheckpoint = currentHumanCheckpoint(state.conversation); const uploadCheckpoint = dataUploadQuestionCheckpoint(activeCheckpoint);
-  if (!taskId) { showNotice("先发送一条消息创建训练任务，再导入数据集。"); return; }
-  if (state.task?.capability_decision?.status !== "resolved" && !uploadCheckpoint) { showNotice("请先澄清并确认任务理解；确认前不会导入数据或启动训练。"); return; }
-  if (state.task?.status === "needs_recipe") { showNotice("当前能力还没有可执行训练方案。请先完成训练能力扩展并确认数据导入方式。"); return; }
-  const lower = file?.name.toLowerCase() || ""; if (!lower.endsWith(".zip") && !lower.endsWith(".csv")) { showNotice("当前数据导入方式接受类别目录 ZIP 或 CSV；其他格式需要先扩展并验证训练能力。"); return; }
-  if (uploadCheckpoint && !lower.endsWith(".csv")) { showNotice("协调器当前正在等待表格数据，请选择 CSV 文件；没有上传这个文件。", "error"); return; }
-  if (lower.endsWith(".csv") && !options.targetColumn) { void askCsvOptions(file); return; }
+  const keepPending = (message) => { updateComposerAttachment(attachment, { status: "pending", error: message, retry_stage: "upload", can_retry: true, options: selectedOptions }); showNotice(message, "ok"); };
+  const failUpload = (message, retryable = true) => { updateComposerAttachment(attachment, { status: "failed", error: message, retry_stage: retryable ? "upload" : null, can_retry: retryable, options: selectedOptions }); showNotice(`${message}${retryable ? "。可在文件条目中重试，仍会复用原请求身份。" : "。请先刷新任务确认服务端状态，不要重复上传。"}`, "error"); };
+  const awaitReceipt = (message) => { updateComposerAttachment(attachment, { status: "pending", error: message, retry_stage: "reconcile", can_retry: true, options: selectedOptions }); showNotice(`${message}。刷新或点击“核对导入”会读取任务数据集与服务端回执；不会先把它标成失败。`, "ok"); };
+  if (!taskId) { keepPending("先发送任务目标创建训练任务，再处理这个文件"); return; }
+  if (attachment?.task_id && attachment.task_id !== taskId) { failUpload("文件请求不属于当前任务", false); return; }
+  if (attachment && !attachment.task_id) attachment.task_id = taskId;
+  if (state.task?.capability_decision?.status !== "resolved" && !uploadCheckpoint) { keepPending("请先澄清并确认任务理解；确认前不会导入数据或启动训练"); return; }
+  if (state.task?.status === "needs_recipe") { keepPending("当前能力还没有可执行训练方案，请先完成能力扩展并确认数据导入方式"); return; }
+  const lower = file?.name.toLowerCase() || ""; if (!lower.endsWith(".zip") && !lower.endsWith(".csv")) { failUpload("当前只接受类别目录 ZIP 或 CSV；其他格式需要先扩展并验证训练能力", false); return; }
+  if (uploadCheckpoint && !lower.endsWith(".csv")) { failUpload("协调器当前正在等待表格数据，请改选 CSV 文件", false); return; }
+  if (lower.endsWith(".csv") && !options.targetColumn) { void askCsvOptions(file, attachment); return; }
+  updateComposerAttachment(attachment, { status: "validating", error: null, retry_stage: null, can_retry: false, options: selectedOptions });
   hideNotice(); setButtonBusy(ui.datasetButton, true, "体检中");
   const headers = { "content-type": lower.endsWith(".csv") ? "text/csv" : "application/zip", "x-filename": encodeURIComponent(file.name) };
+  if (attachment?.request_id) headers["x-request-id"] = attachment.request_id;
   if (options.targetColumn) headers["x-target-column"] = encodeURIComponent(options.targetColumn);
   if (options.ignoredColumns) headers["x-ignored-columns"] = options.ignoredColumns.split(",").map((value) => encodeURIComponent(value.trim())).filter(Boolean).join(",");
   if (options.delimiter) headers["x-delimiter"] = encodeURIComponent(options.delimiter);
   try {
     let response;
     try { response = await request(`/tasks/${encodeURIComponent(taskId)}/dataset`, { method: "POST", body: file, headers }); }
-    catch (error) { showNotice(`数据导入失败：${error.message}`); return; }
-    const datasetId = response?.task?.dataset_id || null; activateContext("data");
+    catch (error) {
+      const responseMayBeLost = !Number.isFinite(error.status) || error.status === 408 || error.status >= 500;
+      if (responseMayBeLost && attachment?.request_id) {
+        updateComposerAttachment(attachment, { status: "validating", error: "响应中断，正在核对服务端回执", retry_stage: null, can_retry: false });
+        try { response = await reconcileDatasetUploadReceipt(taskId, attachment); }
+        catch (_receiptError) { awaitReceipt(`数据请求的响应未能确认：${error.message}`); return; }
+      } else {
+        failUpload(`数据导入失败：${error.message}`, error.status === 422);
+        return;
+      }
+    }
+    if (state.selectedTaskId !== taskId) return;
+    const receiptDatasetId = response?.dataset_upload?.dataset_id || null;
+    const datasetId = receiptDatasetId || response?.task?.dataset_id || null;
+    if (receiptDatasetId && !datasetUploadReceiptMatches(response, taskId, attachment?.request_id)) { failUpload("数据请求返回了不属于当前任务或当前请求的回执", false); return; }
+    if (!datasetId) { failUpload("数据请求返回成功，但缺少可核对的数据集身份", false); await refreshSelected({ force: true }); return; }
+    updateComposerAttachment(attachment, { status: "ready", dataset_id: datasetId, error: null, retry_stage: null, can_retry: false, options: selectedOptions }); activateContext("data");
     if (uploadCheckpoint) {
-      if (!datasetId) { showNotice("数据已经导入并完成体检，但后端没有返回可核对的数据集编号，因此尚未替你续接协调器问题。请刷新任务，不要重复上传。", "error"); await refreshSelected({ force: true }); return; }
       const answers = dataUploadCheckpointAnswers(uploadCheckpoint, datasetId, options.targetColumn);
-      try { await postQuestionAnswers(uploadCheckpoint, answers, { taskId }); showNotice("数据已导入，预测列也已提交；协调器会从刚才的问题继续。", "ok"); }
-      catch (error) { showNotice(`数据已真实导入并完成体检（数据集 ${shortId(datasetId)}），但协调器问题续接失败：${error.message}。请不要重复上传；刷新任务后从当前问题继续。`, "error"); }
+      try { await postQuestionAnswers(uploadCheckpoint, answers, { taskId }); updateComposerAttachment(attachment, { continuation: null }); showNotice("数据已导入，预测列也已提交；协调器会从刚才的问题继续。", "ok"); }
+      catch (error) { updateComposerAttachment(attachment, { status: "ready", continuation: { kind: "question", rpc_id: uploadCheckpoint.rpc_id, answers }, retry_stage: "continuation", can_retry: true, error: `续接失败：${error.message}` }); showNotice(`数据已真实导入并完成体检（数据集 ${shortId(datasetId)}），但协调器问题续接失败：${error.message}。请不要重复上传；刷新任务后从当前问题继续。重试只会续接原问题，不会重复上传。`, "error"); }
       await refreshSelected({ force: true }); return;
     }
     if (state.runtimeReady && !activeCheckpoint && datasetId) {
+      const continuationText = datasetCoordinatorContinuation(options.targetColumn);
       try {
-        await postQueuedConversationMessage(taskId, datasetCoordinatorContinuation(options.targetColumn));
+        await postQueuedConversationMessage(taskId, datasetCoordinatorContinuation(options.targetColumn)); updateComposerAttachment(attachment, { continuation: null });
         showNotice("数据已导入并完成体检。训练协调器会读取数据合同并继续完善方案；确认前不会启动训练。", "ok");
       } catch (error) {
-        showNotice(`数据已真实导入并完成体检（数据集 ${shortId(datasetId)}），但协调器没有续接成功：${error.message}。请不要重复上传；可以在对话中要求它读取当前数据集。`, "error");
+        const failed = state.messageSubmission;
+        updateComposerAttachment(attachment, { status: "ready", continuation: failed?.status === "failed" ? { kind: "message", text: continuationText, request_id: failed.request_id } : null, retry_stage: failed?.status === "failed" ? "continuation" : null, can_retry: failed?.status === "failed", error: `续接失败：${error.message}` });
+        showNotice(`数据已真实导入并完成体检（数据集 ${shortId(datasetId)}），但协调器没有续接成功：${error.message}。${failed?.status === "failed" ? "文件条目会复用原消息身份重试续接，不会重复上传。" : "请刷新任务确认当前对话状态。"}`, "error");
       }
       await refreshSelected({ force: true }); return;
     }
@@ -2847,28 +3173,6 @@ async function uploadDataset(file, options = {}) {
         : "训练协调器当前不可用，数据合同已保留；恢复连接后可在对话中继续。";
     showNotice(`数据已真实导入并完成体检。${reason}`, datasetId ? "ok" : "error"); await refreshSelected({ force: true });
   } finally { setButtonBusy(ui.datasetButton, false, ""); ui.datasetInput.value = ""; }
-}
-async function confirmContract() {
-  const fields = [...ui.confirmations.querySelectorAll("input")]; if (fields.some((field) => !field.checked)) { showNotice("请明确勾选数据授权、标签/目标字段和验收门槛三项确认。"); return; }
-  const revision = state.task?.contract_revision;
-  const identityFields = ["contract_revision_id", "contract_sha256", "task_id", "spec_revision_id", "dataset_id", "dataset_fingerprint_sha256"];
-  if (!revision || identityFields.some((field) => !revision[field])) {
-    showNotice("当前页面还没有拿到可核对的合同版本与数据指纹。请刷新任务后再确认；本次没有写入批准。", "error");
-    return;
-  }
-  const checkpoint = currentHumanCheckpoint(state.conversation);
-  const payload = {
-    ...Object.fromEntries(fields.map((field) => [field.dataset.confirm, true])),
-    expected_contract_revision: Object.fromEntries(identityFields.map((field) => [field, revision[field]])),
-    approval: {
-      actor: "user",
-      checkpoint_id: checkpoint?.checkpoint_id || checkpoint?.rpc_id || `workspace-confirm:${revision.contract_revision_id}`,
-    },
-  };
-  setButtonBusy(ui.confirmContractButton, true, "确认中");
-  try { await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/confirm`, { method: "POST", json: payload }); showNotice("这版训练合同与当前数据指纹已经锁定。", "ok"); await refreshSelected({ force: true }); }
-  catch (error) { showNotice(error.message); }
-  finally { setButtonBusy(ui.confirmContractButton, false, ""); }
 }
 function activateContext(name) { const requested = name === "capability" ? "plan" : name; const target = ui.contextTabs.querySelector(`[data-context="${requested}"]`); const selected = target && !target.hidden ? requested : "plan"; document.querySelectorAll("[data-context]").forEach((button) => button.classList.toggle("active", button.dataset.context === selected)); document.querySelectorAll("[data-context-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.contextPanel === selected)); ui.inspectorSheetTitle.textContent = ({ plan: "方案与证据", data: "数据证据", run: "运行现场", evaluation: "评测报告", artifacts: "交付产物" })[selected] || "方案与证据"; }
 function setMobileView(name) { [ui.mobileConversationButton, ui.mobileContextButton, ui.mobileResultButton].forEach((button) => { const active = button.dataset.mobileView === name; button.classList.toggle("active", active); button.setAttribute("aria-pressed", String(active)); }); }
@@ -2931,20 +3235,28 @@ function stopPolling() { if (state.pollTimer) window.clearInterval(state.pollTim
 function resizeComposer() { ui.messageInput.style.height = "auto"; ui.messageInput.style.height = `${Math.min(ui.messageInput.scrollHeight, 140)}px`; }
 
 ui.composerForm.addEventListener("submit", (event) => { event.preventDefault(); submitMessage(ui.messageInput.value); });
-ui.messageInput.addEventListener("input", () => { resizeComposer(); saveDraft(); });
+ui.messageInput.addEventListener("input", () => { if (state.composerRetryKind === "message" && state.messageSubmission?.text !== ui.messageInput.value.trim()) clearComposerRetry("message"); resizeComposer(); saveDraft(); });
 ui.messageInput.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); ui.composerForm.requestSubmit(); } });
+ui.composerRetryButton.addEventListener("click", invokeComposerRetry);
+ui.retryAttachmentButton.addEventListener("click", retryComposerAttachment);
+ui.removeAttachmentButton.addEventListener("click", () => clearComposerAttachment());
 ui.newTaskButton.addEventListener("click", openNewTask); ui.refreshButton.addEventListener("click", () => state.selectedTaskId ? refreshSelected({ force: true }) : loadTasks());
 ui.menuButton.addEventListener("click", openSidebar); ui.sidebarScrim.addEventListener("click", closeSidebar);
 ui.datasetButton.addEventListener("click", () => {
-  if (!state.selectedTaskId) { showNotice("先用一句话创建训练任务，再导入数据。"); return; }
   if (state.task?.control?.next_action?.id === "stage_recipe_samples") { ui.recipeSampleInput.click(); return; }
   ui.datasetInput.click();
-}); ui.inspectorDatasetButton.addEventListener("click", () => ui.datasetInput.click()); ui.datasetInput.addEventListener("change", () => uploadDataset(ui.datasetInput.files?.[0])); ui.recipeSampleInput.addEventListener("change", () => stageRecipeSamples(ui.recipeSampleInput.files?.[0]));
-ui.confirmContractButton.addEventListener("click", confirmContract);
+}); ui.inspectorDatasetButton.addEventListener("click", () => ui.datasetInput.click()); ui.datasetInput.addEventListener("change", () => stageComposerAttachment(ui.datasetInput.files?.[0])); ui.recipeSampleInput.addEventListener("change", () => stageRecipeSamples(ui.recipeSampleInput.files?.[0]));
+[
+  ui.approveTrainingPlanButton,
+  ui.rejectTrainingPlanButton,
+  ui.cancelTrainingPlanButton,
+  ui.confirmContractButton,
+  ui.approveRunProposalButton,
+].forEach((control) => control.addEventListener("click", returnToHumanCheckpoint));
 ui.modelSourceSearchForm.addEventListener("submit", searchModelSources); ui.modelSourceReferenceForm.addEventListener("submit", resolveModelSourceReference); ui.bindModelSourceButton.addEventListener("click", bindPendingModelSource); ui.cancelModelBindingButton.addEventListener("click", cancelModelBindingAttempt);
 ui.viewAllModelSourceCandidatesButton.addEventListener("click", openAllModelSourceCandidates);
 ui.repositoryManualMapping.addEventListener("submit", applyRepositoryManualMapping);
-ui.createTrainingPlanButton.addEventListener("click", createTrainingPlan); ui.approveTrainingPlanButton.addEventListener("click", approveTrainingPlan); ui.rejectTrainingPlanButton.addEventListener("click", () => decideTrainingPlan("reject")); ui.cancelTrainingPlanButton.addEventListener("click", () => decideTrainingPlan("cancel"));
+ui.createTrainingPlanButton.addEventListener("click", createTrainingPlan);
 ui.checkResourceFeasibilityButton.addEventListener("click", checkResourceFeasibility);
 ui.sourceModeTabs.addEventListener("click", (event) => { const button = event.target.closest("[data-source-mode]"); if (!button) return; state.modelSourceMode = button.dataset.sourceMode; renderSourceMode(); (state.modelSourceMode === "search" ? ui.modelSourceSearchInput : ui.modelSourceReferenceInput).focus(); });
 ui.modelSourceRetryButton.addEventListener("click", () => { if (retryFailedModelSourceBinding()) return; ui.modelSourceDiscovery.open = true; if (modelSourceBlocker(state.task)?.stage === "source_resolution") { state.modelSourceMode = "reference"; renderSourceMode(); ui.modelSourceReferenceInput.focus(); } else { state.modelSourceMode = "search"; renderSourceMode(); ui.modelSourceSearchInput.focus(); } });
@@ -2962,10 +3274,9 @@ ui.scaffoldRecipeButton.addEventListener("click", async () => {
   } catch (error) { showNotice(error.message); }
   finally { setButtonBusy(ui.scaffoldRecipeButton, false, ""); }
 });
-ui.approveRunProposalButton.addEventListener("click", approveProposedTrainingRun);
 ui.cancelAgentButton.addEventListener("click", openCancelAgentDialog);
 ui.cancelRunButton.addEventListener("click", requestTrainingRunCancellation);
-ui.retryRunButton.addEventListener("click", approveTrainingRecovery);
+ui.retryRunButton.addEventListener("click", navigateToTrainingRecoveryCheckpoint);
 ui.contextTabs.addEventListener("click", (event) => { const button = event.target.closest("[data-context]"); if (button) activateContext(button.dataset.context); });
 ui.closeInspectorButton.addEventListener("click", () => closeInspector({ userInitiated: true })); ui.inspectorScrim.addEventListener("click", () => closeInspector({ userInitiated: true }));
 ui.workspaceToggleButton.addEventListener("click", () => ui.inspector.dataset.open === "true" ? closeInspector({ userInitiated: true }) : openInspector(workspaceContextForProjection(), { presentation: preferredWorkspacePresentation() }));

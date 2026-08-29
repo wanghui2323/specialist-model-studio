@@ -11,6 +11,8 @@ from pathlib import Path
 from model_harness.blockers import (
     BLOCKER_EVIDENCE_STAGES,
     CANONICAL_BLOCKER_CODES,
+    SUPPORTED_BLOCKER_SCHEMA_VERSIONS,
+    SUPERSEDED_BY_NEWER_BLOCKER_ACTION,
     BlockerStore,
     verify_blocker_evidence,
 )
@@ -242,7 +244,7 @@ class BlockerStoreTests(unittest.TestCase):
             resolutions = [read_json(path) for path in resolution_paths]
             self.assertEqual(
                 {item["action"] for item in resolutions},
-                {"superseded_by_newer_v0.2_blocker"},
+                {SUPERSEDED_BY_NEWER_BLOCKER_ACTION},
             )
             self.assertEqual(
                 {item["blocker_id"] for item in resolutions},
@@ -300,7 +302,10 @@ class BlockerStoreTests(unittest.TestCase):
             self.assertEqual(len(resolution_paths), 1)
             resolution = read_json(resolution_paths[0])
             self.assertEqual(resolution["blocker_id"], legacy["blocker_id"])
-            self.assertEqual(resolution["action"], "superseded_by_v0.2_blocker")
+            self.assertEqual(
+                resolution["action"],
+                SUPERSEDED_BY_NEWER_BLOCKER_ACTION,
+            )
             self.assertEqual(resolution["related_object_id"], current["blocker_id"])
             after_restart = {
                 item["blocker_id"]: item
@@ -625,6 +630,21 @@ class BlockerStoreTests(unittest.TestCase):
             )
             copied = dict(resolution)
             copied["task_id"] = "task-target"
+            copied_semantic = {
+                key: copied[key]
+                for key in (
+                    "task_id",
+                    "blocker_id",
+                    "blocker_digest",
+                    "action",
+                    "related_object_type",
+                    "related_object_id",
+                )
+            }
+            copied["semantic_digest"] = _digest(copied_semantic)
+            copied["resolution_id"] = (
+                f"blocker_resolution_{copied['semantic_digest'][:24]}"
+            )
             copied.pop("content_digest")
             copied["content_digest"] = _digest(copied)
             target_path = (
@@ -665,6 +685,82 @@ class BlockerStoreTests(unittest.TestCase):
             copied_path.write_bytes(legacy_path.read_bytes())
             with self.assertRaisesRegex(ContractError, "task identity mismatch"):
                 BlockerStore(temporary).list("task-legacy-target")
+
+    def test_only_explicit_blocker_schema_allowlist_is_readable(self) -> None:
+        self.assertEqual(
+            SUPPORTED_BLOCKER_SCHEMA_VERSIONS,
+            {"0.1", "0.2", "0.3"},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            store = BlockerStore(temporary)
+            blocker = store.append(
+                "task-unknown-schema",
+                stage="resource_fit",
+                code="blocked_resources",
+                message="resource mismatch",
+                retry_action="review_alternatives",
+            )
+            path = (
+                Path(temporary)
+                / "tasks"
+                / "task-unknown-schema"
+                / "blockers"
+                / "evidence"
+                / f"{blocker['blocker_id']}.json"
+            )
+            unknown = read_json(path)
+            unknown["schema_version"] = "9.9"
+            unknown.pop("content_digest")
+            unknown["content_digest"] = _digest(unknown)
+            write_json(path, unknown)
+
+            with self.assertRaisesRegex(
+                ContractError,
+                "unsupported blocker evidence schema",
+            ):
+                BlockerStore(temporary).list("task-unknown-schema")
+
+    def test_historical_versioned_supersession_action_remains_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            blocker, _ = _write_v01_blocker(
+                temporary,
+                task_id="task-historical-resolution",
+                stage="environment_lock",
+                marker="historical-resolution",
+            )
+            semantic = {
+                "task_id": "task-historical-resolution",
+                "blocker_id": blocker["blocker_id"],
+                "blocker_digest": blocker["content_digest"],
+                "action": "superseded_by_v0.2_blocker",
+                "related_object_type": "BlockerEvidence",
+                "related_object_id": f"blocker_{'f' * 24}",
+            }
+            semantic_digest = _digest(semantic)
+            resolution_id = f"blocker_resolution_{semantic_digest[:24]}"
+            unsigned = {
+                "schema_version": "0.2",
+                "object_type": "BlockerResolution",
+                "resolution_id": resolution_id,
+                **semantic,
+                "semantic_digest": semantic_digest,
+                "created_at_utc": "2026-01-02T00:00:00+00:00",
+            }
+            resolution = {**unsigned, "content_digest": _digest(unsigned)}
+            write_json(
+                Path(temporary)
+                / "tasks"
+                / "task-historical-resolution"
+                / "blockers"
+                / "resolutions"
+                / f"{resolution_id}.json",
+                resolution,
+            )
+
+            listed = BlockerStore(temporary).list(
+                "task-historical-resolution"
+            )
+            self.assertFalse(listed[0]["active"])
 
     def test_tamper_and_unsafe_values_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

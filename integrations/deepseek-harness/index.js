@@ -1130,6 +1130,13 @@ const SHA256 = /^[0-9a-f]{64}$/i;
 const COMMIT = /^[0-9a-f]{40}$/i;
 const BLOCKER_ID = /^blocker_[0-9a-f]{24}$/;
 const BLOCKER_EVIDENCE_SCHEMA_VERSION = "0.3";
+const LEGACY_BLOCKER_EVIDENCE_SCHEMA_VERSION = "0.1";
+const PREVIOUS_BLOCKER_EVIDENCE_SCHEMA_VERSION = "0.2";
+const READABLE_BLOCKER_EVIDENCE_SCHEMA_VERSIONS = new Set([
+  LEGACY_BLOCKER_EVIDENCE_SCHEMA_VERSION,
+  PREVIOUS_BLOCKER_EVIDENCE_SCHEMA_VERSION,
+  BLOCKER_EVIDENCE_SCHEMA_VERSION,
+]);
 const UNSAFE_LABEL = /(?:^|\s)(?:\/Users\/|\/home\/|\/var\/|[A-Za-z]:[\\/])|authorization\s*:|bearer\s+|(?:hf|ghp|github_pat)_[A-Za-z0-9_-]{8,}|token\s*[=:]/i;
 
 function safeObjectRefLabel(value, type) {
@@ -1285,6 +1292,29 @@ function repositoryAnalysisRef(envelope, taskId) {
   });
 }
 
+function assertCanonicalBlockerIdentity(blocker, taskId) {
+  const schemaVersion = blocker?.schema_version;
+  const legacy = schemaVersion === LEGACY_BLOCKER_EVIDENCE_SCHEMA_VERSION;
+  const aliasValid = legacy
+    ? blocker?.blocker_evidence_id === undefined
+      || blocker.blocker_evidence_id === blocker.blocker_id
+    : blocker?.blocker_evidence_id === blocker?.blocker_id;
+  if (
+    blocker?.task_id !== taskId
+    || !READABLE_BLOCKER_EVIDENCE_SCHEMA_VERSIONS.has(schemaVersion)
+    || blocker?.object_type !== "BlockerEvidence"
+    || typeof blocker?.blocker_id !== "string"
+    || !BLOCKER_ID.test(blocker.blocker_id)
+    || !aliasValid
+    || typeof blocker?.content_digest !== "string"
+    || !SHA256.test(blocker.content_digest)
+    || blocker.content_digest !== blocker.content_digest.toLowerCase()
+  ) {
+    throw new Error("BlockerEvidence returned an invalid canonical identity");
+  }
+  return blocker;
+}
+
 function repositoryAnalysisBlockerRefs(envelope, taskId) {
   if (envelope?.blockers === undefined) return [];
   if (!Array.isArray(envelope.blockers)) {
@@ -1295,10 +1325,7 @@ function repositoryAnalysisBlockerRefs(envelope, taskId) {
     throw new Error("repository_analysis blocker lineage is incomplete");
   }
   return envelope.blockers.map((blocker) => {
-    assertTaskIdentity(blocker, taskId, "blocker");
-    if (!blocker?.blocker_id || !blocker?.content_digest) {
-      throw new Error("blocker returned an invalid canonical identity");
-    }
+    assertCanonicalBlockerIdentity(blocker, taskId);
     if (
       blocker.related_object_type !== "RepositoryAnalysis"
       || blocker.related_object_id !== analysis.analysis_id
@@ -1340,21 +1367,7 @@ function taskBlockerRefs(envelope, taskId) {
     throw new Error("TrainingTask returned invalid blockers");
   }
   return task.blockers.map((blocker) => {
-    if (blocker?.task_id !== taskId) {
-      throw new Error("BlockerEvidence returned an invalid canonical identity");
-    }
-    if (
-      blocker?.schema_version !== BLOCKER_EVIDENCE_SCHEMA_VERSION
-      || blocker?.object_type !== "BlockerEvidence"
-      || typeof blocker?.blocker_id !== "string"
-      || !BLOCKER_ID.test(blocker.blocker_id)
-      || blocker?.blocker_evidence_id !== blocker.blocker_id
-      || typeof blocker?.content_digest !== "string"
-      || !SHA256.test(blocker.content_digest)
-      || blocker.content_digest !== blocker.content_digest.toLowerCase()
-    ) {
-      throw new Error("blocker returned an invalid canonical identity");
-    }
+    assertCanonicalBlockerIdentity(blocker, taskId);
     return canonicalObjectRef("blocker", taskId, {
       id: blocker.blocker_id,
       task_id: blocker.task_id,
@@ -1384,8 +1397,7 @@ function resourceFeasibilityRefs(envelope, taskId) {
   add(record.environment_lock, "environment_lock", "environment_lock_id", "lock_sha256", "隔离环境锁");
   add(record.resource_fit_report, "resource_fit_report", "resource_fit_report_id", "report_sha256", "资源适配报告");
   for (const blocker of Array.isArray(record.blockers) ? record.blockers : []) {
-    assertTaskIdentity(blocker, taskId, "blocker");
-    if (!blocker?.blocker_id || !blocker?.content_digest) continue;
+    assertCanonicalBlockerIdentity(blocker, taskId);
     refs.push(canonicalObjectRef("blocker", taskId, {
       id: blocker.blocker_id,
       task_id: blocker.task_id,
@@ -1479,6 +1491,7 @@ Treat “time-series model”, “numeric prediction” and “regression” as 
 At the data stage, ask the user to drag a representative file into the conversation or use the visible “导入数据” action. If they are not ready to upload, offer to show a tiny example format or let them paste column names and three to five sample rows. Never ask a human to type a host absolute path or workspace-relative path. A missing file, target column or other user-supplied data decision must always be represented by one native structured question checkpoint; never stop the turn with only a prose request. When the missing input is the training dataset, the native question id must be exactly data_upload and its primary option or action label must be “现在上传 CSV/ZIP”, never “我已上传”. The product file picker performs the upload; submit the data_upload answer only after model_harness_import_dataset has actually succeeded for the same task. A data_upload answer beginning with dataset- is the opaque id of that already-imported Dataset, never a host path. Read the current task, verify that its dataset_id matches, and continue from its dataset_report; never pass an opaque dataset id back into model_harness_import_dataset. Other checkpoints use stable ids such as target_column. An attachment or answer must resolve that same checkpoint so the root session can resume. After an attachment is available, inspect it first and then ask only the next unresolved question using discovered business-facing names, for example which visible column is the value to predict.
 After the TaskSpec is resolved, the Universal BYOM workflow is: read official source-provider capabilities; search Hugging Face and GitHub metadata; show candidates with provider, repository, revision, license and risk facts; require the user to select one exact candidate; resolve and bind one immutable commit only with explicit approval; read the static repository analysis; propose an immutable training plan; require approval of the exact plan digest; and run the local resource-feasibility check. Candidate families and search results are not proof of runnable support. Arbitrary repositories may honestly terminate with typed BlockerEvidence when this machine, v0.9 CPU-only policy, dependency metadata, or verified OCI isolation is insufficient. Never execute third-party repository code on the host and never claim every repository can train successfully.
 For the three validated built-in capabilities, import and explain the inspection report, review labels or target fields and acceptance gates, collect the three explicit confirmations, start the task run, poll canonical events/results, and explain failures or strategies. After data import succeeds and before presenting contract confirmation, delegate one real bounded inspection to data_experiment with the exact task_id, dataset_id, dataset fingerprint and spec revision, then synthesize only canonical tool evidence returned by that child. Immediately before model_harness_confirm_contract, re-read the canonical TrainingTask and copy all six fields from its current contract_revision: contract_revision_id, contract_sha256, task_id, spec_revision_id, dataset_id and dataset_fingerprint_sha256. The root Training Orchestrator performs this confirmation; the tool's native approval callId becomes the user ApprovalDecision checkpoint_id. Never reuse a cached revision, invent an identity field or confirm after task, spec, contract or dataset drift. Starting a run uses a two-step least-authority handoff: in the root session call model_harness_authorize_task_run_start with the exact current task id, confirmed contract digest, dataset id, dataset fingerprint and spec revision, and let its native approval be the single human start gate. Then delegate build_training as a continuable child (omit run_in_background or set it true; never set it false), pass the returned run_authorization_id, and let that verified child call model_harness_start_task_run exactly once with the same task id and authorization id. After the Run completes, delegate evaluation_delivery with the exact run_id to read the canonical EvaluationReport and return its exact report_id and report_sha256. A new-sample trial also uses a two-step least-authority handoff. If no input object exists yet, ask exactly one native structured question whose id is inference_input_id and whose primary action says “选择新样本”; never ask for a path. The product file picker uploads raw bytes directly to the task/run-bound inference-input endpoint and returns an opaque inference_input_id plus SHA-256; no host path enters chat or a tool call, and upload alone never authorizes execution. In the root session call model_harness_authorize_sample_inference for that exact task, run, input id and digest, then pass its one-shot grant to the same continuable evaluation_delivery child, which may call model_harness_run_sample_inference exactly once without a second native approval. Building a delivery bundle uses another two-step least-authority handoff: the root re-reads the same task, run and EvaluationReport, then calls model_harness_authorize_artifact_bundle_build with the exact task_id, run_id, report identity and optional inference evidence selector; its native approval is the single human bundle-build gate. Delegate or continue evaluation_delivery with the returned artifact_bundle_authorization_id and bundle_request_sha256, and let that verified child call model_harness_build_artifact_bundle exactly once with the identical scope. Never let the child request a second native approval, reuse a grant, change the inference selector or build for another task/run. Download is a separate root-only native approval: re-read the exact bundle_id, manifest_sha256 and archive.sha256, then call model_harness_download_artifact_bundle once with those hashes and a new user-selected ZIP path. Its verified bridge call obtains and consumes a distinct backend one-shot download authorization; a bundle-build grant never authorizes downloading or replay. A specialist is shown only when a real DSH child performed that phase's bounded tool work; never invent decorative expert activity. Do not use an ordinary question as run, sample-inference, bundle-build or bundle-download approval. For an audio-classification task in needs_recipe, ask for a representative class-folder WAV ZIP, stage it, run the trusted declarative Recipe build, show its candidate_digest and validation_digest, and register it only after explicit human approval. model_harness_register_recipe requires the exact existing approval_checkpoint_id; never invent or generate one. The factory never executes generated Python. Other unmatched capabilities remain buildable requests, not runnable training support.
+For artifact downloads, interpret “workspace default location” as one new ZIP filename only; the runtime resolves it inside its configured workspace exports directory. Use an absolute ZIP destination only when the user explicitly selected it through the host UI, and never infer a destination from the process working directory.
 For an image-classification task, Hugging Face is an optional fixed feature extractor, not arbitrary fine-tuning: inspect capability, search and the model card; require an exact 40-character commit; attach only after native approval and approval_confirmed=true; then verify the local asset before training. Never ask for or transmit a Hugging Face token through chat tools.
 After a completed task-owned Run, read the EvaluationReport dimensions before making a release claim. A user-uploaded raw image, WAV or one-row JSON/CSV may be tried only through the task-bound inference_input_id plus the root-approved one-shot sample-inference grant; never accept a local path and never substitute training or test data. Build an Artifact Bundle only from trusted evidence, and download it only to a user-selected new .zip path after native approval. Treat integrity, metric gates, evidence sufficiency and release conclusion as separate facts.
 Work like an execution agent, not a form wizard: ask only for information that the tools cannot discover, say what is happening before a meaningful tool call, and after each phase summarize the evidence, the unresolved decision, and the next action. When a requested training capability has no verified Recipe or matching Data Adapter, do not end with a technical inventory dump. Say in plain language that real training is unavailable in the current engine, distinguish that from still-available source diagnosis or existing-model inference, and offer concrete next paths: use an existing model first, create a capability-build request, or inspect the technical evidence. When a tool returns workbench_url, include it as the evidence view for that same task_id.
@@ -2665,14 +2678,14 @@ Never use the teaching digit run as a substitute for a user's OCR, speech, forec
   ctx.tools.register(
     defineTool({
       name: "model_harness_download_artifact_bundle",
-      description: "After one native root approval, obtain and immediately consume a backend-persisted single-use download authorization bound to the exact task, Run, bundle, manifest and archive hashes. Verify the downloaded archive and create a new user-selected local .zip file; existing files are never overwritten.",
+      description: "After one native root approval, obtain and immediately consume a backend-persisted single-use download authorization bound to the exact task, Run, bundle, manifest and archive hashes. Verify the downloaded archive and create a new .zip file; a filename-only destination is stored in the configured runtime workspace exports directory, while an absolute destination is used only when the user explicitly selected it. Existing files are never overwritten.",
       parameters: {
         task_id: { type: "string", required: true },
         run_id: { type: "string", required: true },
         bundle_id: { type: "string", required: true },
         manifest_sha256: { type: "string", required: true, description: "Exact current bundle manifest_sha256 approved by the user." },
         archive_sha256: { type: "string", required: true, description: "Exact current bundle archive.sha256 approved by the user." },
-        destination_path: { type: "string", required: true, description: "New local .zip destination explicitly selected by the user." },
+        destination_path: { type: "string", required: true, description: "A new .zip filename for the runtime workspace exports directory, or an absolute .zip destination explicitly selected by the user." },
       },
       output: jsonOutput,
       presentCall: (args) => ({ card: "generic", title: `确认下载交付包 · ${args.bundle_id}`, rawInput: args.destination_path }),
