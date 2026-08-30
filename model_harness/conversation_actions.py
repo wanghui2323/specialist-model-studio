@@ -180,11 +180,11 @@ def _result_error(event: Mapping[str, Any]) -> ActionError:
     if "the user rejected tool" in observed:
         return ActionError(
             code="user_rejected",
-            message="The user declined this approval; the action was not executed.",
+            message="你已拒绝本次授权，操作未执行。",
         )
     return ActionError(
         code="tool_result_error",
-        message="The observed tool result reported failure.",
+        message="工具返回了失败结果；请展开技术详情查看原因。",
     )
 
 

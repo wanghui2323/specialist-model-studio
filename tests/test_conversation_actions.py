@@ -406,7 +406,7 @@ class ConversationActionTests(unittest.TestCase):
         self.assertEqual(action.status, "failed")
         self.assertEqual(action.truth_type, "observed_result")
         self.assertEqual(action.error.code, "user_rejected")  # type: ignore[union-attr]
-        self.assertIn("not executed", action.error.message)  # type: ignore[union-attr]
+        self.assertEqual(action.error.message, "你已拒绝本次授权，操作未执行。")  # type: ignore[union-attr]
 
     def test_actions_follow_observed_event_sequence_not_lexical_call_id(self) -> None:
         earlier_call = tool_call(

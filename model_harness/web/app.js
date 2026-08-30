@@ -478,7 +478,11 @@ function workflowStatus(task, conversation = null) {
   if (["running", "completed", "failed", "cancelled", "interrupted"].includes(task.status)) return { label: STATUS_LABELS[task.status] || task.status, tone: task.status };
   const stage = task.control?.current_stage; const blocked = task.control?.blocked_by?.[0]; const analysisStatus = task.repository_analysis?.status; const planStatus = task.training_plan?.effective_status;
   if (stage === "task_understanding") return { label: task.capability_decision?.status === "needs_confirmation" ? "等待确认" : "等待澄清", tone: "needs_clarification" };
-  if (stage === "capability_resolution" || stage === "source_discovery") return { label: "选择模型来源", tone: "needs_recipe" };
+  if (stage === "capability_resolution" || stage === "source_discovery") {
+    return blocked
+      ? { label: "任务当前受阻", tone: "failed" }
+      : { label: "选择模型来源", tone: "needs_recipe" };
+  }
   if (stage === "source_resolution") return { label: "确认模型来源", tone: "needs_confirmation" };
   if (stage === "source_snapshot") return { label: "读取来源清单", tone: "needs_confirmation" };
   if (stage === "repository_analysis") return { label: analysisStatus === "blocked" ? "分析已阻断" : ["needs_input", "needs_manual_mapping"].includes(analysisStatus) ? "等待分析映射" : "审阅仓库分析", tone: analysisStatus === "blocked" ? "failed" : "needs_confirmation" };

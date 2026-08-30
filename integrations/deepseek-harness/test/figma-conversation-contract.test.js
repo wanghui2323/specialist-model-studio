@@ -348,6 +348,11 @@ test("compact coordinator plans and the selected task obey canonical interaction
   assert.deepEqual(taskListStatus({ task_id: "task-1" }, { task_id: "task-1" }), { label: "等待你的回答", tone: "needs_confirmation" });
   assert.deepEqual(taskListStatus({ task_id: "task-2" }, null), { label: "选择模型来源", tone: "needs_recipe" });
   assert.deepEqual(taskListStatus({ task_id: "task-2" }, { task_id: "task-1" }), { label: "选择模型来源", tone: "needs_recipe" }, "a stale conversation must never overwrite another task's sidebar truth");
+  assert.match(
+    app,
+    /if \(stage === "capability_resolution" \|\| stage === "source_discovery"\) \{[\s\S]*?return blocked[\s\S]*?任务当前受阻[\s\S]*?选择模型来源/,
+    "a persisted capability blocker must not be mislabeled as ordinary source selection in the sidebar",
+  );
 });
 
 test("390px composer controls keep at least 44px hit targets", async () => {
