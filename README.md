@@ -18,7 +18,8 @@ Specialist Model Studio 面向希望训练专业小模型、但不具备完整�
 | Version | `1.0.0rc1` |
 | Source branch | `codex/v1.0-conversation-native` |
 | 本地 L0–L5 | 已通过 |
-| GitHub L6 冷克隆 | 等待本次最终提交推送后复验 |
+| GitHub 源码分支 | 已发布 `codex/v1.0-conversation-native` |
+| GitHub L6 冷克隆 | 完整双旅程复验待执行 |
 | Tag / GitHub Prerelease | 未创建 |
 | 生产就绪 | 否 |
 
