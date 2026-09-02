@@ -109,13 +109,48 @@ function structuredErrorMessage(value, fallback = "请求失败") {
   }
   return String(detail || fallback);
 }
+function isHtmlErrorPayload(value, contentType = "") {
+  if (String(contentType).toLowerCase().includes("text/html")) return true;
+  if (typeof value !== "string") return false;
+  return /^\s*(?:<!doctype\s+html|<html[\s>])/iu.test(value);
+}
+function responseErrorMessage(status, value, contentType = "") {
+  if (status === 429) return "当前请求较多，训练工作台正在保护运行。请稍候片刻再试。";
+  if ([502, 503, 504].includes(status)) return "训练工作台服务暂时不可用。任务数据仍会保留，请稍候刷新重试。";
+  if (isHtmlErrorPayload(value, contentType)) return `服务返回了异常页面（HTTP ${status}），请稍候刷新重试。`;
+  return structuredErrorMessage(value);
+}
 async function request(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (options.json !== undefined) { headers["content-type"] = "application/json"; options.body = JSON.stringify(options.json); delete options.json; }
-  const response = await fetch(path, { ...options, headers });
+  let response;
+  try {
+    response = await fetch(path, { ...options, headers });
+  } catch (_cause) {
+    const error = new Error("暂时无法连接训练工作台服务。请检查网络后刷新重试。");
+    error.status = 0; error.retryable = true; error.payload = null;
+    throw error;
+  }
   const type = response.headers.get("content-type") || "";
-  const value = type.includes("application/json") ? await response.json() : await response.text();
-  if (!response.ok) { const error = new Error(structuredErrorMessage(value)); error.status = response.status; error.payload = value; throw error; }
+  const rawValue = await response.text();
+  let value = rawValue;
+  if (type.includes("application/json") && rawValue) {
+    try {
+      value = JSON.parse(rawValue);
+    } catch (_cause) {
+      if (response.ok) {
+        const error = new Error("训练工作台返回的数据暂时无法读取，请刷新后重试。");
+        error.status = response.status; error.retryable = true; error.payload = null; error.responseType = type;
+        throw error;
+      }
+    }
+  }
+  if (!response.ok) {
+    const htmlPayload = isHtmlErrorPayload(value, type);
+    const error = new Error(responseErrorMessage(response.status, value, type));
+    error.status = response.status; error.retryable = [429, 502, 503, 504].includes(response.status); error.payload = htmlPayload ? null : value; error.responseType = type;
+    throw error;
+  }
   return value;
 }
 function clear(element) { while (element?.firstChild) element.firstChild.remove(); }

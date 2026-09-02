@@ -4518,7 +4518,7 @@ class DshMultiAgentRuntime:
             "TrainingTask 是唯一任务事实源；下面给出的 task_id 是精确、可直接调用的规范值。"
             "先用这个值调用 model_harness_get_task，禁止先调用 model_harness_list_tasks，"
             "不得创建第二个任务，也不得从聊天记忆推断任务状态。每次调用 model_harness_* 时，"
-            "task_id 参数必须逐字复制完整值（包括前缀与末尾短码），严禁只传末尾 8 位短码。\n"
+            "task_id 参数必须逐字复制完整 canonical 值，不得截断、改写，也不得根据任务标题自行构造。\n"
             "需要专业工作时，使用 DeepSeek Harness 已提供的原生、可继续的 subagent "
             "delegate/spawn/fork 能力。专家必须使用下面固定的 agent_id 与职责；"
             "专家结果回到根会话，用户只看到一个 Orchestrator 对话和真实过程事件，"

@@ -1,0 +1,65 @@
+[Unit]
+Description=Specialist Model Studio private preview
+Documentation=https://github.com/wanghui2323/specialist-model-studio
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=specialist-model-studio
+Group=specialist-model-studio
+WorkingDirectory=/opt/specialist-model-studio/current
+EnvironmentFile=/etc/specialist-model-studio/studio.env
+Environment=HOME=/opt/specialist-model-studio-data/home
+Environment=PATH=/opt/node-v22.23.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+Environment=MODEL_HARNESS_RUNS_DIR=/opt/specialist-model-studio-data/runs
+Environment=MODEL_HARNESS_ARTIFACT_EXPORT_DIR=/opt/specialist-model-studio-data/exports
+Environment=DSH_HOME=/opt/specialist-model-studio-data/dsh
+Environment=HF_HOME=/opt/specialist-model-studio-data/cache/huggingface
+Environment=XDG_CACHE_HOME=/opt/specialist-model-studio-data/cache
+Environment=UV_CACHE_DIR=/opt/specialist-model-studio-data/cache/uv
+Environment=MODEL_HARNESS_BACKEND_START_ATTEMPTS=360
+ExecStart=/opt/specialist-model-studio/current/.venv/bin/specialist-model-studio start --runs-dir /opt/specialist-model-studio-data/runs --host 127.0.0.1 --port 3010 --agent-host 127.0.0.1 --agent-port 3011
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillMode=control-group
+OOMPolicy=stop
+UMask=0077
+
+# Preview resource envelope. Increase only through a reviewed systemd override.
+CPUQuota=200%
+MemoryHigh=6G
+MemoryMax=7G
+TasksMax=512
+LimitNOFILE=65536
+
+# The source release is immutable; only the persistent data root is writable.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectClock=true
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/opt/specialist-model-studio-data
+
+[Install]
+WantedBy=multi-user.target

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import vm from "node:vm";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const web = join(here, "../../../model_harness/web");
@@ -16,6 +17,49 @@ async function sources() {
   ]);
   return { html, css: `${legacyCss}\n${visualCss}`, legacyCss, visualCss, app };
 }
+
+test("gateway failures stay human-readable and never render raw HTML", async () => {
+  const { app } = await sources();
+  const requestContract = app.slice(
+    app.indexOf("function structuredErrorMessage"),
+    app.indexOf("function clear(element)"),
+  );
+  assert.match(requestContract, /status === 429/);
+  assert.match(requestContract, /\[502, 503, 504\]\.includes\(status\)/);
+  assert.match(requestContract, /服务返回了异常页面（HTTP \$\{status\}）/);
+  assert.match(requestContract, /error\.payload = htmlPayload \? null : value/);
+  assert.match(requestContract, /暂时无法连接训练工作台服务/);
+  assert.doesNotMatch(requestContract, /new Error\(structuredErrorMessage\(value\)\)/);
+
+  const makeResponse = ({ status, type, body }) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (name) => name.toLowerCase() === "content-type" ? type : "" },
+    text: async () => body,
+  });
+  const responses = [
+    makeResponse({ status: 503, type: "text/html", body: "<html><h1>503 Service Temporarily Unavailable</h1></html>" }),
+    makeResponse({ status: 503, type: "application/json", body: "<html><h1>mislabelled gateway error</h1></html>" }),
+    makeResponse({ status: 200, type: "application/json", body: "<html>not json</html>" }),
+  ];
+  const context = {
+    fetch: async () => responses.shift(),
+    console,
+  };
+  vm.runInNewContext(`${requestContract}\nglobalThis.__request = request;`, context);
+
+  for (const expected of ["训练工作台服务暂时不可用", "训练工作台服务暂时不可用", "返回的数据暂时无法读取"]) {
+    await assert.rejects(
+      context.__request("/tasks"),
+      (error) => {
+        assert.match(error.message, new RegExp(expected));
+        assert.equal(error.payload, null);
+        assert.doesNotMatch(error.message, /<html|nginx|Service Temporarily Unavailable/i);
+        return true;
+      },
+    );
+  }
+});
 
 test("L3 Hugging Face controls are wired to immutable, approved, verified asset APIs", async () => {
   const { html, app } = await sources();
@@ -301,9 +345,10 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(css, /\.inspector\[data-open="true"\]\{[^}]*visibility:visible[^}]*pointer-events:auto[^}]*transform:translateX\(0\)/);
   assert.match(css, /@media\(max-width:720px\)[\s\S]*?\.inspector\{width:100%;z-index:42\}/);
   assert.match(css, /@media\(max-width:720px\)[\s\S]*body\[data-workspace="open"\] \.mobile-view-nav\{display:none\}/);
-  for (const asset of ["conversation-view.js", "interaction-shell.js", "styles.css", "visual-system.css", "app.js"]) {
+  for (const asset of ["conversation-view.js", "interaction-shell.js", "styles.css", "visual-system.css"]) {
     assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.2-one-product`));
   }
+  assert.match(html, /app\.js\?v=2\.2\.1-gateway-errors/);
   assert.match(app, /function renderAgentSurfaceState\(conversation, projection\)/);
   assert.doesNotMatch(app, /开始 Agent 会话/);
   assert.match(app, /协调器会先理解你的目标和已有信息，再规划下一步/);

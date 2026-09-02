@@ -417,7 +417,7 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
         self.assertIn("不要生成虚构的多角色群聊", instruction)
         self.assertIn(self.task_id, instruction)
         self.assertIn(f'EXACT_TASK_ID_JSON: "{self.task_id}"', instruction)
-        self.assertIn("严禁只传末尾 8 位短码", instruction)
+        self.assertIn("不得截断、改写，也不得根据任务标题自行构造", instruction)
         self.assertIn("结构化 question checkpoint", instruction)
         self.assertIn("稳定 question id", instruction)
         self.assertIn("model_harness_authorize_task_run_start", instruction)

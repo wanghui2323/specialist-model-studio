@@ -528,7 +528,9 @@ class TrainingWorkspace:
             raise ContractError("任务名称不能为空")
         if not selected_goal:
             raise ContractError("业务目标不能为空")
-        task_id = f"{_safe_slug(selected_name, 'training-task')}-{uuid4().hex[:8]}"
+        # Identity is opaque and stable; the user-facing name remains mutable
+        # display metadata and must never become a routing or storage key.
+        task_id = f"task-{uuid4().hex}"
         now = _utc_now()
         capability = self._normalize_capability(capability_request or {})
         spec = build_task_spec_revision(
