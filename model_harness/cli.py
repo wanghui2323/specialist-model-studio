@@ -11,6 +11,10 @@ from typing import Any
 from . import __version__
 from .errors import ContractError, HarnessError, PluginError
 from .io_utils import read_json
+from .source_identity import (
+    STUDIO_SOURCE_ROOT_ENV,
+    resolve_studio_source_root,
+)
 
 
 def _print_json(value: Any) -> None:
@@ -112,19 +116,29 @@ def _read_events(path: Path, after_seq: int) -> list[dict[str, Any]]:
     return records
 
 
+def _resolve_studio_source_root() -> Path:
+    """Resolve the audited checkout without depending on the caller's cwd.
+
+    A wheel cannot embed the repository-managed DSH runtime and launcher inputs.
+    Production callers can therefore bind it to an explicit checkout.  A virtual
+    environment stored directly inside a checkout is also deterministic: its
+    ``sys.prefix`` parent is that checkout, including non-editable wheel installs.
+    """
+
+    return resolve_studio_source_root(
+        module_file=Path(__file__),
+        prefix=Path(sys.prefix),
+    )
+
+
 def _start_studio(args: argparse.Namespace) -> int:
     """Run the audited source-checkout launcher without weakening its gates."""
 
-    repository_root = Path(__file__).resolve().parents[1]
+    repository_root = _resolve_studio_source_root()
     launcher = repository_root / "scripts" / "start_conversation_harness.sh"
-    if not launcher.is_file():
-        raise RuntimeError(
-            "The complete Studio launcher is not present in this installation. "
-            "Run `specialist-model-studio start` from a Specialist Model Studio "
-            "source checkout; `serve` remains available for backend-only use."
-        )
 
     environment = dict(os.environ)
+    environment[STUDIO_SOURCE_ROOT_ENV] = str(repository_root)
     environment["SPECIALIST_MODEL_STUDIO_PUBLIC_START"] = "1"
     environment["MODEL_HARNESS_PYTHON"] = sys.executable
     for argument, variable in (

@@ -44,6 +44,13 @@ The scripts use the existing SSH alias `itutor` and these fixed paths:
 /etc/nginx/conf.d/specialist-model-studio.conf
 ```
 
+During the one-time migration from the legacy
+`/opt/specialist-model-studio-releases/<release>` layout, the deploy and rollback
+transactions accept a canonical direct child of either release root. An
+unrecognized `current` target is rejected before service switching. The legacy
+release remains the rollback target until the first new-layout release passes
+the complete readiness gate.
+
 Recommended preview host: Linux x86_64, 4 vCPU, 8 GiB RAM, 40 GiB free disk,
 `git`, `curl`, `nginx`, `systemd`, Python 3.12, and `uv 0.9.21`.  Node must be the
 locked installation at `/opt/node-v22.23.1/bin` and report `v22.23.1`.
@@ -146,7 +153,11 @@ Git commit into a new release directory, exports exact dependency versions and
 SHA-256 hashes from `uv.lock`, installs those artifacts through the configured
 regional PyPI mirror with hash enforcement, tests Nginx, switches `current`
 atomically, starts the service, and runs the local readiness gate. Existing
-releases are retained for rollback.
+releases are retained for rollback. A root-owned completion manifest inside the
+release records the full Git SHA; readiness fails closed unless `/runtime`
+reports the same clean source revision. The active and previous links, systemd
+unit, readiness helper, and Nginx site are restored as one transaction when
+activation fails.
 
 The service is deliberately capped at two CPU cores and 7 GiB memory.  Change
 those limits only through a reviewed `systemctl edit specialist-model-studio`

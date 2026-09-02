@@ -162,9 +162,9 @@ validate_backend_runtime() {
   local expected_source_dirty=""
   local validation_error=""
 
-  expected_revision="$(git -C "${HARNESS_ROOT}" rev-parse HEAD 2>/dev/null || true)"
+  expected_revision="$(git -c "safe.directory=${HARNESS_ROOT}" -C "${HARNESS_ROOT}" rev-parse HEAD 2>/dev/null || true)"
   if [[ -n "${expected_revision}" ]]; then
-    if [[ -n "$(git -C "${HARNESS_ROOT}" status --porcelain --untracked-files=normal 2>/dev/null || true)" ]]; then
+    if [[ -n "$(git -c "safe.directory=${HARNESS_ROOT}" -C "${HARNESS_ROOT}" status --porcelain --untracked-files=normal 2>/dev/null || true)" ]]; then
       expected_source_dirty="true"
     else
       expected_source_dirty="false"

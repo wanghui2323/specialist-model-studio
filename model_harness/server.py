@@ -8,6 +8,7 @@ import hmac
 import json
 import os
 import subprocess
+import sys
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -77,6 +78,7 @@ from .feasibility_store import (
 from .resource_feasibility import ResourceFeasibilityError
 from .service import RunService
 from .sample_inference import SampleInferenceBlocked
+from .source_identity import resolve_runtime_source_root
 from .staged_assets import StagedAssetRejected
 from .state import TERMINAL_STATUSES
 from .training_plans import (
@@ -98,7 +100,16 @@ def _resolve_source_revision(source_root: Path) -> str | None:
 
     try:
         completed = subprocess.run(
-            ["git", "-C", str(source_root), "rev-parse", "--verify", "HEAD"],
+            [
+                "git",
+                "-c",
+                f"safe.directory={source_root}",
+                "-C",
+                str(source_root),
+                "rev-parse",
+                "--verify",
+                "HEAD",
+            ],
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -122,6 +133,8 @@ def _resolve_source_dirty(source_root: Path) -> bool | None:
         completed = subprocess.run(
             [
                 "git",
+                "-c",
+                f"safe.directory={source_root}",
                 "-C",
                 str(source_root),
                 "status",
@@ -233,13 +246,16 @@ def create_app(
         or os.environ.get("MODEL_HARNESS_CONVERSATION_URL")
         or "http://127.0.0.1:3080"
     ).rstrip("/")
-    source_root = Path(__file__).parent.parent.resolve()
+    source_root = resolve_runtime_source_root(
+        module_file=Path(__file__),
+        prefix=Path(sys.prefix),
+    )
     source_revision = _resolve_source_revision(source_root)
     source_dirty = _resolve_source_dirty(source_root)
     conversations = build_dsh_multi_agent_runtime(
         workspace_root=workspace.root,
         dsh_base_url=resolved_conversation_url,
-        cwd=Path(__file__).parent.parent,
+        cwd=source_root,
         background_actions_provider=workspace.task_background_actions,
         background_actions_canceller=workspace.cancel_task_background_actions,
     )

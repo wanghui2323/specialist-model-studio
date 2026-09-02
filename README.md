@@ -6,7 +6,7 @@ Specialist Model Studio 面向希望训练专业小模型、但不具备完整�
 
 它不是一个展示固定步骤的训练 Demo。每次真实操作都必须对应可持久化的任务对象、工具动作、人工确认或证据对象；无法训练时，系统会返回可审查的 `BlockerEvidence`，而不是生成假的进度、指标或制品。
 
-> 当前版本：`1.0.0rc1`（API：`1.0.0-rc.1`，功能轨道：`v1.0-conversation-native`）。这是可供代码审核和本地体验的源码 RC，不代表生产就绪，也不自动代表 CI、Tag 或 GitHub Prerelease 已发布。
+> 当前版本：`1.0.0rc1`（API：`1.0.0-rc.1`，功能轨道：`v1.0-conversation-native`，发布状态：`unreleased_rc`）。这是可供代码审核和本地体验的源码 RC，不表示生产就绪，也不自动代表 CI、Tag 或 GitHub Prerelease 已发布。
 
 - 项目地址：<https://github.com/wanghui2323/specialist-model-studio>
 - 本地 RC 验收：[v1.0 本地发布验收](plans/v1.0-conversation-native/LOCAL-RELEASE-ACCEPTANCE.md)
@@ -107,6 +107,7 @@ Recipe Factory 当前只允许可信、白名单化的声明式构建。候选�
 ## 快速开始：启动完整的本地 Studio
 
 首选方式会同时预检并启动 Specialist Model Studio、真实多智能体运行时与本地工作台：
+普通 wheel 安装只承诺 backend-only 的 `serve` 能力；完整 `start` 必须绑定包含锁定 DSH runtime 与启动脚本的源码 checkout。
 
 前置条件：Python `>=3.11`、[`uv`](https://docs.astral.sh/uv/)、Node.js / npm，以及可调用的 DeepSeek provider 凭据。
 
