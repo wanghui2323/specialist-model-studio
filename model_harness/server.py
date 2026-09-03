@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -88,6 +89,20 @@ from .training_plans import (
 )
 from .task_specs import FAMILY_DETAILS
 from .workspace import TrainingWorkspace
+
+
+_CONVERSATION_REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}")
+
+
+def _conversation_task_id(create_request_id: str) -> str:
+    selected = create_request_id.strip()
+    if not _CONVERSATION_REQUEST_ID.fullmatch(selected):
+        raise ValueError("create_request_id 格式非法")
+    digest = hashlib.sha256(
+        b"specialist-model-studio:conversation-task:v1\0"
+        + selected.encode("utf-8")
+    ).hexdigest()
+    return f"task-{digest[:32]}"
 
 
 API_VERSION = "1.0.0-rc.1"
@@ -1459,6 +1474,136 @@ def create_app(
 
     @app.post("/tasks")
     async def create_task(body: dict[str, Any] = Body(...)) -> JSONResponse:
+        initial_message = body.get("initial_message")
+        create_request_id = body.get("create_request_id")
+        message_request_id = body.get("message_request_id")
+        if initial_message is not None:
+            if not isinstance(initial_message, str) or not initial_message.strip():
+                raise HTTPException(
+                    status_code=422,
+                    detail="initial_message must be non-empty text",
+                )
+            if not isinstance(create_request_id, str):
+                raise HTTPException(
+                    status_code=422,
+                    detail="create_request_id is required for a conversation task",
+                )
+            if not isinstance(message_request_id, str):
+                raise HTTPException(
+                    status_code=422,
+                    detail="message_request_id is required for a conversation task",
+                )
+            message_request_id = message_request_id.strip()
+            if not _CONVERSATION_REQUEST_ID.fullmatch(message_request_id):
+                raise HTTPException(status_code=422, detail="message_request_id 格式非法")
+            try:
+                deterministic_task_id = _conversation_task_id(create_request_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            selected_name = str(body.get("name", "")).strip()
+            selected_goal = str(body.get("business_goal", "")).strip()
+            created = False
+            try:
+                task = workspace.get_task(deterministic_task_id)
+            except FileNotFoundError:
+                try:
+                    task = workspace.create_task(
+                        selected_name,
+                        selected_goal,
+                        body.get("capability_request")
+                        if isinstance(body.get("capability_request"), dict)
+                        else {},
+                        str(body.get("recipe_id", "")).strip() or None,
+                        task_id=deterministic_task_id,
+                    )
+                    created = True
+                except ContractError as create_error:
+                    # A concurrent replay can win the deterministic create
+                    # after our initial lookup.  Reload the canonical task and
+                    # continue through the same identity checks instead of
+                    # turning an idempotent retry into a validation failure.
+                    try:
+                        task = workspace.get_task(deterministic_task_id)
+                    except FileNotFoundError:
+                        raise HTTPException(status_code=422, detail=str(create_error)) from create_error
+                except Exception as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if (
+                task.get("name") != selected_name
+                or task.get("business_goal") != selected_goal
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "task_creation_request_conflict",
+                        "message": (
+                            "create_request_id 已绑定到不同的任务名称或业务目标"
+                        ),
+                        "task_id": deterministic_task_id,
+                    },
+                )
+            try:
+                submission = conversations.submit_message(
+                    deterministic_task_id,
+                    str(task["name"]),
+                    initial_message,
+                    composer_mode="queue_after_turn",
+                    request_id=message_request_id,
+                    actor="user",
+                )
+            except ComposerRequestConflictError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "composer_request_conflict",
+                        "message": str(exc),
+                        "task_id": deterministic_task_id,
+                        "request_id": message_request_id,
+                    },
+                ) from exc
+            except ComposerRequestTerminalError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "composer_request_terminal",
+                        "message": str(exc),
+                        "task_id": deterministic_task_id,
+                        "request_id": exc.request_id,
+                        "status": exc.status,
+                        "new_request_required": exc.new_request_required,
+                    },
+                ) from exc
+            except ComposerSubmissionError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "composer_submission_failed",
+                        "message": str(exc),
+                        "task_id": deterministic_task_id,
+                        "request_id": exc.request_id,
+                        "status": exc.status,
+                        "new_request_required": exc.new_request_required,
+                    },
+                ) from exc
+            except (ValueError, ComposerModeUnsupportedError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            except AgentRuntimeError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "agent_runtime_unavailable",
+                        "message": str(exc),
+                        "task_id": deterministic_task_id,
+                    },
+                ) from exc
+            return JSONResponse(
+                status_code=201 if created else 200,
+                content={
+                    "task": workspace.get_task(deterministic_task_id),
+                    "submission": submission,
+                    "created": created,
+                },
+            )
         try:
             task = workspace.create_task(
                 str(body.get("name", "")),

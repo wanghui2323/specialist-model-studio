@@ -63,7 +63,7 @@ const state = {
   modelSourceProviders: [], modelSourceCandidates: [], modelSourceResolutions: [], modelSourceSearches: [], modelSourceSearch: null, modelSourceMode: "search", modelSourceOperationSeq: 0, modelSourceLoadedTaskId: null, modelSourceCandidateRenderKey: "", modelSourceCheckpointRenderKey: "", modelSourceSearchInFlight: false,
   checkpointCard: null, workspaceAutoKey: null, workspaceProjection: null, workspaceDismissedKey: null, inspectorAutoOpened: false, inspectorOpener: null, inspectorMode: "closed", activeObjectRef: null, activeObjectPayload: null, objectViewerRequestSeq: 0, productRuntime: null, runtimeIssue: null, taskSpecFamilies: [], taskSpecFamiliesError: null, taskSpecRevisions: [], taskSpecDescriptionMode: false, taskSpecQuickReplyKey: "", taskSpecAlternativesOpen: false,
   actionTimelineDisclosure: new Map(), actionResultCache: new Map(), actionResultRequests: new Map(),
-  noticeDismissTimer: null,
+  noticeDismissTimer: null, runtimeRetryTimer: null, runtimeRetryAttempt: 0,
 };
 const checkpointCards = [ui.taskSpecCard, ui.capabilityCard, ui.modelSourceCheckpointCard, ui.modelSourceCard, ui.repositoryAnalysisCard, ui.trainingPlanCard, ui.resourceFeasibilityCard, ui.datasetCard, ui.contractCard].filter(Boolean);
 const checkpointHomes = new Map();
@@ -121,18 +121,24 @@ function responseErrorMessage(status, value, contentType = "") {
   return structuredErrorMessage(value);
 }
 async function request(path, options = {}) {
-  const headers = { ...(options.headers || {}) };
-  if (options.json !== undefined) { headers["content-type"] = "application/json"; options.body = JSON.stringify(options.json); delete options.json; }
-  let response;
+  const { json, timeoutMs = 0, ...requestOptions } = options;
+  const headers = { ...(requestOptions.headers || {}) };
+  if (json !== undefined) { headers["content-type"] = "application/json"; requestOptions.body = JSON.stringify(json); }
+  const controller = timeoutMs > 0 && !requestOptions.signal ? new AbortController() : null;
+  const timeout = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
+  let response, rawValue;
   try {
-    response = await fetch(path, { ...options, headers });
-  } catch (_cause) {
-    const error = new Error("暂时无法连接训练工作台服务。请检查网络后刷新重试。");
+    response = await fetch(path, { ...requestOptions, headers, ...(controller ? { signal: controller.signal } : {}) });
+    rawValue = await response.text();
+  } catch (cause) {
+    const timedOut = controller?.signal.aborted === true || cause?.name === "AbortError";
+    const error = new Error(timedOut ? "训练工作台响应超时，请稍候重试。" : "暂时无法连接训练工作台服务。请检查网络后刷新重试。");
     error.status = 0; error.retryable = true; error.payload = null;
     throw error;
+  } finally {
+    if (timeout !== null) window.clearTimeout(timeout);
   }
   const type = response.headers.get("content-type") || "";
-  const rawValue = await response.text();
   let value = rawValue;
   if (type.includes("application/json") && rawValue) {
     try {
@@ -477,6 +483,25 @@ function beginMessageSubmission(taskId, text) {
   state.messageSubmission = submission;
   return submission;
 }
+function beginTaskCreationSubmission(text) {
+  const previous = state.messageSubmission;
+  if (previous?.task_id === null && previous.text === text && previous.status === "failed" && previous.create_request_id) {
+    previous.status = "sending";
+    if (previous.new_request_required === true) previous.request_id = createConversationRequestId();
+    previous.new_request_required = false;
+    return previous;
+  }
+  const submission = {
+    task_id: null,
+    text,
+    create_request_id: createConversationRequestId(),
+    request_id: createConversationRequestId(),
+    status: "sending",
+    new_request_required: false,
+  };
+  state.messageSubmission = submission;
+  return submission;
+}
 async function postQueuedConversationMessage(taskId, text) {
   const submission = beginMessageSubmission(taskId, text);
   state.pendingMessage = { task_id: taskId, text, time: Date.now() };
@@ -626,7 +651,7 @@ function renderRuntimeMode(mode) {
   ui.runtimePill.dataset.state = checking ? "checking" : ready ? "ready" : "error";
   ui.runtimePill.querySelector("span").textContent = pillText; ui.runtimePill.title = pillText; ui.runtimePill.setAttribute("aria-label", pillText);
   ui.composerMode.dataset.state = checking ? "checking" : ready ? "agent" : "local"; ui.composerModeLabel.textContent = composerText; ui.composerMode.title = ready ? "训练协调器可以理解需求、动态规划并调度训练团队" : providerMissing ? "模型服务尚未配置，因此不会创建任务或启动对话" : checking ? composerText : "当前只允许查看任务事实和手动打开证据面板；不会用固定流程冒充智能协作";
-  ui.messageInput.disabled = !ready; ui.sendButton.disabled = !ready; ui.composerWrap.dataset.runtime = ready ? "agent" : checking ? "checking" : "unavailable";
+  ui.messageInput.disabled = false; ui.sendButton.disabled = !ready; ui.composerWrap.dataset.runtime = ready ? "agent" : checking ? "checking" : "unavailable";
   if (!ready) ui.messageInput.placeholder = checking ? "正在连接训练协调器…" : providerMissing ? "请先在本机配置模型服务，再开始训练任务" : incompatible ? "AI 服务版本不兼容，请重启正式服务" : "训练协调器未连接，暂时不能创建或继续对话任务";
   else ui.messageInput.placeholder = state.selectedTaskId ? "继续询问或补充下一步要求…" : "告诉我，你希望模型帮你完成什么？";
   if (providerMissing) showRuntimeSetupNotice("模型服务尚未配置。请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动；在此之前不会创建训练任务。");
@@ -654,17 +679,26 @@ function renderProductBoundary() {
   }
 }
 async function loadRuntime() {
+  if (state.runtimeRetryTimer) window.clearTimeout(state.runtimeRetryTimer);
+  state.runtimeRetryTimer = null;
   state.runtimeIssue = null; renderRuntimeMode("checking");
   try {
-    state.productRuntime = await request("/runtime");
+    state.productRuntime = await request("/runtime", { timeoutMs: 8_000 });
     applyAgentRuntimeStatus(state.productRuntime.agent);
   } catch (_runtimeError) {
     state.productRuntime = null;
-    try { applyAgentRuntimeStatus(await request("/agent/runtime")); } catch (_agentError) { state.runtimeReady = false; }
+    try { applyAgentRuntimeStatus(await request("/agent/runtime", { timeoutMs: 6_000 })); } catch (_agentError) { state.runtimeReady = false; }
   }
   renderProductBoundary();
   renderRuntimeMode(runtimeDisplayMode());
   if (state.task) renderConversation(true);
+  if (state.runtimeReady) state.runtimeRetryAttempt = 0;
+  else if (!state.runtimeIssue) {
+    const delays = [2_000, 5_000, 10_000, 15_000];
+    const delay = delays[Math.min(state.runtimeRetryAttempt, delays.length - 1)];
+    state.runtimeRetryAttempt += 1;
+    state.runtimeRetryTimer = window.setTimeout(() => loadRuntime(), delay);
+  }
 }
 async function loadHfCapability() {
   try { state.hfCapability = await request("/model-assets/huggingface/capability"); }
@@ -681,7 +715,7 @@ async function loadTaskSpecFamilies() {
   catch (error) { state.taskSpecFamilies = []; state.taskSpecFamiliesError = error.message; return false; }
 }
 async function loadTasks({ selectFromUrl = false } = {}) {
-  state.tasks = (await request("/tasks")).tasks || []; renderTaskList();
+  state.tasks = (await request("/tasks", { timeoutMs: 12_000 })).tasks || []; renderTaskList();
   if (selectFromUrl && !state.selectedTaskId) {
     const requested = new URL(location.href).searchParams.get("task");
     if (!requested) { enterHomeState({ focusComposer: false }); return; }
@@ -1906,11 +1940,21 @@ function renderRunControl(task) {
 }
 function localConversation(task) {
   if (!task) return { items: [], pending: [], running: false };
-  const originalGoal = state.taskSpecRevisions[0]?.business_goal || task.business_goal;
-  return { items: [{ kind: "message", role: "user", text: originalGoal, time: task.created_at_utc }], pending: [], running: false };
+  return { items: [], pending: [], running: false };
 }
 function taskEvidenceLedger(task) {
   const ledger = []; const revisions = state.taskSpecRevisions.length ? state.taskSpecRevisions : task.task_spec ? [task.task_spec] : [];
+  if (state.conversation && !state.conversation.session_id) {
+    ledger.push({
+      kind: "system_record",
+      source: "persisted_task_projection",
+      status: "warning",
+      evidenceKey: `unsent:${task.task_id}`,
+      label: "任务已保存，尚未交给训练协调器",
+      detail: "业务目标仍是任务草稿，不代表消息已经发送。请在下方发送或使用“发送任务目标”继续。",
+      time: task.created_at_utc,
+    });
+  }
   revisions.forEach((spec, index) => {
     const decision = spec.capability_decision || {}; const capability = spec.capability_request || {}; const note = String(spec.user_note || "");
     const selectedCandidate = decision.candidates?.find((item) => item.family === decision.selected_family);
@@ -2124,10 +2168,20 @@ function renderAgentSurfaceState(conversation, projection) {
   const card = document.createElement("article"); card.className = "agent-surface-state"; card.dataset.state = state.runtimeReady ? "ready" : "unavailable";
   const mark = document.createElement("span"); mark.textContent = state.runtimeReady ? "AI" : "!";
   const copy = document.createElement("div"); const title = document.createElement("b"); const detail = document.createElement("p");
-  title.textContent = state.runtimeReady ? hasSession ? "当前由训练协调器处理" : "训练协调器已就绪" : state.runtimeIssue === "provider" ? "模型服务尚未配置，对话已暂停" : state.runtimeIssue === "incompatible" ? "AI 服务版本不兼容，对话已暂停" : "训练协调器未连接，对话已暂停";
-  detail.textContent = state.runtimeReady ? hasSession ? specialists.length ? `当前没有训练团队成员在执行；本任务保留 ${specialists.length} 类已验证协作记录。再次分工时，新动作会实时出现在对话中。` : "当前由训练协调器处理。需要模型检索、数据诊断、资源评估或训练时，训练团队及其真实动作才会出现在对话中。" : "在下方继续描述目标或问题。协调器会先理解你的目标和已有信息，再规划下一步；需要你决定时，它会停下来问你。" : state.runtimeIssue === "provider" ? "请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动。完成前只能查看已保存的任务与证据，不会创建新任务或伪装智能体结果。" : state.runtimeIssue === "incompatible" ? "当前页面与智能协作服务的协议不匹配。页面不会把旧会话或固定步骤当成实时进展，请重启正式服务。" : "当前页面只能查看已经保存的任务与证据；无法理解新需求、生成计划或调度训练团队，也不会用固定步骤冒充实时进度。";
+  title.textContent = state.runtimeReady ? hasSession ? "当前由训练协调器处理" : "任务已保存，尚未发送" : state.runtimeIssue === "provider" ? "模型服务尚未配置，对话已暂停" : state.runtimeIssue === "incompatible" ? "AI 服务版本不兼容，对话已暂停" : "训练协调器未连接，对话已暂停";
+  detail.textContent = state.runtimeReady ? hasSession ? specialists.length ? `当前没有训练团队成员在执行；本任务保留 ${specialists.length} 类已验证协作记录。再次分工时，新动作会实时出现在对话中。` : "当前由训练协调器处理。需要模型检索、数据诊断、资源评估或训练时，训练团队及其真实动作才会出现在对话中。" : "这个任务只有已保存的业务目标，还没有被训练协调器接收。发送后才会创建真实 Agent 会话并开始回应。" : state.runtimeIssue === "provider" ? "请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动。完成前只能查看已保存的任务与证据，不会创建新任务或伪装智能体结果。" : state.runtimeIssue === "incompatible" ? "当前页面与智能协作服务的协议不匹配。页面不会把旧会话或固定步骤当成实时进展，请重启正式服务。" : "当前页面只能查看已经保存的任务与证据；无法理解新需求、生成计划或调度训练团队，也不会用固定步骤冒充实时进度。";
   copy.append(title, detail); card.append(mark, copy);
-  if (!state.runtimeReady) {
+  if (state.runtimeReady && !hasSession) {
+    const action = document.createElement("button"); action.type = "button"; action.textContent = "发送任务目标";
+    action.addEventListener("click", async () => {
+      const goal = String(state.task?.business_goal || "").trim();
+      if (!goal) { ui.messageInput.focus(); return; }
+      setButtonBusy(action, true, "正在发送");
+      try { await submitMessage(goal); }
+      finally { setButtonBusy(action, false, ""); }
+    });
+    card.append(action);
+  } else if (!state.runtimeReady) {
     const action = document.createElement("button"); action.type = "button"; action.textContent = state.runtimeIssue === "provider" ? "重新检查模型服务" : "重新检查连接";
     action.addEventListener("click", async () => {
       setButtonBusy(action, true, "检查中");
@@ -2903,13 +2957,38 @@ async function submitMessage(message) {
     if (!state.runtimeReady) { if (state.runtimeIssue === "provider") showRuntimeSetupNotice("模型服务尚未配置。请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动；在此之前不会创建训练任务。"); else showNotice("训练协调器未连接：没有创建或修改任务，也没有启动固定流程替代智能协作。请先恢复连接。", "error"); return; }
     if (state.cancelRequestInFlight || backgroundCancellationPending(state.conversation)) { showNotice("当前执行正在停止。为避免新消息与取消请求发生竞态，请等待后端确认最终状态。", "ok"); return; }
     if (!state.selectedTaskId) {
-      const created = await request("/tasks", { method: "POST", json: { name: deriveTaskName(text), business_goal: text } }); state.tasks.unshift(created.task); clearDraft(null); ui.messageInput.value = ""; resizeComposer(); await selectTask(created.task.task_id, { saveCurrentDraft: false }); attemptedTaskId = created.task.task_id; ui.messageInput.value = text; saveDraft(attemptedTaskId); resizeComposer();
-      if (state.runtimeReady) {
-        const taskId = created.task.task_id;
-        await postQueuedConversationMessage(taskId, text); clearComposerRetry("message"); clearDraft(taskId); if (state.selectedTaskId === taskId) { ui.messageInput.value = ""; resizeComposer(); }
-        showTransientNotice("任务已创建。协调器会先理解你的目标，再决定下一步；需要你做决定时会停下来问你。", "ok"); window.setTimeout(() => refreshSelected({ force: true }), 250); return;
+      const creation = beginTaskCreationSubmission(text);
+      try {
+        const created = await request("/tasks", {
+          method: "POST",
+          timeoutMs: 20_000,
+          json: {
+            name: deriveTaskName(text),
+            business_goal: text,
+            initial_message: text,
+            create_request_id: creation.create_request_id,
+            message_request_id: creation.request_id,
+          },
+        });
+        const status = runtimeStatusToken(created?.submission?.status);
+        if (created?.submission?.accepted !== true || ["failed", "cancelled", "canceled", "rejected", "interrupted"].includes(status)) {
+          const error = new Error(structuredErrorMessage(created?.submission, "训练协调器没有接收首条消息"));
+          error.payload = created;
+          throw error;
+        }
+        const taskId = created.task.task_id; attemptedTaskId = taskId; creation.task_id = taskId;
+        state.pendingMessage = { task_id: taskId, text, time: Date.now() };
+        state.messageSubmission = null; state.tasks = [created.task, ...state.tasks.filter((item) => item.task_id !== taskId)];
+        clearDraft(null); ui.messageInput.value = ""; resizeComposer(); await selectTask(taskId, { saveCurrentDraft: false });
+        clearComposerRetry("message"); clearDraft(taskId); if (state.selectedTaskId === taskId) { ui.messageInput.value = ""; resizeComposer(); }
+        showTransientNotice(created.created === false ? "任务已恢复，首条消息已经交给训练协调器。" : "任务已创建，首条消息已经交给训练协调器。", "ok");
+        window.setTimeout(() => refreshSelected({ force: true }), 250); return;
+      } catch (error) {
+        const detail = error?.payload?.detail;
+        creation.status = "failed";
+        creation.new_request_required = detail?.new_request_required === true;
+        throw error;
       }
-      showTransientNotice(created.task.capability_decision?.status === "needs_clarification" ? "任务已创建，但输出形式仍有歧义。请先提交澄清；系统尚未绑定训练方案。" : "任务已创建。请先检查并确认任务理解；确认前不会进入数据或训练。", "ok"); return;
     }
     const checkpoint = currentHumanCheckpoint(state.conversation);
     if (checkpoint?.kind === "approval") { showNotice("这是一次会改变任务状态的批准请求。请使用上方明确的“允许”或“拒绝”按钮，聊天文字不会被当作授权。", "error"); return; }
@@ -2965,7 +3044,7 @@ function syncCancelRequestUi(conversation = state.conversation) {
   ui.cancelAgentButton.setAttribute("aria-label", cancelling ? "正在请求停止当前智能协作与任务后台动作" : "请求停止当前智能协作与任务后台动作");
   const inlineCancelButtons = [...ui.messageList.querySelectorAll("[data-ai-turn-cancel]")];
   inlineCancelButtons.forEach((button) => { button.disabled = cancelling; button.textContent = cancelling ? "正在停止" : "停止"; });
-  ui.messageInput.disabled = !state.runtimeReady || cancelling;
+  ui.messageInput.disabled = cancelling;
   ui.sendButton.disabled = !state.runtimeReady || cancelling;
   if (!cancelling) { delete ui.agentWorking.dataset.status; syncConversationComposerPlaceholder(conversation, state.task); return; }
   ui.messageInput.placeholder = "正在停止当前执行，请等待后端确认…";
@@ -3332,5 +3411,12 @@ dockedWorkspaceMedia.addEventListener("change", () => {
 });
 document.querySelectorAll("[data-prompt]").forEach((button) => button.addEventListener("click", () => { ui.messageInput.value = button.dataset.prompt; resizeComposer(); ui.messageInput.focus(); }));
 
-async function boot() { restoreDraft(null); window.setInterval(() => syncAiTurnElapsedLabels(), 1000); await Promise.all([loadRuntime(), loadHfCapability(), loadModelSourceProviders(), loadTaskSpecFamilies(), loadTasks({ selectFromUrl: true })]); if (!state.selectedTaskId) enterHomeState({ focusComposer: false }); resizeComposer(); }
+async function boot() {
+  restoreDraft(null); window.setInterval(() => syncAiTurnElapsedLabels(), 1000);
+  const results = await Promise.allSettled([loadRuntime(), loadHfCapability(), loadModelSourceProviders(), loadTaskSpecFamilies(), loadTasks({ selectFromUrl: true })]);
+  const tasksFailure = results[4].status === "rejected" ? results[4].reason : null;
+  if (!state.selectedTaskId) enterHomeState({ focusComposer: false });
+  resizeComposer();
+  if (tasksFailure) showNotice(`任务列表暂时无法读取：${tasksFailure.message}。你仍可编辑草稿，连接恢复后再发送。`, "error");
+}
 boot().catch((error) => showNotice(`页面初始化失败：${error.message}`));

@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import quote
 
 try:
@@ -12,6 +13,7 @@ try:
 except ImportError:  # pragma: no cover - optional server extra
     TestClient = None  # type: ignore[assignment]
 
+from model_harness.agent_bridge import AgentRuntimeError
 from model_harness.data_adapters import DataAdapterRegistry
 from model_harness.io_utils import read_json, write_json
 from model_harness.plugins import PluginRegistry
@@ -100,6 +102,105 @@ class TaskIdentityTests(unittest.TestCase):
 
 @unittest.skipIf(TestClient is None, "server extra is not installed")
 class TaskIdentityHttpTests(unittest.TestCase):
+    def test_conversation_task_creation_is_idempotent_and_submits_first_message_before_hydration(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = create_app(Path(temp_dir) / "runs")
+            runtime = app.state.conversation_runtime
+            first_submission = {
+                "accepted": True,
+                "session_id": "session-atomic",
+                "request_id": "message-request-atomic",
+                "composer_mode": "queue_after_turn",
+                "agent_run_id": "agent-run-atomic",
+                "agent_turn_id": "agent-turn-atomic",
+                "status": "queued",
+                "idempotent_replay": False,
+            }
+            replay_submission = {**first_submission, "idempotent_replay": True}
+            payload = {
+                "name": "普通话离线转写",
+                "business_goal": "把普通话录音转成文字并部署在本地设备",
+                "initial_message": "把普通话录音转成文字并部署在本地设备",
+                "create_request_id": "create-request-atomic",
+                "message_request_id": "message-request-atomic",
+            }
+            with (
+                patch.object(runtime, "start"),
+                patch.object(runtime, "stop"),
+                patch.object(
+                    runtime,
+                    "submit_message",
+                    side_effect=[first_submission, replay_submission],
+                ) as submit,
+                TestClient(app) as client,  # type: ignore[misc]
+            ):
+                created = client.post("/tasks", json=payload)
+                replayed = client.post("/tasks", json=payload)
+
+            self.assertEqual(created.status_code, 201, created.text)
+            self.assertEqual(replayed.status_code, 200, replayed.text)
+            self.assertTrue(created.json()["created"])
+            self.assertFalse(replayed.json()["created"])
+            task_id = created.json()["task"]["task_id"]
+            self.assertEqual(replayed.json()["task"]["task_id"], task_id)
+            self.assertRegex(task_id, r"^task-[0-9a-f]{32}$")
+            self.assertEqual(submit.call_count, 2)
+            self.assertEqual(submit.call_args.args[0], task_id)
+            self.assertEqual(submit.call_args.kwargs["request_id"], payload["message_request_id"])
+            self.assertTrue(replayed.json()["submission"]["idempotent_replay"])
+            self.assertEqual(
+                [item["task_id"] for item in app.state.training_workspace.list_tasks()],
+                [task_id],
+            )
+
+    def test_failed_first_submission_retries_same_task_and_rejects_changed_goal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = create_app(Path(temp_dir) / "runs")
+            runtime = app.state.conversation_runtime
+            payload = {
+                "name": "发送恢复验收",
+                "business_goal": "先澄清目标",
+                "initial_message": "先澄清目标",
+                "create_request_id": "create-recovery",
+                "message_request_id": "message-recovery",
+            }
+            with (
+                patch.object(runtime, "start"),
+                patch.object(runtime, "stop"),
+                patch.object(runtime, "submit_message", side_effect=[
+                    AgentRuntimeError("temporary runtime failure"),
+                    {"accepted": True, "status": "queued"},
+                ]) as submit,
+                TestClient(app) as client,
+            ):
+                failed = client.post("/tasks", json=payload)
+                retried = client.post("/tasks", json=payload)
+                conflict = client.post("/tasks", json={**payload, "business_goal": "另一目标"})
+                self.assertEqual(failed.status_code, 503, failed.text)
+                self.assertEqual(retried.status_code, 200, retried.text)
+                self.assertEqual(failed.json()["detail"]["task_id"], retried.json()["task"]["task_id"])
+                self.assertEqual(conflict.status_code, 409, conflict.text)
+                self.assertEqual(submit.call_count, 2)
+                self.assertEqual(len(client.get("/tasks").json()["tasks"]), 1)
+
+    def test_invalid_conversation_request_does_not_create_a_task(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = create_app(Path(temp_dir) / "runs")
+            runtime = app.state.conversation_runtime
+            payload = {
+                "name": "非法请求验收", "business_goal": "澄清目标",
+                "initial_message": "澄清目标", "create_request_id": "valid-create",
+                "message_request_id": "valid-message",
+            }
+            with patch.object(runtime, "start"), patch.object(runtime, "stop"), TestClient(app) as client:
+                for invalid in [
+                    {"message_request_id": ""}, {"message_request_id": "../invalid"},
+                    {"create_request_id": "../invalid"}, {"initial_message": " "},
+                ]:
+                    response = client.post("/tasks", json={**payload, **invalid})
+                    self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(client.get("/tasks").json()["tasks"], [])
+
     def test_http_route_uses_opaque_new_id_and_reloads_legacy_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             app = create_app(Path(temp_dir) / "runs")

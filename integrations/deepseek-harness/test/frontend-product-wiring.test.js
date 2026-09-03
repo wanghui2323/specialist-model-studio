@@ -61,6 +61,42 @@ test("gateway failures stay human-readable and never render raw HTML", async () 
   }
 });
 
+test("request timeout covers stalled response bodies, not only response headers", async () => {
+  const { app } = await sources();
+  const contract = app.slice(app.indexOf("function structuredErrorMessage"), app.indexOf("function clear(element)"));
+  const context = {
+    AbortController,
+    window: { setTimeout, clearTimeout },
+    fetch: async (_url, { signal }) => ({
+      ok: true,
+      headers: { get: () => "application/json" },
+      text: () => new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })))),
+    }),
+  };
+  vm.runInNewContext(`${contract}\nglobalThis.__request = request;`, context);
+  await assert.rejects(context.__request("/runtime", { timeoutMs: 10 }), /响应超时/);
+});
+
+test("new-task retry keeps creation identity and only replaces a terminal message request", async () => {
+  const { app } = await sources();
+  const contract = app.slice(app.indexOf("function beginTaskCreationSubmission"), app.indexOf("async function postQueuedConversationMessage"));
+  let sequence = 0;
+  const state = { messageSubmission: null };
+  const context = { state, createConversationRequestId: () => `request-${++sequence}` };
+  vm.runInNewContext(`${contract}\nglobalThis.__begin = beginTaskCreationSubmission;`, context);
+  const original = context.__begin("test goal");
+  original.status = "failed";
+  const replay = context.__begin("test goal");
+  assert.equal(replay.create_request_id, "request-1");
+  assert.equal(replay.request_id, "request-2");
+  replay.status = "failed";
+  replay.new_request_required = true;
+  const recovered = context.__begin("test goal");
+  assert.equal(recovered.create_request_id, "request-1");
+  assert.equal(recovered.request_id, "request-3");
+  assert.notEqual(context.__begin("changed goal").create_request_id, "request-1");
+});
+
 test("L3 Hugging Face controls are wired to immutable, approved, verified asset APIs", async () => {
   const { html, app } = await sources();
   for (const id of [
@@ -348,10 +384,12 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   for (const asset of ["conversation-view.js", "interaction-shell.js", "styles.css", "visual-system.css"]) {
     assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.2-one-product`));
   }
-  assert.match(html, /app\.js\?v=2\.2\.1-gateway-errors/);
+  assert.match(html, /app\.js\?v=2\.3-atomic-conversation/);
   assert.match(app, /function renderAgentSurfaceState\(conversation, projection\)/);
   assert.doesNotMatch(app, /开始 Agent 会话/);
-  assert.match(app, /协调器会先理解你的目标和已有信息，再规划下一步/);
+  assert.match(app, /任务已保存，尚未发送/);
+  assert.match(app, /发送后才会创建真实 Agent 会话并开始回应/);
+  assert.match(app, /action\.textContent = "发送任务目标"/);
   assert.match(app, /ready \? "训练协调器已连接"/);
   assert.doesNotMatch(app, /Agent 协作已连接/);
   assert.doesNotMatch(app, /个专家已参与本轮/);
@@ -441,7 +479,7 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(app, /最终结果以任务证据为准/);
   assert.match(app, /function showTransientNotice\(message, tone = "ok", durationMs = 6_000\)/);
   assert.match(app, /state\.noticeDismissTimer = window\.setTimeout/);
-  assert.match(app, /showTransientNotice\("任务已创建。协调器会先理解你的目标/);
+  assert.match(app, /showTransientNotice\(created\.created === false \? "任务已恢复，首条消息已经交给训练协调器。" : "任务已创建，首条消息已经交给训练协调器。"/);
   assert.match(app, /等待你的回答：\$\{active\.title \|\| active\.questions\?\.\[0\]\?\.header/);
   assert.match(app, /function renderRichText\(container, text\)/);
   assert.match(app, /function markdownTableCells\(line\)/);
@@ -479,7 +517,10 @@ test("runtime failure stops conversation instead of impersonating an Agent with 
   assert.match(app, /providerMissing \? "请先在本机配置模型服务，再开始训练任务"/);
   assert.doesNotMatch(app, /DEEPSEEK_API_KEY/);
   assert.match(app, /error\.status === 503\)[^\n]*renderRuntimeMode\("local"\)/);
-  assert.match(app, /ui\.messageInput\.disabled = !ready; ui\.sendButton\.disabled = !ready/);
+  assert.match(app, /ui\.messageInput\.disabled = false; ui\.sendButton\.disabled = !ready/);
+  assert.match(app, /request\("\/runtime", \{ timeoutMs: 8_000 \}\)/);
+  assert.match(app, /request\("\/agent\/runtime", \{ timeoutMs: 6_000 \}\)/);
+  assert.match(app, /state\.runtimeRetryTimer = window\.setTimeout\(\(\) => loadRuntime\(\), delay\)/);
   assert.match(app, /state\.selectedTaskId \? "继续询问或补充下一步要求…"/);
   assert.match(app, /没有创建或修改任务，也没有启动固定流程替代智能协作/);
   assert.match(app, /训练协调器未连接，对话已暂停/);
@@ -530,19 +571,25 @@ test("creating a task transfers the submitted prompt once without restoring it i
   const createBranch = submit.slice(createStart, createEnd);
   assert.match(select, /async function selectTask\(taskId, \{ saveCurrentDraft = true \} = \{\}\)/);
   assert.match(select, /if \(saveCurrentDraft\) saveDraft\(\)/);
+  assert.match(createBranch, /initial_message: text/);
+  assert.match(createBranch, /create_request_id: creation\.create_request_id/);
+  assert.match(createBranch, /message_request_id: creation\.request_id/);
+  assert.match(createBranch, /created\?\.submission\?\.accepted !== true/);
   const clearDraftIndex = createBranch.indexOf("clearDraft(null)");
   const clearComposerIndex = createBranch.indexOf('ui.messageInput.value = ""');
-  const selectIndex = createBranch.indexOf("await selectTask(created.task.task_id, { saveCurrentDraft: false })");
-  const preserveForRetryIndex = createBranch.indexOf("ui.messageInput.value = text", selectIndex);
-  assert.ok(clearDraftIndex >= 0 && clearDraftIndex < clearComposerIndex && clearComposerIndex < selectIndex,
-    "the home draft and visible prompt must be cleared before selecting the new task");
-  assert.ok(selectIndex < preserveForRetryIndex,
-    "the submitted prompt may only be preserved under the created task after task selection");
+  const selectIndex = createBranch.indexOf("await selectTask(taskId, { saveCurrentDraft: false })");
+  const acceptedIndex = createBranch.indexOf("created?.submission?.accepted !== true");
+  assert.ok(acceptedIndex >= 0 && acceptedIndex < clearDraftIndex && clearDraftIndex < clearComposerIndex && clearComposerIndex < selectIndex,
+    "the first Agent message must be accepted before clearing the home draft or hydrating the task");
+  assert.doesNotMatch(createBranch, /postQueuedConversationMessage\(/,
+    "new task creation must not depend on a second browser request for the first message");
 });
 
 test("runtime and family-catalog failures preserve honest product boundaries", async () => {
   const { app } = await sources();
-  assert.match(app, /request\("\/runtime"\)/);
+  assert.match(app, /request\("\/runtime", \{ timeoutMs: 8_000 \}\)/);
+  assert.match(app, /Promise\.allSettled\(\[loadRuntime\(\), loadHfCapability\(\), loadModelSourceProviders\(\), loadTaskSpecFamilies\(\), loadTasks\(\{ selectFromUrl: true \}\)\]\)/);
+  assert.match(app, /任务列表暂时无法读取/);
   assert.match(app, /byom_execution_available === true/);
   assert.match(app, /确认后进入可验证的训练与评测/);
   assert.match(app, /确认方案后才执行/);

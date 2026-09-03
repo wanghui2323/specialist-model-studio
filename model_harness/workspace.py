@@ -521,6 +521,8 @@ class TrainingWorkspace:
         business_goal: str,
         capability_request: dict[str, Any] | None = None,
         recipe_id: str | None = None,
+        *,
+        task_id: str | None = None,
     ) -> dict[str, Any]:
         selected_name = name.strip()
         selected_goal = business_goal.strip()
@@ -530,7 +532,10 @@ class TrainingWorkspace:
             raise ContractError("业务目标不能为空")
         # Identity is opaque and stable; the user-facing name remains mutable
         # display metadata and must never become a routing or storage key.
-        task_id = f"task-{uuid4().hex}"
+        selected_task_id = task_id.strip() if isinstance(task_id, str) else ""
+        if selected_task_id and not re.fullmatch(r"task-[0-9a-f]{32}", selected_task_id):
+            raise ContractError("task_id 必须是 opaque task-<32 hex> 对象 ID")
+        task_id = selected_task_id or f"task-{uuid4().hex}"
         now = _utc_now()
         capability = self._normalize_capability(capability_request or {})
         spec = build_task_spec_revision(
@@ -621,7 +626,10 @@ class TrainingWorkspace:
             "updated_at_utc": now,
         }
         with self._lock:
-            write_json(self._task_path(task_id), task)
+            task_path = self._task_path(task_id)
+            if task_path.is_file():
+                raise ContractError(f"任务对象已存在: {task_id}")
+            write_json(task_path, task)
             write_json(self._spec_revision_path(task_id, 1), spec)
             if capability_status == "needs_recipe":
                 self._persist_missing_recipe_evidence(

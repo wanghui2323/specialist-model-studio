@@ -188,7 +188,8 @@ DeepSeek Harness 对 Model Harness 后端和 CLI 是可选适配层，但对完�
 
 ### v1.0 对话与事件合同
 
-- 唯一产品对话入口是 `POST /tasks/{task_id}/conversation/messages`；旧 `POST /chat` 在兼容期固定返回 HTTP 410 和 canonical endpoint，不再运行关键词流程。
+- 已有任务的对话入口是 `POST /tasks/{task_id}/conversation/messages`；新任务通过 `POST /tasks` 同时提交 `initial_message`、`create_request_id` 与 `message_request_id`，由后端创建任务并接收首条消息，再由页面加载对话。重试复用请求身份，不依赖页面刷新后再补发首条消息。
+- 任务保存不等于消息发送。旧的无会话任务显示“任务已保存，尚未发送”及恢复入口；连接检查有超时和自动重连，草稿保留。旧 `POST /chat` 固定返回 HTTP 410 和 canonical endpoint，不再运行关键词流程。
 - 任务专属 `GET /tasks/{task_id}/conversation/stream` 使用 SSE 输出 `snapshot / delta / state / error / heartbeat`；断线后依据 cursor 对账，版本变化或 gap 会返回全量 snapshot。
 - 当前合同是 conversation schema `2.0`、projector revision `3.2`、action schema `1.0`、synthesis verdict `1.0`。`3.1` 为已验证的子智能体工具动作补齐 `agent_run_id / delegation_id / parent_delegation_id`；`3.2` 进一步把人工确认绑定到其来源 AI 回合与工具调用，旧投影不会被当成新证据。
 - 前端只把真实 tool call/result 配对为 Action；协调器文字说明会标记为“不作为完成证据”，失败、受控阻断和观察降级不使用成功语义。
