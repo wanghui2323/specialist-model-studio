@@ -89,6 +89,7 @@ from .training_plans import (
 )
 from .task_specs import FAMILY_DETAILS
 from .workspace import TrainingWorkspace
+from .workspace import ConversationConflictError
 
 
 _CONVERSATION_REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}")
@@ -1157,6 +1158,429 @@ def create_app(
     @app.get("/agent/runtime")
     def agent_runtime() -> dict[str, Any]:
         return conversations.runtime_status()
+
+    @app.get("/conversations")
+    def list_conversations() -> dict[str, Any]:
+        return {"conversations": workspace.list_conversations()}
+
+    @app.get("/conversations/{conversation_id}")
+    def get_conversation(conversation_id: str) -> dict[str, Any]:
+        try:
+            conversation = workspace.get_conversation(conversation_id)
+            task = (
+                workspace.get_task(str(conversation["task_id"]))
+                if conversation.get("task_id")
+                else None
+            )
+            return {"conversation": conversation, "task": task}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ConversationConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/conversations")
+    async def create_conversation(body: dict[str, Any] = Body(...)) -> JSONResponse:
+        create_request_id = body.get("create_request_id")
+        if not isinstance(create_request_id, str):
+            raise HTTPException(
+                status_code=422,
+                detail="create_request_id is required",
+            )
+        try:
+            conversation_id = _conversation_task_id(create_request_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        initial_message = body.get("initial_message")
+        message_request_id = body.get("message_request_id")
+        if initial_message is not None:
+            if not isinstance(initial_message, str) or not initial_message.strip():
+                raise HTTPException(
+                    status_code=422,
+                    detail="initial_message must be non-empty text",
+                )
+            if not isinstance(message_request_id, str):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "message_request_id is required when initial_message is set"
+                    ),
+                )
+            message_request_id = message_request_id.strip()
+            if not _CONVERSATION_REQUEST_ID.fullmatch(message_request_id):
+                raise HTTPException(
+                    status_code=422,
+                    detail="message_request_id 格式非法",
+                )
+        try:
+            conversation, created = workspace.create_conversation(
+                conversation_id=conversation_id,
+                create_request_id=create_request_id,
+                title=str(body.get("title", "")).strip() or "新对话",
+            )
+        except ConversationConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "conversation_creation_request_conflict",
+                    "message": str(exc),
+                    "conversation_id": conversation_id,
+                },
+            ) from exc
+        except (ContractError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        if initial_message is None:
+            return JSONResponse(
+                status_code=201 if created else 200,
+                content={
+                    "conversation": conversation,
+                    "submission": None,
+                    "created": created,
+                },
+            )
+        assert isinstance(initial_message, str)
+        assert isinstance(message_request_id, str)
+        try:
+            submission = conversations.submit_message(
+                conversation_id,
+                str(conversation.get("title") or "新对话"),
+                initial_message,
+                composer_mode="queue_after_turn",
+                request_id=message_request_id,
+                actor="user",
+            )
+        except ComposerRequestConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "composer_request_conflict",
+                    "message": str(exc),
+                    "conversation_id": conversation_id,
+                    "request_id": message_request_id,
+                },
+            ) from exc
+        except ComposerRequestTerminalError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "composer_request_terminal",
+                    "message": str(exc),
+                    "conversation_id": conversation_id,
+                    "request_id": exc.request_id,
+                    "status": exc.status,
+                    "new_request_required": exc.new_request_required,
+                },
+            ) from exc
+        except ComposerSubmissionError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "composer_submission_failed",
+                    "message": str(exc),
+                    "conversation_id": conversation_id,
+                    "request_id": exc.request_id,
+                    "status": exc.status,
+                    "new_request_required": exc.new_request_required,
+                },
+            ) from exc
+        except (ValueError, ComposerModeUnsupportedError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except AgentRuntimeError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "agent_runtime_unavailable",
+                    "message": str(exc),
+                    "conversation_id": conversation_id,
+                },
+            ) from exc
+        return JSONResponse(
+            status_code=201 if created else 200,
+            content={
+                "conversation": workspace.get_conversation(conversation_id),
+                "submission": submission,
+                "created": created,
+            },
+        )
+
+    @app.get("/conversations/{conversation_id}/conversation")
+    async def conversation_events(conversation_id: str) -> dict[str, Any]:
+        try:
+            workspace.get_conversation(conversation_id)
+            return {
+                "conversation": await conversation_streams.conversation(
+                    conversation_id
+                )
+            }
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ConversationStreamCapacityError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except AgentRuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/conversations/{conversation_id}/conversation/stream")
+    async def conversation_event_stream(
+        request: Request,
+        conversation_id: str,
+        after_seq: int | None = Query(default=None, ge=0),
+        projector_revision: str | None = Query(default=None),
+        last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    ) -> StreamingResponse:
+        try:
+            workspace.get_conversation(conversation_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        if last_event_id is not None:
+            try:
+                parse_stream_cursor(last_event_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        resume_cursor = after_seq if last_event_id is None else None
+        expected_revision = (
+            projector_revision.strip() if projector_revision is not None else None
+        )
+        if expected_revision == "":
+            expected_revision = None
+        if expected_revision is not None and len(expected_revision) > 64:
+            raise HTTPException(
+                status_code=422,
+                detail="projector_revision is too long",
+            )
+        try:
+            runtime_status = await asyncio.to_thread(conversations.runtime_status)
+        except AgentRuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if (
+            not isinstance(runtime_status, dict)
+            or runtime_status.get("available") is not True
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="DeepSeek Harness multi-agent runtime is unavailable",
+            )
+        runtime_revision = runtime_status.get("conversation_projector_revision")
+        runtime_revision = (
+            runtime_revision.strip()
+            if isinstance(runtime_revision, str) and runtime_revision.strip()
+            else None
+        )
+        try:
+            stream_reservation = conversation_streams.reserve(conversation_id)
+        except ConversationStreamCapacityError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        async def stream_frames() -> Any:
+            stream = conversation_streams.stream(
+                conversation_id,
+                after_seq=resume_cursor,
+                last_event_id=last_event_id,
+                expected_projector_revision=expected_revision,
+                runtime_projector_revision=runtime_revision,
+                reservation=stream_reservation,
+            )
+            try:
+                async for frame in stream:
+                    if await request.is_disconnected():
+                        break
+                    yield frame
+            finally:
+                await stream.aclose()
+
+        handed_off = False
+        try:
+            response = StreamingResponse(
+                stream_frames(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache, no-transform",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+                background=BackgroundTask(stream_reservation.release),
+            )
+            handed_off = True
+            return response
+        finally:
+            if not handed_off:
+                stream_reservation.release()
+
+    @app.post("/conversations/{conversation_id}/messages")
+    async def conversation_message(
+        conversation_id: str,
+        body: dict[str, Any] = Body(...),
+    ) -> JSONResponse:
+        message = body.get("message")
+        if not isinstance(message, str) or not message.strip():
+            raise HTTPException(status_code=422, detail="message must be non-empty text")
+        composer_mode = body.get("mode", "queue_after_turn")
+        if composer_mode not in {
+            "queue_after_turn",
+            "intervene_current",
+            "stop_and_replace",
+        }:
+            raise HTTPException(status_code=422, detail="unsupported composer mode")
+        request_id = body.get("request_id")
+        if request_id is not None and not isinstance(request_id, str):
+            raise HTTPException(status_code=422, detail="request_id must be text")
+        try:
+            record = workspace.get_conversation(conversation_id)
+            submission = conversations.submit_message(
+                conversation_id,
+                str(record.get("title") or "新对话"),
+                message,
+                composer_mode=composer_mode,
+                request_id=request_id,
+                actor="user",
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ComposerModeUnsupportedError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "composer_mode_not_available",
+                    "message": str(exc),
+                    "requested_mode": composer_mode,
+                    "supported_modes": ["queue_after_turn"],
+                },
+            ) from exc
+        except ComposerRequestConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "composer_request_conflict",
+                    "message": str(exc),
+                    "request_id": request_id,
+                },
+            ) from exc
+        except ComposerRequestTerminalError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "composer_request_terminal",
+                    "message": str(exc),
+                    "request_id": exc.request_id,
+                    "status": exc.status,
+                    "new_request_required": exc.new_request_required,
+                },
+            ) from exc
+        except ComposerSubmissionError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "composer_submission_failed",
+                    "message": str(exc),
+                    "request_id": exc.request_id,
+                    "status": exc.status,
+                    "new_request_required": exc.new_request_required,
+                },
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except AgentRuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return JSONResponse(status_code=202, content=submission)
+
+    @app.post("/conversations/{conversation_id}/cancel")
+    async def cancel_conversation(
+        conversation_id: str,
+        body: dict[str, Any] | None = Body(default=None),
+    ) -> dict[str, Any]:
+        selected = body or {}
+        reason = selected.get("reason", "User requested stop")
+        if not isinstance(reason, str):
+            raise HTTPException(status_code=422, detail="reason must be text")
+        if selected.get("actor", "user") != "user" or selected.get(
+            "kind", "user_requested"
+        ) != "user_requested":
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "cancel_actor_spoofing_rejected",
+                    "message": (
+                        "public conversation cancellation is always attributed "
+                        "to the user"
+                    ),
+                },
+            )
+        try:
+            workspace.get_conversation(conversation_id)
+            return conversations.cancel(
+                conversation_id,
+                actor="user",
+                reason=reason,
+                cancellation_kind="user_requested",
+                scope="conversation_turn",
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except AgentRuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/conversations/{conversation_id}/questions/{rpc_id}")
+    async def answer_conversation_question(
+        conversation_id: str,
+        rpc_id: str,
+        body: dict[str, Any] = Body(...),
+    ) -> dict[str, Any]:
+        answers = body.get("answers")
+        if not isinstance(answers, list):
+            raise HTTPException(status_code=422, detail="answers must be a list")
+        try:
+            workspace.get_conversation(conversation_id)
+            conversations.answer_question(conversation_id, rpc_id, answers)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except HumanCheckpointAnswerError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except AgentRuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"accepted": True}
+
+    @app.post("/conversations/{conversation_id}/promote")
+    async def promote_conversation(
+        conversation_id: str,
+        body: dict[str, Any] = Body(...),
+    ) -> dict[str, Any]:
+        request_id = body.get("request_id")
+        if not isinstance(request_id, str):
+            raise HTTPException(status_code=422, detail="request_id is required")
+        try:
+            task, idempotent_replay = workspace.promote_conversation(
+                conversation_id,
+                request_id=request_id,
+                name=str(body.get("name", "")),
+                business_goal=str(body.get("business_goal", "")),
+                capability_request=(
+                    body.get("capability_request")
+                    if isinstance(body.get("capability_request"), dict)
+                    else {}
+                ),
+                recipe_id=str(body.get("recipe_id", "")).strip() or None,
+            )
+            return {
+                "conversation": workspace.get_conversation(conversation_id),
+                "task": task,
+                "promoted": True,
+                "idempotent_replay": idempotent_replay,
+            }
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ConversationConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "conversation_promotion_conflict",
+                    "message": str(exc),
+                    "conversation_id": conversation_id,
+                },
+            ) from exc
+        except (ContractError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.get("/tasks/{task_id}/conversation")
     async def task_conversation(task_id: str) -> dict[str, Any]:

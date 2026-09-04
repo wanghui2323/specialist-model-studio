@@ -302,24 +302,32 @@ ROOT_PROFILE = next(profile for profile in AGENT_PROFILES if profile.root)
 
 
 class DshAgentTeamStore:
-    """Persists the DSH team mapping under its owning TrainingTask.
+    """Persist DSH runtime lineage under its conversation or task owner.
 
-    ``task.json`` remains the canonical task. This store contains only agent
-    runtime mappings, prompt-run lineage and projections of real DSH events.
+    ``conversation.json`` is canonical before binding and ``task.json`` is
+    canonical for model-training state after promotion.  This store contains
+    only runtime mappings, prompt-run lineage and real DSH event projections.
     """
 
     def __init__(self, workspace_root: str | Path) -> None:
         self.workspace_root = Path(workspace_root).expanduser().resolve()
         self.tasks_dir = self.workspace_root / "tasks"
+        self.conversations_dir = self.workspace_root / "conversations"
         self._lock = RLock()
 
     def load_task(self, task_id: str) -> dict[str, Any]:
         task_path = _safe_task_dir(self.tasks_dir, task_id) / "task.json"
-        if not task_path.is_file():
-            raise MultiAgentRuntimeError(f"TrainingTask 不存在: {task_id}")
-        task = read_json(task_path)
+        conversation_path = (
+            _safe_task_dir(self.conversations_dir, task_id) / "conversation.json"
+        )
+        owner_path = task_path if task_path.is_file() else conversation_path
+        if not owner_path.is_file():
+            raise MultiAgentRuntimeError(
+                f"Conversation 或 TrainingTask 不存在: {task_id}"
+            )
+        task = read_json(owner_path)
         if not isinstance(task, dict) or task.get("task_id") != task_id:
-            raise MultiAgentRuntimeError("TrainingTask 事实源损坏或 task_id 不匹配")
+            raise MultiAgentRuntimeError("会话事实源损坏或 owner id 不匹配")
         return task
 
     def create_team(
@@ -684,10 +692,19 @@ class DshAgentTeamStore:
         return deepcopy(event)
 
     def _team_path(self, task_id: str) -> Path:
-        return _safe_task_dir(self.tasks_dir, task_id) / "agent_team" / "team.json"
+        return self._runtime_owner_dir(task_id) / "agent_team" / "team.json"
 
     def _events_path(self, task_id: str) -> Path:
-        return _safe_task_dir(self.tasks_dir, task_id) / "agent_team" / "events.ndjson"
+        return self._runtime_owner_dir(task_id) / "agent_team" / "events.ndjson"
+
+    def _runtime_owner_dir(self, owner_id: str) -> Path:
+        # A conversation remains the durable owner of its DSH session even
+        # after it binds a TrainingTask.  This keeps intake and execution in
+        # one event lineage without moving files underneath the projector.
+        conversation_dir = _safe_task_dir(self.conversations_dir, owner_id)
+        if (conversation_dir / "conversation.json").is_file():
+            return conversation_dir
+        return _safe_task_dir(self.tasks_dir, owner_id)
 
 
 class DshConversationV2Projector:
@@ -1747,6 +1764,7 @@ class DshMultiAgentRuntime:
             task_id=task_id,
             agent_run_id=run["run_id"],
             current_spec_revision=task.get("current_spec_revision"),
+            record_type=str(task.get("record_type") or "training_task"),
             user_message=selected,
         )
         try:
@@ -1855,6 +1873,12 @@ class DshMultiAgentRuntime:
         return floors, complete and root_session_id in floors
 
     def _background_actions(self, task_id: str) -> list[dict[str, Any]]:
+        owner = self.store.load_task(task_id)
+        if owner.get("record_type") == "conversation_draft":
+            # Intake has no TrainingTask, dataset, build or Run ownership yet.
+            # Calling the task provider here would manufacture an observation
+            # failure for a healthy greeting/capability conversation.
+            return []
         provider = self.background_actions_provider
         if provider is None:
             return []
@@ -2668,7 +2692,8 @@ class DshMultiAgentRuntime:
         cancellation_kind: str = "user_requested",
         scope: str = "task_execution",
     ) -> dict[str, Any]:
-        self.store.load_task(task_id)
+        owner = self.store.load_task(task_id)
+        conversation_only = owner.get("record_type") == "conversation_draft"
         if actor not in {"user", "operator", "system"}:
             raise ValueError("actor 必须是 user、operator 或 system")
         if cancellation_kind not in {
@@ -2728,7 +2753,7 @@ class DshMultiAgentRuntime:
                     {"target": f"dsh_session:{session_id}", "error": str(exc)}
                 )
         background_actions: list[dict[str, Any]] = []
-        if self.background_actions_canceller is not None:
+        if self.background_actions_canceller is not None and not conversation_only:
             try:
                 background_actions = [
                     deepcopy(dict(action))
@@ -4505,6 +4530,7 @@ class DshMultiAgentRuntime:
         task_id: str,
         agent_run_id: str,
         current_spec_revision: Any,
+        record_type: str,
         user_message: str,
     ) -> str:
         profiles = "\n".join(
@@ -4513,12 +4539,42 @@ class DshMultiAgentRuntime:
             for profile in AGENT_PROFILES
             if not profile.root
         )
+        selected_record_type = str(record_type or "training_task").strip()
+        if selected_record_type == "conversation_draft":
+            return (
+                "你是 Specialist Model Studio 面向用户的模型训练伙伴。"
+                "当前是尚未绑定 TrainingTask 的普通对话，不是训练执行阶段。"
+                "先理解用户这句话属于问候、产品/能力咨询、模糊训练意图，还是已经包含明确输入与输出的训练目标。\n"
+                "若是问候，请像人一样简短回应并邀请用户说出想解决的问题；若是产品或能力咨询，"
+                "直接回答，不要借机创建任务。若训练意图仍模糊，先复述已理解的部分，再用普通对话只问一个"
+                "真正影响方案的问题。以上三种情况都禁止调用 model_harness_*、ask_user_question 或委派专家，"
+                "也不得声称任务、训练或分析已经开始。intake 中 model_harness_* 的唯一例外是"
+                " model_harness_promote_conversation，且只适用于下述明确目标。\n"
+                "只有当用户已经给出足够具体的业务结果，至少能辨认主要输入和期望输出时，"
+                "才调用一次 model_harness_promote_conversation。conversation_id 必须逐字复制下面的规范值；"
+                "name 要简短，business_goal 必须忠实使用用户的说法，不得补造数据、设备或验收标准。"
+                "提升成功后，才可调用 model_harness_get_task 并进入任务编排。不得调用 model_harness_create_task。\n"
+                "用户只需要看到一个连贯的 AI 对话。不要在正文里宣布当前由哪个内部 Agent 处理；"
+                "只有真实子 Agent 执行了动作时，才允许在对应动作记录中标明角色。"
+                "不得输出私有思维链、隐藏推理或伪造的思考过程；只呈现简洁意图、真实动作、观察结果与结论。\n"
+                "不要因为标题、历史任务或一句问候推断业务目标，也不要把自然澄清渲染成表单。\n"
+                f"CONVERSATION_MODE: INTAKE\n"
+                f"EXACT_CONVERSATION_ID_JSON: {json.dumps(task_id, ensure_ascii=False)}\n"
+                f"CONVERSATION_ID: {task_id}\n"
+                f"AGENT_RUN_ID: {agent_run_id}\n\n"
+                f"USER_MESSAGE:\n{user_message}"
+            )
         return (
-            "你是 Specialist Model Studio 的 Training Orchestrator。"
-            "TrainingTask 是唯一任务事实源；下面给出的 task_id 是精确、可直接调用的规范值。"
-            "先用这个值调用 model_harness_get_task，禁止先调用 model_harness_list_tasks，"
-            "不得创建第二个任务，也不得从聊天记忆推断任务状态。每次调用 model_harness_* 时，"
-            "task_id 参数必须逐字复制完整 canonical 值，不得截断、改写，也不得根据任务标题自行构造。\n"
+            "你是 Specialist Model Studio 面向用户的模型训练伙伴，并在内部承担 Training Orchestrator。"
+            "当前对话已绑定 TrainingTask；TrainingTask 是唯一任务事实源。"
+            "先判断用户当前这句话是否真的在推进、查询或修改这个任务。纯问候请自然简短回应；"
+            "与当前任务事实无关的一般产品能力、方法或流程问题请直接回答。以上情况不得调用"
+            " model_harness_get_task、ask_user_question 或任何专家，也不得改变任务或暗示开始了新工作。\n"
+            "只有当用户要继续当前任务、查询其状态，或请求一个会读取/改变领域事实的动作时，"
+            "才先用下面给出的精确 task_id 调用 model_harness_get_task。禁止先调用 model_harness_list_tasks，"
+            "不得创建第二个任务，也不得从聊天记忆推断任务状态。"
+            "每次调用 model_harness_* 时，task_id 参数必须逐字复制完整 canonical 值，不得截断、改写，"
+            "也不得根据任务标题自行构造。不得再次调用 model_harness_promote_conversation。\n"
             "需要专业工作时，使用 DeepSeek Harness 已提供的原生、可继续的 subagent "
             "delegate/spawn/fork 能力。专家必须使用下面固定的 agent_id 与职责；"
             "专家结果回到根会话，用户只看到一个 Orchestrator 对话和真实过程事件，"
@@ -4526,13 +4582,17 @@ class DshMultiAgentRuntime:
             "只有本轮成功领域工具返回的、与当前 task_id 一致的 canonical ObjectRef "
             "才能支撑完成结论；get_task、list 类和 Agent 散文都不是完成证据。"
             "如果证据不足，请如实说明仍在等待什么，不要声称训练、评测或交付已经完成。\n"
-            "缺少数据文件、目标列或其他用户输入时，必须使用 ask_user_question 创建一次只问一个字段的"
+            "任务已绑定后，缺少数据文件、目标列或其他用户输入时，必须使用 ask_user_question 创建一次只问一个字段的"
             "结构化 question checkpoint，并使用稳定 question id（例如 data_upload 或 target_column）；"
             "禁止只用自然语言提出请求后结束回合。用户上传或回答后应解析同一个 rpc_id 并续接根会话。\n"
             "启动真实训练前，根会话必须调用 model_harness_authorize_task_run_start，让用户只批准一次当前"
             "合同、数据指纹和任务版本；再把返回的 run_authorization_id 交给 build_training 专家。"
             "该专家委派必须保持 continuable（省略 run_in_background 或设为 true，绝不能设为 false），"
             "并仅能用该授权调用一次 model_harness_start_task_run；不得用普通问答替代启动审批或二次索要审批。\n"
+            "对用户保持一个连贯的 AI 身份，不要在正文顶部或每轮开头宣布由哪个内部 Agent 处理。"
+            "只有真实子 Agent 执行了动作时，才在对应动作记录中标注其角色。不得输出私有思维链、"
+            "隐藏推理或伪造的思考过程；只呈现简洁意图、真实动作、观察结果与结论。\n"
+            f"CONVERSATION_MODE: TASK_BOUND\n"
             f"EXACT_TASK_ID_JSON: {json.dumps(task_id, ensure_ascii=False)}\n"
             f"TrainingTask: {task_id}; observed_spec_revision={current_spec_revision}\n"
             f"AGENT_RUN_ID: {agent_run_id}\n"

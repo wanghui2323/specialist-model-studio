@@ -107,6 +107,7 @@ from .training_plan_compiler import compile_training_plan
 
 
 TASK_SCHEMA_VERSION = "0.2"
+CONVERSATION_SCHEMA_VERSION = "1.0"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 MAX_ARCHIVE_BYTES = 200 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 750 * 1024 * 1024
@@ -132,6 +133,10 @@ _MODEL_SEARCH_TERMS = {
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class ConversationConflictError(HarnessError):
+    """A durable conversation request was replayed with different semantics."""
 
 
 def _canonical_digest(value: Mapping[str, Any]) -> str:
@@ -473,7 +478,9 @@ class TrainingWorkspace:
     ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.tasks_dir = self.root / "tasks"
+        self.conversations_dir = self.root / "conversations"
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
+        self.conversations_dir.mkdir(parents=True, exist_ok=True)
         self.runs = runs
         self.runs.attach_workspace(self.root)
         self.data_adapters = data_adapters or default_data_adapter_registry()
@@ -514,6 +521,292 @@ class TrainingWorkspace:
                 return
             self._binding_executor_closed = True
         self._binding_executor.shutdown(wait=True, cancel_futures=False)
+
+    def create_conversation(
+        self,
+        *,
+        conversation_id: str,
+        create_request_id: str,
+        title: str = "新对话",
+    ) -> tuple[dict[str, Any], bool]:
+        """Create an unbound conversation without manufacturing a TrainingTask.
+
+        The conversation owns the DSH session and its event ledger.  It is
+        deliberately stored outside ``tasks/`` and therefore never appears in
+        the task list or acquires a TaskSpec until ``promote_conversation`` is
+        called by the intake Agent with a concrete goal.
+        """
+
+        selected_id = str(conversation_id or "").strip()
+        if not re.fullmatch(r"task-[0-9a-f]{32}", selected_id):
+            raise ContractError(
+                "conversation_id 必须是 opaque task-<32 hex> 运行时对象 ID"
+            )
+        selected_request_id = str(create_request_id or "").strip()
+        if not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}", selected_request_id
+        ):
+            raise ContractError("create_request_id 格式非法")
+        selected_title = str(title or "").strip() or "新对话"
+        if len(selected_title) > 120:
+            raise ContractError("conversation title is too long")
+
+        now = _utc_now()
+        record = {
+            "schema_version": CONVERSATION_SCHEMA_VERSION,
+            "record_type": "conversation_draft",
+            "conversation_id": selected_id,
+            # DSH's current durable store uses one opaque owner id.  This is
+            # not a TrainingTask identity until promotion writes tasks/<id>.
+            "task_id": selected_id,
+            "conversation_status": "unbound",
+            "title": selected_title,
+            "initial_title": selected_title,
+            "create_request_id": selected_request_id,
+            "bound_task_id": None,
+            "created_at_utc": now,
+            "updated_at_utc": now,
+        }
+        with self._lock:
+            path = self._conversation_path(selected_id)
+            if path.is_file():
+                existing = read_json(path)
+                if (
+                    existing.get("create_request_id") != selected_request_id
+                    or existing.get("initial_title", existing.get("title"))
+                    != selected_title
+                ):
+                    raise ConversationConflictError(
+                        "create_request_id 已绑定到不同的对话标题或对象"
+                    )
+                return self._conversation_view(existing), False
+            if (self.tasks_dir / selected_id / "task.json").is_file():
+                raise ConversationConflictError(
+                    "conversation_id 已被独立 TrainingTask 占用"
+                )
+            write_json(path, record)
+        return self._conversation_view(record), True
+
+    def get_conversation(self, conversation_id: str) -> dict[str, Any]:
+        selected_id = str(conversation_id or "").strip()
+        with self._lock:
+            record = read_json(self._conversation_path(selected_id))
+            task_path = self.tasks_dir / selected_id / "task.json"
+            if task_path.is_file():
+                task = read_json(task_path)
+                if task.get("conversation_id") != selected_id:
+                    raise ConversationConflictError(
+                        "conversation 与 TrainingTask 绑定身份不一致"
+                    )
+                # Presence of the canonical task is authoritative if a crash
+                # happened after task commit but before the conversation
+                # projection was updated.
+                if (
+                    record.get("conversation_status") != "bound"
+                    or record.get("bound_task_id") != selected_id
+                    or record.get("title") != task.get("name")
+                ):
+                    record["conversation_status"] = "bound"
+                    record["bound_task_id"] = selected_id
+                    record["title"] = task.get("name") or record.get("title")
+                    record["promoted_at_utc"] = task.get("promoted_at_utc")
+                    record["updated_at_utc"] = _utc_now()
+                    write_json(self._conversation_path(selected_id), record)
+        return self._conversation_view(record)
+
+    def list_conversations(self) -> list[dict[str, Any]]:
+        with self._lock:
+            conversation_ids = [
+                path.parent.name
+                for path in self.conversations_dir.glob("*/conversation.json")
+            ]
+        conversations = [
+            self.get_conversation(conversation_id)
+            for conversation_id in conversation_ids
+        ]
+        return sorted(
+            conversations,
+            key=lambda item: str(item.get("updated_at_utc") or ""),
+            reverse=True,
+        )
+
+    def promote_conversation(
+        self,
+        conversation_id: str,
+        *,
+        request_id: str,
+        name: str,
+        business_goal: str,
+        capability_request: dict[str, Any] | None = None,
+        recipe_id: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Bind one conversation to a real TrainingTask exactly once.
+
+        The Agent's explicit call to this method is the typed ``task_ready``
+        disposition.  No keyword or regular-expression intent classifier is
+        used.  The task keeps the same opaque owner id so the pre-task and
+        post-task DSH turns remain in one auditable session lineage.
+        """
+
+        selected_id = str(conversation_id or "").strip()
+        selected_request_id = str(request_id or "").strip()
+        if not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}", selected_request_id
+        ):
+            raise ContractError("promotion request_id 格式非法")
+        selected_name = str(name or "").strip()
+        selected_goal = str(business_goal or "").strip()
+        if not selected_name:
+            raise ContractError("任务名称不能为空")
+        if not selected_goal:
+            raise ContractError("业务目标不能为空")
+        capability = self._normalize_capability(capability_request or {})
+        selected_recipe_id = str(recipe_id or "").strip() or None
+        request_payload = {
+            "name": selected_name,
+            "business_goal": selected_goal,
+            "capability_request": capability,
+            "recipe_id": selected_recipe_id,
+        }
+        payload_sha256 = _canonical_digest(request_payload)
+
+        with self._lock:
+            conversation_path = self._conversation_path(selected_id)
+            conversation = read_json(conversation_path)
+            if conversation.get("record_type") != "conversation_draft":
+                raise ConversationConflictError("conversation record 类型非法")
+            task_path = self.tasks_dir / selected_id / "task.json"
+            if task_path.is_file():
+                existing = read_json(task_path)
+                promotion = existing.get("promotion_request")
+                if not isinstance(promotion, Mapping) or (
+                    promotion.get("request_id") != selected_request_id
+                    or promotion.get("payload_sha256") != payload_sha256
+                ):
+                    raise ConversationConflictError(
+                        "conversation 已绑定到不同的 TrainingTask"
+                    )
+                return self._view(existing), True
+
+            now = _utc_now()
+            spec = build_task_spec_revision(
+                task_id=selected_id,
+                revision=1,
+                name=selected_name,
+                business_goal=selected_goal,
+                capability_request=capability,
+                created_at_utc=now,
+                source="conversation_promoted",
+                supersedes_revision=None,
+            )
+            decision_status = spec["capability_decision"]["status"]
+            selected_recipe = None
+            recipe_source = None
+            capability_status = decision_status
+            if selected_recipe_id:
+                plugin = self.runs.registry.get_recipe(selected_recipe_id)
+                if decision_status == "resolved":
+                    if selected_recipe_id in self._eligible_recipe_ids_for_capability(
+                        deepcopy(spec["capability_request"])
+                    ):
+                        selected_recipe = plugin.manifest.plugin_id
+                        recipe_source = "explicit"
+                        capability_status = "matched"
+                    else:
+                        capability_status = "needs_recipe"
+            elif decision_status == "resolved":
+                selected_recipe = self._select_recipe_for_capability(capability)
+                if selected_recipe:
+                    recipe_source = "matched"
+                    capability_status = "matched"
+                else:
+                    capability_status = "needs_recipe"
+
+            if decision_status == "needs_clarification":
+                status = "needs_clarification"
+            elif decision_status == "needs_confirmation":
+                status = "needs_confirmation"
+            elif selected_recipe:
+                status = "awaiting_data"
+            else:
+                status = "needs_recipe"
+            task = {
+                "schema_version": TASK_SCHEMA_VERSION,
+                "record_type": "training_task",
+                "task_id": selected_id,
+                "conversation_id": selected_id,
+                "name": selected_name,
+                "business_goal": selected_goal,
+                "status": status,
+                "capability_request": capability,
+                "capability_status": capability_status,
+                "recipe_id": selected_recipe,
+                "recipe_source": recipe_source,
+                "current_spec_revision": 1,
+                "spec_revision_ids": [spec["revision_id"]],
+                "data_adapter_id": None,
+                "dataset_id": None,
+                "dataset_history": [],
+                "contract_confirmed": False,
+                "confirmations": {},
+                "confirmed_contract_sha256": None,
+                "contract_revision_ids": [],
+                "current_contract_revision_id": None,
+                "confirmed_contract_revision_id": None,
+                "approval_decision_ids": [],
+                "current_approval_decision_id": None,
+                "delivery_authorization_ids": [],
+                "contract_stale": False,
+                "current_model_binding_revision_id": None,
+                "last_model_binding_revision_id": None,
+                "model_binding_bound_spec_revision": None,
+                "model_binding_stale_for_spec_revision": False,
+                "current_run_id": None,
+                "last_run_id": None,
+                "run_ids": [],
+                "pending_run": None,
+                "conversation_started_at_utc": conversation["created_at_utc"],
+                "promoted_at_utc": now,
+                "promotion_request": {
+                    "request_id": selected_request_id,
+                    "payload_sha256": payload_sha256,
+                },
+                "created_at_utc": now,
+                "updated_at_utc": now,
+            }
+            # Commit the canonical spec before task.json.  If the process dies
+            # between these atomic writes, no task exists and the identical
+            # promotion request can safely overwrite the orphaned spec.
+            write_json(self._spec_revision_path(selected_id, 1), spec)
+            write_json(task_path, task)
+            if capability_status == "needs_recipe":
+                self._persist_missing_recipe_evidence(
+                    selected_id,
+                    capability,
+                    task_spec=spec,
+                )
+            conversation["conversation_status"] = "bound"
+            conversation["bound_task_id"] = selected_id
+            conversation["title"] = selected_name
+            conversation["promoted_at_utc"] = now
+            conversation["updated_at_utc"] = now
+            write_json(conversation_path, conversation)
+        return self.get_task(selected_id), False
+
+    @staticmethod
+    def _conversation_view(record: Mapping[str, Any]) -> dict[str, Any]:
+        status = str(record.get("conversation_status") or "unbound")
+        return {
+            "schema_version": record.get("schema_version"),
+            "record_type": "conversation",
+            "conversation_id": record.get("conversation_id"),
+            "status": status,
+            "title": record.get("title"),
+            "task_id": record.get("bound_task_id") if status == "bound" else None,
+            "created_at_utc": record.get("created_at_utc"),
+            "updated_at_utc": record.get("updated_at_utc"),
+            "promoted_at_utc": record.get("promoted_at_utc"),
+        }
 
     def create_task(
         self,
@@ -591,6 +884,7 @@ class TrainingWorkspace:
             status = "needs_recipe"
         task = {
             "schema_version": TASK_SCHEMA_VERSION,
+            "record_type": "training_task",
             "task_id": task_id,
             "name": selected_name,
             "business_goal": selected_goal,
@@ -7350,6 +7644,22 @@ class TrainingWorkspace:
             path.parent.mkdir(parents=True, exist_ok=True)
         if not path.is_file() and any(self._task_dir(task_id).iterdir()):
             raise FileNotFoundError(f"task not found: {task_id}")
+        return path
+
+    def _conversation_path(self, conversation_id: str) -> Path:
+        selected = str(conversation_id or "").strip()
+        if not selected or Path(selected).name != selected:
+            raise FileNotFoundError(f"conversation not found: {selected}")
+        target = (self.conversations_dir / selected).resolve()
+        if target.parent != self.conversations_dir:
+            raise FileNotFoundError(f"conversation not found: {selected}")
+        path = target / "conversation.json"
+        if not path.is_file() and not path.parent.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.is_file() and any(path.parent.iterdir()):
+            # A team may exist only after its durable conversation record was
+            # committed.  Anything else is an incomplete/corrupt owner.
+            raise FileNotFoundError(f"conversation not found: {selected}")
         return path
 
     def _contract_path(self, task_id: str) -> Path:

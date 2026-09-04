@@ -1297,6 +1297,12 @@ body .agent-surface-state[data-state="unavailable"] {
   background: var(--surface-subtle);
 }
 
+body .agent-surface-state[data-state="unsent"] {
+  border-color: var(--border);
+  border-left: 3px solid var(--warning);
+  background: var(--surface-subtle);
+}
+
 /* Composer */
 body .composer-wrap {
   padding-top: var(--space-3);

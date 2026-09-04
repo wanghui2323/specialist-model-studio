@@ -6,8 +6,8 @@
     <meta name="description" content="Specialist Model Studio：从需求与证据到可验收的专业模型" />
     <title>Specialist Model Studio · 专业模型智能工作台</title>
     <link rel="icon" href="/app/static/model-harness-mark.svg?v=2.2-one-product" type="image/svg+xml" />
-    <link rel="stylesheet" href="/app/static/styles.css?v=2.2-one-product" />
-    <link rel="stylesheet" href="/app/static/visual-system.css?v=2.2-one-product" />
+    <link rel="stylesheet" href="/app/static/styles.css?v=2.4-conversation-intake" />
+    <link rel="stylesheet" href="/app/static/visual-system.css?v=2.4-conversation-intake" />
   </head>
   <body data-view="home">
     <a class="skip-link" href="#conversationMain">跳到对话区</a>
@@ -21,7 +21,7 @@
         <div class="sidebar-title"><span>模型任务</span><button class="icon-button" id="refreshButton" type="button" aria-label="刷新任务"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#refresh"></use></svg></button></div>
         <nav class="task-list" id="taskList" aria-label="任务列表"></nav>
         <div class="local-note"><span class="local-dot" aria-hidden="true"></span><div><b>本地工作区</b><small>数据、模型和运行证据留在本机</small></div></div>
-        <div class="runtime-pill" id="runtimePill" data-state="checking"><i></i><span>正在连接训练协调器</span></div>
+        <div class="runtime-pill" id="runtimePill" data-state="checking"><i></i><span>正在连接 AI 服务</span></div>
       </aside>
 
       <main class="conversation-main" id="conversationMain">
@@ -39,7 +39,7 @@
           <div class="empty-orbit" aria-hidden="true"><span></span><i></i><i></i><i></i></div>
           <span class="empty-kicker">MODEL TRAINING AGENT</span>
           <h2>想训练一个什么模型？</h2>
-          <p id="homeBoundary">说清楚你想解决的问题就够了。训练协调器会和你一起澄清目标、查找开源模型，并在每个关键决定前停下来确认。</p>
+          <p id="homeBoundary">说清楚你想解决的问题就够了。AI 会和你一起澄清目标、查找开源模型，并在每个关键决定前停下来确认。</p>
           <div class="home-proof" aria-label="产品能力">
             <span><i aria-hidden="true"></i>先通过对话把目标说清楚</span>
             <span><i aria-hidden="true"></i>可联网查找开源模型</span>
@@ -56,7 +56,7 @@
         </section>
 
         <section class="conversation" id="conversation" hidden aria-live="polite">
-          <div class="conversation-intro" id="conversationIntro"><span class="agent-avatar">AI</span><div><b>这是一个真实模型任务</b><p>我会先理解你的目标，再决定需要澄清、检索还是执行。每一次人工决定和真实结果都会留在当前任务里。</p></div></div>
+          <div class="conversation-intro" id="conversationIntro"><span class="agent-avatar">AI</span><div><b>我们先把目标说清楚</b><p>你可以像聊天一样补充场景、数据和限制。需要调用工具或请你确认时，我会直接在对应回合里说明。</p></div></div>
           <section class="task-spec-card" id="taskSpecCard" data-status="needs-confirmation" hidden aria-labelledby="taskSpecHeading">
             <header class="task-spec-header">
               <div>
@@ -100,7 +100,7 @@
               </button>
             </div>
           </section>
-          <div class="agent-working" id="agentWorking" hidden><i aria-hidden="true">AI</i><b id="agentWorkingLabel">训练团队正在处理</b><button id="cancelAgentButton" type="button" aria-label="请求停止当前智能协作与任务后台动作">停止执行</button></div>
+          <div class="agent-working" id="agentWorking" hidden><i aria-hidden="true">AI</i><b id="agentWorkingLabel">AI 正在处理</b><button id="cancelAgentButton" type="button" aria-label="请求停止当前 AI 回合与任务后台动作">停止执行</button></div>
         </section>
 
         <footer class="composer-wrap" id="composerWrap">
@@ -126,7 +126,7 @@
             <textarea id="messageInput" rows="1" maxlength="2000" placeholder="描述你希望模型帮你完成什么…" aria-label="向 Specialist Model Studio 描述模型任务"></textarea>
             <div class="composer-actions">
               <div><button class="attachment-button" id="datasetButton" type="button" title="导入图片、音频 ZIP 或 CSV"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#paperclip"></use></svg><span class="attachment-label" id="datasetButtonLabel">导入数据</span></button><input id="datasetInput" type="file" accept=".zip,.csv,application/zip,text/csv" hidden /><input id="recipeSampleInput" type="file" accept=".zip,application/zip" hidden /></div>
-              <span class="composer-mode" id="composerMode" data-state="checking"><i aria-hidden="true"></i><span id="composerModeLabel">正在确认协作模式</span></span>
+              <span class="composer-mode" id="composerMode" data-state="checking"><i aria-hidden="true"></i><span id="composerModeLabel">正在连接 AI</span></span>
               <span class="composer-hint" id="composerHint">Enter 发送 · Shift + Enter 换行</span>
               <button class="send-button" id="sendButton" type="submit" aria-label="发送消息"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 18V6m0 0-5 5m5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg></button>
             </div>
@@ -441,6 +441,6 @@
     <script src="/app/static/draft-store.js?v=1.0-agent-native-2" defer></script>
     <script src="/app/static/conversation-view.js?v=2.2-one-product" defer></script>
     <script src="/app/static/interaction-shell.js?v=2.2-one-product" defer></script>
-    <script src="/app/static/app.js?v=2.3-atomic-conversation" defer></script>
+    <script src="/app/static/app.js?v=2.4-conversation-intake" defer></script>
   </body>
 </html>

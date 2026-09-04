@@ -2,7 +2,7 @@
 
 **用自然语言协作完成专业模型训练的本地优先 AI 工作台。**
 
-Specialist Model Studio 面向希望训练专业小模型、但不具备完整算法工程能力的 AI 产品经理、独立开发者和业务团队。你只需要描述目标、提供数据并确认关键决定；训练协调器会把需求澄清、开源模型研究、数据检查、训练、评测、新样本验证和交付组织在同一个可恢复的 `TrainingTask` 中。
+Specialist Model Studio 面向希望训练专业小模型、但不具备完整算法工程能力的 AI 产品经理、独立开发者和业务团队。你先像使用普通 AI 助手一样描述目标；问候、能力咨询和尚未成型的想法只停留在对话中。只有当输入与期望输出已经足够明确时，AI 才会把同一段对话晋升为可恢复的 `TrainingTask`，继续组织模型研究、数据检查、训练、评测、新样本验证和交付。
 
 它不是一个展示固定步骤的训练 Demo。每次真实操作都必须对应可持久化的任务对象、工具动作、人工确认或证据对象；无法训练时，系统会返回可审查的 `BlockerEvidence`，而不是生成假的进度、指标或制品。
 
@@ -26,8 +26,9 @@ Specialist Model Studio 面向希望训练专业小模型、但不具备完整�
 ## 它如何工作
 
 ```text
-用户描述目标
-  → AI 通过对话澄清任务规格
+用户开始普通对话
+  → AI 回答咨询或一次澄清一个关键问题
+  → 输入与输出明确后，将同一对话晋升为 TrainingTask
   → 研究模型来源并检查许可证、资源与风险
   → 导入和体检用户数据
   → 人工确认训练合同与验收门槛
@@ -37,10 +38,12 @@ Specialist Model Studio 面向希望训练专业小模型、但不具备完整�
   → 生成带哈希和隐私边界的交付 Bundle
 ```
 
+- 对话是第一层对象：问候、能力咨询和模糊意图不会创建训练任务，也不会出现在任务列表。
+- 当目标已经具备可辨认的输入与输出时，根协调器通过类型化工具调用将当前对话原子晋升为 `TrainingTask`；会话 ID、历史和执行血缘保持不变。
 - 对话、计划、工具调用、人工确认和结果属于同一个 AI 回合，不拆成互相矛盾的技术面板。
-- 根协调器负责澄清、路由和人工检查点；研究、数据、资源、训练和交付由五个真实子智能体按权限分工。
+- 用户始终面对一个 AI 助手。根协调器负责澄清、路由和人工检查点；研究、数据、资源、训练和交付由五个真实子智能体按权限分工，但具体角色只在真实动作或委派的执行明细中出现。
 - 长执行过程默认折叠，用户先看到结论、当前状态和下一步；完整脱敏证据仍可随时展开。
-- `task_id` 使用与展示名称解耦的不可读稳定 ID（新任务形如 `task-<uuid>`）；Dataset、合同、Run、评测、推理检查和 Bundle 也都有稳定身份，刷新与进程重启后可以恢复。历史名称式任务 ID 继续兼容读取。
+- 对话与任务使用同一个与展示名称解耦的不可读稳定 ID（形如 `task-<uuid>`）；晋升任务不会改写 URL 身份。Dataset、合同、Run、评测、推理检查和 Bundle 也都有稳定身份，刷新与进程重启后可以恢复。历史名称式任务 ID 继续兼容读取。
 - Run、样本推理、Bundle 构建和下载都使用一次性授权，不会因为 Agent 文字说明而越过人工确认。
 
 ## 一个产品，三层能力
@@ -77,7 +80,9 @@ Model Harness（Task、Data、Run、Evaluation、Bundle 真值）
 | Analysis-only | 任意公开 Hugging Face / GitHub 训练仓库 | 可发现、固定版本、静态分析、规划和资源判断；不保证能训练 |
 | 当前未支持 | OCR、ASR、TTS、检测、分割、时序预测、文本分类等 | 返回类型化阻断或能力建设请求，不创建假的 Run |
 
-房价回归验收使用 120 行 CSV 闭环完成了 Dataset、合同、Run、评测、新样本推理、Bundle 与下载；Ridge 测试集 R² 为 `0.999405`，评测结论为 `release_ready`。无效 CSV 返回 HTTP 422 且没有创建 Dataset / Run；ASR 返回 `recipe_unavailable` 且没有伪造训练。自动化回归为 Python `587 passed`（另有 277 个 subtests）和 Node `150 passed`；1440px / 390px 浏览器验收均无横向溢出，控制台 0 错误。完整对象 ID、哈希、指标和截图见 [本地 RC 验收报告](plans/v1.0-conversation-native/LOCAL-RELEASE-ACCEPTANCE.md)。
+当前可直接承接用户数据的基础闭环是**两个内置的用户数据 Recipe**：图片目录分类与表格回归；音频关键词分类（动态注册）必须先经过 Recipe Factory 构建、验证和人工批准，不能与内置能力混为一谈。
+
+房价回归验收使用 120 行 CSV 闭环完成了 Dataset、合同、Run、评测、新样本推理、Bundle 与下载；Ridge 测试集 R² 为 `0.999405`，评测结论为 `release_ready`。无效 CSV 返回 HTTP 422 且没有创建 Dataset / Run；ASR 返回 `recipe_unavailable` 且没有伪造训练。本次对话/任务分离迭代后的自动化回归为 Python `615 passed`、Node `156 passed`；此前记录的 1440px / 390px 浏览器验收均无横向溢出、控制台 0 错误，新的 conversation → task 晋升旅程仍需以本次部署证据为准。完整对象 ID、哈希、指标和历史截图见 [本地 RC 验收报告](plans/v1.0-conversation-native/LOCAL-RELEASE-ACCEPTANCE.md)。
 
 ## “通用训练”意味着什么
 
@@ -188,11 +193,12 @@ DeepSeek Harness 对 Model Harness 后端和 CLI 是可选适配层，但对完�
 
 ### v1.0 对话与事件合同
 
-- 已有任务的对话入口是 `POST /tasks/{task_id}/conversation/messages`；新任务通过 `POST /tasks` 同时提交 `initial_message`、`create_request_id` 与 `message_request_id`，由后端创建任务并接收首条消息，再由页面加载对话。重试复用请求身份，不依赖页面刷新后再补发首条消息。
-- 任务保存不等于消息发送。旧的无会话任务显示“任务已保存，尚未发送”及恢复入口；连接检查有超时和自动重连，草稿保留。旧 `POST /chat` 固定返回 HTTP 410 和 canonical endpoint，不再运行关键词流程。
-- 任务专属 `GET /tasks/{task_id}/conversation/stream` 使用 SSE 输出 `snapshot / delta / state / error / heartbeat`；断线后依据 cursor 对账，版本变化或 gap 会返回全量 snapshot。
+- 新对话通过 `POST /conversations` 原子保存并提交首条消息。它先写入独立的 `workspace/conversations/`，不会创建 TaskSpec、不会出现在 `GET /tasks`，也不会因为一句问候显示训练状态。
+- 当真实 Agent 判断业务结果、主要输入和期望输出已经明确时，只能调用 `model_harness_promote_conversation`，再由 `POST /conversations/{conversation_id}/promote` 幂等创建 `TrainingTask`。后端不使用关键词或正则伪装意图判断；晋升沿用同一 ID、DSH session、AgentTurn 和事件血缘。
+- 未绑定阶段使用 `/conversations/{id}/...` 的消息、快照、SSE、取消和问题回答接口；晋升后切换到 `/tasks/{same-id}/conversation/...`。两类 SSE 都输出 `snapshot / delta / state / error / heartbeat`，断线后依据 cursor 对账，版本变化或 gap 会返回全量 snapshot。
+- 已有任务的对话入口仍是 `POST /tasks/{task_id}/conversation/messages`。旧的无会话任务显示“任务已保存，尚未发送”及恢复入口；连接检查有超时和自动重连，草稿保留。旧 `POST /chat` 固定返回 HTTP 410 和 canonical endpoint，不再运行关键词流程。
 - 当前合同是 conversation schema `2.0`、projector revision `3.2`、action schema `1.0`、synthesis verdict `1.0`。`3.1` 为已验证的子智能体工具动作补齐 `agent_run_id / delegation_id / parent_delegation_id`；`3.2` 进一步把人工确认绑定到其来源 AI 回合与工具调用，旧投影不会被当成新证据。
-- 前端只把真实 tool call/result 配对为 Action；协调器文字说明会标记为“不作为完成证据”，失败、受控阻断和观察降级不使用成功语义。
+- 前端只把真实 tool call/result 配对为 Action；执行过程挂在产生它的 AI 回合下。健康会话不显示常驻“当前由某智能体处理”横幅，内部角色仅在真实动作或委派中出现；协调器文字说明不是完成证据，失败、受控阻断和观察降级不使用成功语义。
 - DSH provider 的非成功 `turn/end` 会投影为类型化失败并结束当前 Agent run，但不会改写 `TrainingTask`；已经被终止轮次遗留的 question/approval 会持久化为失效审计记录，不再显示成可反复提交的人工检查点。
 - 人工问题不预选答案；用户必须显式选择后才能提交。完成的真实训练、未检查资源、需要调整计划和环境阻断是四种不同状态。
 

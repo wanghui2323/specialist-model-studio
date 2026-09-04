@@ -377,6 +377,7 @@ test("public projection strips host paths but preserves public API routes", () =
       contract: { dataset: { root: localRoot } },
       control: { next_action: { href: "/tasks/task-one/confirm" } },
       provider_capabilities: { href: "/model-sources/providers" },
+      conversation: { href: "/conversations/task-one" },
       note: `stored at ${localRoot}/dataset_report.json`,
       other_host_path: "runtime resolved /Applications/Local Tool/cache.bin",
     },
@@ -394,6 +395,7 @@ test("public projection strips host paths but preserves public API routes", () =
     projected.task.provider_capabilities.href,
     "/model-sources/providers",
   );
+  assert.equal(projected.task.conversation.href, "/conversations/task-one");
   assert.equal(projected.task.dataset_report.files[0].relative_path, "class-a/one.png");
   assert.equal(source.task.dataset_report.root, localRoot, "projection must not mutate local data");
 });

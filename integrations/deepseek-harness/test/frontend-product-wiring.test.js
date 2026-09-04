@@ -170,7 +170,7 @@ test("Inspector contract review is read-only while DSH HumanCheckpoint keeps the
   assert.doesNotMatch(navigation, /request\(|postQuestionAnswers\(|answerApproval\(/);
   assert.doesNotMatch(app, /async function confirmContract\(\)/);
   assert.doesNotMatch(app, /workspace-confirm:/);
-  assert.match(app, /conversation\/approvals\/\$\{encodeURIComponent\(item\.rpc_id\)\}/);
+  assert.match(app, /conversationTransportPath\(state\.selectedTaskId, "approvals", item\.rpc_id\)/);
 });
 
 test("regression contract gates explain raw target units and their human-reviewed baseline", async () => {
@@ -335,7 +335,8 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(app, /return taskOwnedConversation \? interactionPresentation\(task, taskOwnedConversation\) : workflowStatus\(task, null\)/);
   assert.match(app, /const taskConversation = task\.task_id === state\.selectedTaskId \? state\.conversation : null; const workflow = taskListStatus\(task, taskConversation\)/);
   assert.match(app, /function syncSelectedTaskListStatus\(conversation = state\.conversation\)/);
-  assert.match(app, /syncTaskHeader\(state\.task, conversation, projection\); syncTaskSpecCheckpointOwnership\(conversation\); syncLegacyConfirmationControls\(state\.task, conversation\); syncSelectedTaskListStatus\(conversation\)/);
+  assert.match(app, /if \(state\.task\) syncTaskHeader\(state\.task, conversation, projection\)/);
+  assert.match(app, /if \(state\.task && !draftConversation\) \{ syncTaskSpecCheckpointOwnership\(conversation\); syncLegacyConfirmationControls\(state\.task, conversation\); syncSelectedTaskListStatus\(conversation\); \}/);
   assert.match(app, /stage === "environment_lock"\) return \{ label: blocked \? "训练环境阻断"/);
   assert.match(app, /label: "固定模型来源记录"/);
   assert.match(app, /time\.textContent = formatRelativeTime\(task\.updated_at_utc\)/);
@@ -381,16 +382,20 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(css, /\.inspector\[data-open="true"\]\{[^}]*visibility:visible[^}]*pointer-events:auto[^}]*transform:translateX\(0\)/);
   assert.match(css, /@media\(max-width:720px\)[\s\S]*?\.inspector\{width:100%;z-index:42\}/);
   assert.match(css, /@media\(max-width:720px\)[\s\S]*body\[data-workspace="open"\] \.mobile-view-nav\{display:none\}/);
-  for (const asset of ["conversation-view.js", "interaction-shell.js", "styles.css", "visual-system.css"]) {
+  for (const asset of ["conversation-view.js", "interaction-shell.js"]) {
     assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.2-one-product`));
   }
-  assert.match(html, /app\.js\?v=2\.3-atomic-conversation/);
+  for (const asset of ["styles.css", "visual-system.css", "app.js"]) {
+    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.4-conversation-intake`));
+  }
   assert.match(app, /function renderAgentSurfaceState\(conversation, projection\)/);
   assert.doesNotMatch(app, /开始 Agent 会话/);
-  assert.match(app, /任务已保存，尚未发送/);
-  assert.match(app, /发送后才会创建真实 Agent 会话并开始回应/);
+  assert.match(app, /任务已保存，消息尚未发给 AI/);
+  assert.match(app, /重新发送后，回复和执行过程才会出现在这里/);
   assert.match(app, /action\.textContent = "发送任务目标"/);
-  assert.match(app, /ready \? "训练协调器已连接"/);
+  assert.match(app, /ready \? "AI 已连接"/);
+  assert.match(app, /if \(state\.runtimeReady && hasSession\) return/);
+  assert.doesNotMatch(app, /当前由训练协调器处理/);
   assert.doesNotMatch(app, /Agent 协作已连接/);
   assert.doesNotMatch(app, /个专家已参与本轮/);
   assert.doesNotMatch(html, /专家已参与本轮/);
@@ -475,11 +480,11 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(app, /\["blocker", "warning", "observation_degraded", "failed"\]/);
   assert.match(app, /if \(item\.kind === "coordinator_note"\) return renderCoordinatorNote\(item, target\)/);
   assert.match(app, /function renderCoordinatorNote\(item, target = ui\.messageList\)/);
-  assert.match(app, /truth\.textContent = "协调器说明"/);
+  assert.match(app, /truth\.textContent = "过程说明"/);
   assert.match(app, /最终结果以任务证据为准/);
   assert.match(app, /function showTransientNotice\(message, tone = "ok", durationMs = 6_000\)/);
   assert.match(app, /state\.noticeDismissTimer = window\.setTimeout/);
-  assert.match(app, /showTransientNotice\(created\.created === false \? "任务已恢复，首条消息已经交给训练协调器。" : "任务已创建，首条消息已经交给训练协调器。"/);
+  assert.match(app, /showTransientNotice\(created\.created === false \? "对话已恢复，AI 正在继续处理。" : "对话已开始，AI 正在理解你的需求。"/);
   assert.match(app, /等待你的回答：\$\{active\.title \|\| active\.questions\?\.\[0\]\?\.header/);
   assert.match(app, /function renderRichText\(container, text\)/);
   assert.match(app, /function markdownTableCells\(line\)/);
@@ -497,7 +502,7 @@ test("runtime failure stops conversation instead of impersonating an Agent with 
   const { html, css, app } = await sources();
   const submit = app.slice(app.indexOf("async function submitMessage"), app.indexOf("function deriveTaskName"));
   assert.match(html, /id="composerMode"[^>]*data-state="checking"/);
-  assert.match(html, /id="composerModeLabel">正在确认协作模式</);
+  assert.match(html, /id="composerModeLabel">正在连接 AI</);
   assert.match(html, /aria-label="向 Specialist Model Studio 描述模型任务"/);
   assert.doesNotMatch(html, /class="composer-mode"[^>]*>[^<]*训练 Agent/);
   assert.match(app, /function renderRuntimeMode\(mode\)/);
@@ -510,8 +515,8 @@ test("runtime failure stops conversation instead of impersonating an Agent with 
   assert.match(app, /agent\.conversation_projector_revision === "3\.2" && agent\.synthesis_verdict_version === "1\.0" && agent\.conversation_action_schema_version === "1\.0" && agent\.task_truth_source === "TrainingTask"/);
   assert.match(app, /\["working", "waiting_for_human", "cancelling", "idle", "terminal"\]/);
   assert.match(app, /AI 服务版本不兼容/);
-  assert.match(app, /训练协调器未连接/);
-  assert.match(app, /训练协调器未连接 · 对话已暂停/);
+  assert.match(app, /AI 服务未连接/);
+  assert.match(app, /AI 未连接 · 对话已暂停/);
   assert.match(app, /renderRuntimeMode\(runtimeDisplayMode\(\)\)/);
   assert.match(app, /模型服务尚未配置。请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动；在此之前不会创建训练任务/);
   assert.match(app, /providerMissing \? "请先在本机配置模型服务，再开始训练任务"/);
@@ -522,21 +527,21 @@ test("runtime failure stops conversation instead of impersonating an Agent with 
   assert.match(app, /request\("\/agent\/runtime", \{ timeoutMs: 6_000 \}\)/);
   assert.match(app, /state\.runtimeRetryTimer = window\.setTimeout\(\(\) => loadRuntime\(\), delay\)/);
   assert.match(app, /state\.selectedTaskId \? "继续询问或补充下一步要求…"/);
-  assert.match(app, /没有创建或修改任务，也没有启动固定流程替代智能协作/);
-  assert.match(app, /训练协调器未连接，对话已暂停/);
+  assert.match(app, /没有创建或修改任务，也没有启动固定流程替代对话/);
+  assert.match(app, /AI 服务未连接，对话已暂停/);
   assert.doesNotMatch(app, /if \(remoteConversation\.session_id\) \{\s*state\.runtimeReady = true/);
   assert.doesNotMatch(app, /本地流程模式 · 训练操作仍可用/);
   assert.match(css, /\.composer-mode\[data-state="local"\]/);
   assert.match(css, /\.composer-mode:not\(\[data-state="local"\]\)\{display:none\}/);
   assert.match(css, /\.composer-wrap\[data-runtime="unavailable"\]/);
-  assert.ok(submit.indexOf("if (!state.runtimeReady)") < submit.indexOf('request("/tasks"'), "Runtime guard must run before task creation");
+  assert.ok(submit.indexOf("if (!state.runtimeReady)") < submit.indexOf('request("/conversations"'), "Runtime guard must run before conversation creation");
 });
 
 test("fresh empty workspace enters the shared home composer state", async () => {
   const { html, app } = await sources();
   assert.match(html, /id="homeComposerSlot"/);
   assert.match(html, /id="homeBoundary"/);
-  assert.match(html, /训练协调器会和你一起澄清目标、查找开源模型，并在每个关键决定前停下来确认/);
+  assert.match(html, /AI 会和你一起澄清目标、查找开源模型，并在每个关键决定前停下来确认/);
   assert.doesNotMatch(html, /匹配开源模型、准备数据、训练和评测/);
   assert.match(app, /function enterHomeState\(\{ focusComposer = true \} = \{\}\)/);
   assert.match(app, /ui\.homeComposerSlot\.append\(ui\.composerWrap\)/);
@@ -562,14 +567,14 @@ test("explicitly starting a new task clears a stale home draft without discardin
     "a stale __new__ draft and visible prompt must be cleared before the home composer restores state");
 });
 
-test("creating a task transfers the submitted prompt once without restoring it into the new composer", async () => {
+test("creating a conversation transfers the submitted prompt once without manufacturing a task", async () => {
   const { app } = await sources();
-  const select = app.slice(app.indexOf("async function selectTask"), app.indexOf("async function refreshSelected"));
+  const select = app.slice(app.indexOf("async function selectConversation"), app.indexOf("async function refreshSelected"));
   const submit = app.slice(app.indexOf("async function submitMessage"), app.indexOf("function deriveTaskName"));
-  const createStart = submit.indexOf('request("/tasks"');
+  const createStart = submit.indexOf('request("/conversations"');
   const createEnd = submit.indexOf("const checkpoint = currentHumanCheckpoint", createStart);
   const createBranch = submit.slice(createStart, createEnd);
-  assert.match(select, /async function selectTask\(taskId, \{ saveCurrentDraft = true \} = \{\}\)/);
+  assert.match(select, /async function selectConversation\(conversationId, \{ saveCurrentDraft = true, record = null \} = \{\}\)/);
   assert.match(select, /if \(saveCurrentDraft\) saveDraft\(\)/);
   assert.match(createBranch, /initial_message: text/);
   assert.match(createBranch, /create_request_id: creation\.create_request_id/);
@@ -577,12 +582,32 @@ test("creating a task transfers the submitted prompt once without restoring it i
   assert.match(createBranch, /created\?\.submission\?\.accepted !== true/);
   const clearDraftIndex = createBranch.indexOf("clearDraft(null)");
   const clearComposerIndex = createBranch.indexOf('ui.messageInput.value = ""');
-  const selectIndex = createBranch.indexOf("await selectTask(taskId, { saveCurrentDraft: false })");
+  const selectIndex = createBranch.indexOf("await selectConversation(conversationId, { saveCurrentDraft: false, record: created.conversation })");
   const acceptedIndex = createBranch.indexOf("created?.submission?.accepted !== true");
   assert.ok(acceptedIndex >= 0 && acceptedIndex < clearDraftIndex && clearDraftIndex < clearComposerIndex && clearComposerIndex < selectIndex,
-    "the first Agent message must be accepted before clearing the home draft or hydrating the task");
+    "the first AI message must be accepted before clearing the home draft or hydrating the conversation");
   assert.doesNotMatch(createBranch, /postQueuedConversationMessage\(/,
-    "new task creation must not depend on a second browser request for the first message");
+    "new conversation creation must not depend on a second browser request for the first message");
+  assert.doesNotMatch(createBranch, /state\.tasks\s*=|created\.task/,
+    "an unbound conversation must not be inserted into the training-task list");
+});
+
+test("unbound intake keeps one conversation identity until the Agent promotes a real task", async () => {
+  const { app } = await sources();
+  const refresh = app.slice(app.indexOf("async function refreshSelected"), app.indexOf("function conversationStreamEntryKey"));
+  const presentation = app.slice(app.indexOf("function interactionPresentation"), app.indexOf("function taskListStatus"));
+  assert.match(app, /conversationRecord: null/);
+  assert.match(app, /record_type: "conversation_draft"/);
+  assert.match(app, /history\.replaceState\(null, "", `\$\{location\.pathname\}\?conversation=\$\{encodeURIComponent\(conversationId\)\}`\)/);
+  assert.match(refresh, /request\(`\/conversations\/\$\{encodeURIComponent\(taskId\)\}`\)/);
+  assert.match(refresh, /if \(!owner\.task\)/);
+  assert.match(refresh, /history\.replaceState\(null, "", `\$\{location\.pathname\}\?task=\$\{encodeURIComponent\(taskId\)\}`\)/);
+  assert.match(refresh, /state\.tasks = \[owner\.task, \.\.\.state\.tasks\.filter/);
+  assert.match(presentation, /label: "AI 正在回应"/);
+  assert.match(presentation, /label: "等待你的消息"/);
+  assert.ok(presentation.indexOf('return { label: "等待你的消息"') < presentation.indexOf('result_ready: { label: "本轮结果已就绪"'),
+    "conversation-draft presentation must return before task result labels are considered");
+  assert.match(app, /if \(isConversationDraft\(state\.conversationRecord, task\)\) return \[\]/);
 });
 
 test("runtime and family-catalog failures preserve honest product boundaries", async () => {
@@ -825,7 +850,7 @@ test("live Agent and cancellation truth outrank persisted blockers", async () =>
   assert.ok(cancellingIndex >= 0 && cancellingIndex < pendingIndex);
   assert.ok(pendingIndex < agentIndex && agentIndex < backgroundIndex && backgroundIndex < failureIndex);
   assert.match(interaction, /task_blocker: observedTaskBlocker/);
-  assert.match(app, /else if \(agentResponseRunning && !conversation\.active_event\) ui\.agentWorkingLabel\.textContent = "训练协调器正在处理"/);
+  assert.match(app, /else if \(agentResponseRunning && !conversation\.active_event\) ui\.agentWorkingLabel\.textContent = "AI 正在处理"/);
   assert.match(app, /backgroundCancellationPending\(conversation\) \? "正在停止" : conversationAgentResponseRunning/);
 });
 
@@ -902,7 +927,8 @@ test("CSV data checkpoints upload first and resume the same Agent question witho
 
 test("conversation progress uses task-owned SSE with visible five-second fallback", async () => {
   const { html, css, app } = await sources();
-  assert.match(app, /new EventSource\(`\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/conversation\/stream/);
+  assert.match(app, /new EventSource\(`\$\{conversationTransportPath\(taskId, "stream"\)\}/);
+  assert.match(app, /draft \? `\/conversations\/\$\{id\}\/conversation\/stream` : `\/tasks\/\$\{id\}\/conversation\/stream`/);
   for (const eventName of ["snapshot", "delta", "state", "heartbeat", "error"]) {
     assert.match(app, new RegExp(`addEventListener\\("${eventName}"`));
   }
@@ -1031,7 +1057,7 @@ test("warm editorial visual system keeps dialogue primary and controls consisten
   assert.match(css, /@media\(max-width:720px\)\{#datasetButton\.attachment-button\{[^}]*min-width:44px[^}]*min-height:44px[^}]*justify-content:center/);
 });
 
-test("new-task home stays coordinator-led while verified specialists appear only inside real execution", async () => {
+test("new-task home stays conversation-led while verified specialists appear only inside real execution", async () => {
   const { html, app } = await sources();
   const home = html.slice(html.indexOf('<section class="empty-state"'), html.indexOf('<section class="conversation"'));
   assert.doesNotMatch(home, /专家|Hugging Face|GitHub/);
@@ -1040,7 +1066,9 @@ test("new-task home stays coordinator-led while verified specialists appear only
   assert.doesNotMatch(app, /个专家已参与本轮/);
   assert.match(app, /const workItems = projectionWorkItems\(projection\)/);
   assert.match(app, /const activeSpecialists = activeProjectionSpecialists\(projection\)/);
-  assert.match(app, /ui\.composerModeLabel\.textContent = activeSpecialists\.length \?/);
+  assert.match(app, /ui\.composerModeLabel\.textContent = "AI 已连接"/);
+  assert.doesNotMatch(app, /ui\.composerModeLabel\.textContent = activeSpecialists\.length \?/);
+  assert.match(app, /具体分工只在对应 AI 回合的执行过程中展示/);
   assert.match(app, /const verifiedRoles = new Set\(workItems\.map\(\(item\) => item\.role\?\.role_id\)\.filter\(Boolean\)\)/);
   assert.match(app, /expertCount: turnVerifiedRoles\.size/);
   assert.match(app, /expertCount \? `\$\{expertCount\} 位专家 · ` : ""/);
@@ -1134,7 +1162,7 @@ test("composer queues stable idempotent messages and cancellation stays explicit
 
   assert.match(app, /checkpoint\?\.kind === "approval"[\s\S]*聊天文字不会被当作授权/);
   assert.match(app, /postQuestionAnswers\(checkpoint, \[\{ id: question\.id, selected: \[\], custom: text \}\]\)/);
-  assert.match(app, /\/conversation\/questions\/\$\{encodeURIComponent\(item\.rpc_id\)\}/);
+  assert.match(app, /conversationTransportPath\(taskId, "questions", item\.rpc_id\)/);
 
   assert.match(app, /function openCancelAgentDialog\(\)/);
   assert.match(app, /function backgroundCancellationPending\(conversation\)/);

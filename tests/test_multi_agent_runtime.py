@@ -412,6 +412,13 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
         )
         instruction = prompt_call["content"][0]["text"]
         self.assertIn("Training Orchestrator", instruction)
+        self.assertIn("CONVERSATION_MODE: TASK_BOUND", instruction)
+        self.assertIn("纯问候请自然简短回应", instruction)
+        self.assertIn(
+            "以上情况不得调用 model_harness_get_task、ask_user_question 或任何专家",
+            instruction,
+        )
+        self.assertIn("只有当用户要继续当前任务、查询其状态", instruction)
         self.assertIn("原生、可继续的 subagent", instruction)
         self.assertIn("research_source: Research & Source Agent", instruction)
         self.assertIn("不要生成虚构的多角色群聊", instruction)
@@ -423,11 +430,65 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
         self.assertIn("model_harness_authorize_task_run_start", instruction)
         self.assertIn("run_authorization_id", instruction)
         self.assertIn("绝不能设为 false", instruction)
+        self.assertNotIn("CONVERSATION_MODE: INTAKE", instruction)
+        self.assertNotIn("EXACT_CONVERSATION_ID_JSON", instruction)
         team = read_json(self.task_dir / "agent_team" / "team.json")
         self.assertEqual(team["root_session_id"], "dsh-1")
         self.assertEqual(team["implementation"], "dsh_native_subagents")
         self.assertEqual(len(team["agents"]), 1)
         self.assertEqual(team["runs"][0]["task_spec_revision"], 1)
+
+    def test_unbound_conversation_uses_intake_agent_without_task_or_checkpoint_contract(
+        self,
+    ) -> None:
+        conversation_id = "task-0123456789abcdef0123456789abcdef"
+        conversation_dir = self.root / "conversations" / conversation_id
+        write_json(
+            conversation_dir / "conversation.json",
+            {
+                "schema_version": "1.0",
+                "record_type": "conversation_draft",
+                "conversation_id": conversation_id,
+                "task_id": conversation_id,
+                "conversation_status": "unbound",
+                "title": "新对话",
+                "create_request_id": "create-intake-1",
+                "bound_task_id": None,
+                "created_at_utc": "2026-09-04T00:00:00+00:00",
+                "updated_at_utc": "2026-09-04T00:00:00+00:00",
+            },
+        )
+
+        submission = self.runtime.submit_message(
+            conversation_id,
+            "新对话",
+            "您好",
+            request_id="intake-message-1",
+        )
+
+        self.assertTrue(submission["accepted"])
+        prompt_call = [
+            payload
+            for method, payload in self.client.calls
+            if method == "session.prompt"
+        ][-1]
+        instruction = prompt_call["content"][0]["text"]
+        self.assertIn("CONVERSATION_MODE: INTAKE", instruction)
+        self.assertIn(
+            f'EXACT_CONVERSATION_ID_JSON: "{conversation_id}"',
+            instruction,
+        )
+        self.assertIn("若是问候，请像人一样简短回应", instruction)
+        self.assertIn("禁止调用 model_harness_*、ask_user_question 或委派专家", instruction)
+        self.assertIn("只有当用户已经给出足够具体的业务结果", instruction)
+        self.assertIn("model_harness_promote_conversation", instruction)
+        self.assertNotIn("EXACT_TASK_ID_JSON", instruction)
+        self.assertNotIn("先用这个值调用 model_harness_get_task", instruction)
+        self.assertFalse((self.root / "tasks" / conversation_id).exists())
+        team = read_json(conversation_dir / "agent_team" / "team.json")
+        self.assertEqual(team["root_session_id"], submission["session_id"])
+        self.assertEqual(len(team["agents"]), 1)
+        self.assertEqual(team["runs"][0]["task_spec_revision"], None)
 
     def test_real_dsh_history_does_not_upgrade_unverified_root_text(self) -> None:
         session_id = self.runtime.prompt(

@@ -15,7 +15,7 @@ const PUBLIC_SENSITIVE_KEYS = new Set([
   "dataset_dir", "artifact_dir",
 ]);
 const PUBLIC_ROUTE_ROOTS = [
-  "/agent", "/app", "/capabilities", "/chat", "/data-adapters", "/health",
+  "/agent", "/app", "/capabilities", "/chat", "/conversations", "/data-adapters", "/health",
   "/model-assets", "/model-sources", "/recipes", "/runs", "/runtime", "/tasks",
 ];
 const CONTRACT_REVISION_IDENTITY_FIELDS = Object.freeze([
@@ -153,6 +153,42 @@ export class ModelHarnessClient {
       signal,
       body: { name, business_goal: businessGoal },
     });
+  }
+
+  promoteConversation(
+    conversationId,
+    {
+      requestId,
+      name,
+      businessGoal,
+      capabilityRequest,
+      recipeId,
+    },
+    signal,
+  ) {
+    const selectedConversationId = String(conversationId || "").trim();
+    const selectedRequestId = String(requestId || "").trim();
+    const selectedName = String(name || "").trim();
+    const selectedGoal = String(businessGoal || "").trim();
+    if (!selectedConversationId) throw new Error("Conversation id is required");
+    if (!selectedRequestId) throw new Error("Conversation promotion requires a stable request id");
+    if (!selectedName || !selectedGoal) {
+      throw new Error("Conversation promotion requires a concrete task name and business goal");
+    }
+    return this.request(
+      `/conversations/${encodeURIComponent(selectedConversationId)}/promote`,
+      {
+        method: "POST",
+        signal,
+        body: {
+          request_id: selectedRequestId,
+          name: selectedName,
+          business_goal: selectedGoal,
+          ...(capabilityRequest ? { capability_request: capabilityRequest } : {}),
+          ...(recipeId ? { recipe_id: recipeId } : {}),
+        },
+      },
+    );
   }
 
   getTask(taskId, signal) {

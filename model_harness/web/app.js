@@ -53,7 +53,7 @@ const ui = Object.fromEntries([
   "baseImageDigestInput", "resourceFeasibilityReasons", "checkResourceFeasibilityButton", "contractConfirmationNote",
 ].map((id) => [id, document.getElementById(id)]));
 const state = {
-  tasks: [], task: null, selectedTaskId: null, conversation: null, runEvents: [], runtimeReady: false, pollTimer: null,
+  tasks: [], task: null, selectedTaskId: null, conversationRecord: null, conversation: null, runEvents: [], runtimeReady: false, pollTimer: null,
   conversationStream: null, conversationStreamCursor: null, conversationStreamRevision: null, conversationStreamTaskId: null, conversationStreamDegraded: false, conversationFallbackTimer: null, conversationReconnectTimer: null,
   conversationReconcileInFlight: false, conversationReconcileSeq: 0, conversationReconcilePromise: null,
   pendingMessage: null, messageSubmission: null, messageRequestSequence: 0, composerRetryAction: null, composerRetryKind: null, composerAttachment: null, cancelRequestInFlight: false, lastRenderKey: "", selectionToken: 0, hfCapability: null, hfModels: [], hfCard: null,
@@ -453,7 +453,7 @@ function syncComposerDelivery(conversation = state.conversation) {
   if (!agentQueued && !backgroundRunning) return;
   if (backgroundRunning) {
     ui.composerDeliveryLabel.textContent = "后台训练正在运行，可继续对话";
-    ui.composerDeliveryDetail.textContent = "你仍可继续和训练协调器交流；新消息会开启新的对话回合，不会被描述为排队到当前训练之后。";
+    ui.composerDeliveryDetail.textContent = "你仍可继续和 AI 交流；新消息会开启新的对话回合，不会被描述为排队到当前训练之后。";
     return;
   }
   const supported = advertisedConversationModes(conversation);
@@ -507,7 +507,7 @@ async function postQueuedConversationMessage(taskId, text) {
   state.pendingMessage = { task_id: taskId, text, time: Date.now() };
   renderConversation(true);
   try {
-    const response = await request(`/tasks/${encodeURIComponent(taskId)}/conversation/messages`, {
+    const response = await request(conversationTransportPath(taskId, "messages"), {
       method: "POST",
       json: { message: text, mode: DEFAULT_CONVERSATION_MESSAGE_MODE, request_id: submission.request_id },
     });
@@ -534,6 +534,7 @@ function workflowStatus(task, conversation = null) {
   if (conversationAgentResponseRunning(conversation)) return { label: "AI 正在处理", tone: "running" };
   if (conversationHasBackgroundTraining(conversation)) return { label: "后台训练/评测进行中", tone: "running" };
   if (conversation?.interaction_state === "waiting_for_human") return { label: "等待你的决定", tone: "needs_confirmation" };
+  if (isConversationDraft(state.conversationRecord, task)) return { label: "等待你的消息", tone: "idle" };
   if (RUNNING_STATUSES.has(task.current_result?.status)) return { label: "后台训练/评测进行中", tone: "running" };
   if (["running", "completed", "failed", "cancelled", "interrupted"].includes(task.status)) return { label: STATUS_LABELS[task.status] || task.status, tone: task.status };
   const stage = task.control?.current_stage; const blocked = task.control?.blocked_by?.[0]; const analysisStatus = task.repository_analysis?.status; const planStatus = task.training_plan?.effective_status;
@@ -570,6 +571,17 @@ function canonicalInteractionPresentation(conversation = state.conversation) {
   return selected ? { ...selected, phase: value.phase, reason_code: value.phase, can_cancel: value.can_cancel === true } : null;
 }
 function interactionPresentation(task, conversation = state.conversation, projection = null) {
+  if (isConversationDraft(state.conversationRecord, task)) {
+    if ((conversation && state.conversationStreamDegraded) || conversation?.projection_health?.status === "observation_degraded") return { label: "需要重新连接", tone: "failed", phase: "observation_degraded", reason_code: "observation_degraded", can_cancel: false };
+    if (backgroundCancellationPending(conversation)) return { label: "正在停止", tone: "cancelling", phase: "stopping", reason_code: "stopping", can_cancel: false };
+    const checkpoint = currentHumanCheckpoint(conversation);
+    if (checkpoint?.kind === "question") return { label: "等待你的回答", tone: "needs_confirmation", phase: "clarifying", reason_code: "waiting_question", can_cancel: false };
+    if (conversationAgentResponseRunning(conversation) || state.pendingMessage?.task_id === task?.task_id) return { label: "AI 正在回应", tone: "running", phase: "executing", reason_code: "agent_working", can_cancel: conversation?.can_cancel_agent === true };
+    const canonical = canonicalInteractionPresentation(conversation);
+    if (canonical?.phase === "failed") return { ...canonical, label: "本轮未完成" };
+    if (canonical?.phase === "stopped") return canonical;
+    return { label: "等待你的消息", tone: "idle", phase: "idle", reason_code: "conversation_idle", can_cancel: false };
+  }
   const canonical = canonicalInteractionPresentation(conversation);
   if (canonical) return canonical;
   const projectionStatus = projection ? ({
@@ -641,18 +653,47 @@ function saveDraft(taskId = state.selectedTaskId) { if (DraftStore) DraftStore.w
 function restoreDraft(taskId = state.selectedTaskId) { ui.messageInput.value = DraftStore ? DraftStore.read(localStorage, draftId(taskId)).text : ""; resizeComposer(); }
 function clearDraft(taskId = state.selectedTaskId) { if (DraftStore) DraftStore.clear(localStorage, draftId(taskId)); }
 
+function isConversationDraft(record = state.conversationRecord, task = state.task) {
+  return record?.status === "unbound" || task?.record_type === "conversation_draft";
+}
+function conversationDraftTask(record) {
+  const conversationId = record?.conversation_id;
+  return {
+    record_type: "conversation_draft",
+    task_id: conversationId,
+    conversation_id: conversationId,
+    name: record?.title || "新对话",
+    status: "draft",
+    current_result: null,
+    control: { current_stage: "task_understanding", blocked_by: [] },
+    created_at_utc: record?.created_at_utc,
+    updated_at_utc: record?.updated_at_utc,
+  };
+}
+function conversationTransportPath(ownerId, action = "snapshot", rpcId = null) {
+  const id = encodeURIComponent(ownerId);
+  const draft = isConversationDraft();
+  if (action === "snapshot") return draft ? `/conversations/${id}/conversation` : `/tasks/${id}/conversation`;
+  if (action === "stream") return draft ? `/conversations/${id}/conversation/stream` : `/tasks/${id}/conversation/stream`;
+  if (action === "messages") return draft ? `/conversations/${id}/messages` : `/tasks/${id}/conversation/messages`;
+  if (action === "cancel") return draft ? `/conversations/${id}/cancel` : `/tasks/${id}/conversation/cancel`;
+  if (action === "questions") return draft ? `/conversations/${id}/questions/${encodeURIComponent(rpcId)}` : `/tasks/${id}/conversation/questions/${encodeURIComponent(rpcId)}`;
+  if (action === "approvals") return draft ? `/conversations/${id}/approvals/${encodeURIComponent(rpcId)}` : `/tasks/${id}/conversation/approvals/${encodeURIComponent(rpcId)}`;
+  throw new Error(`未知会话传输动作：${action}`);
+}
+
 function renderRuntimeMode(mode) {
   const ready = mode === "agent";
   const checking = mode === "checking";
   const incompatible = mode === "incompatible";
   const providerMissing = mode === "provider";
-  const pillText = checking ? "正在连接训练协调器" : ready ? "训练协调器已就绪" : providerMissing ? "模型服务待配置" : incompatible ? "AI 服务版本不兼容" : "训练协调器未连接";
-  const composerText = checking ? "正在连接训练协调器" : ready ? "训练协调器已连接" : providerMissing ? "先连接模型服务" : incompatible ? "服务版本不兼容 · 对话已暂停" : "训练协调器未连接 · 对话已暂停";
+  const pillText = checking ? "正在连接 AI 服务" : ready ? "AI 服务已连接" : providerMissing ? "模型服务待配置" : incompatible ? "AI 服务版本不兼容" : "AI 服务未连接";
+  const composerText = checking ? "正在连接 AI" : ready ? "AI 已连接" : providerMissing ? "先连接模型服务" : incompatible ? "服务版本不兼容 · 对话已暂停" : "AI 未连接 · 对话已暂停";
   ui.runtimePill.dataset.state = checking ? "checking" : ready ? "ready" : "error";
   ui.runtimePill.querySelector("span").textContent = pillText; ui.runtimePill.title = pillText; ui.runtimePill.setAttribute("aria-label", pillText);
-  ui.composerMode.dataset.state = checking ? "checking" : ready ? "agent" : "local"; ui.composerModeLabel.textContent = composerText; ui.composerMode.title = ready ? "训练协调器可以理解需求、动态规划并调度训练团队" : providerMissing ? "模型服务尚未配置，因此不会创建任务或启动对话" : checking ? composerText : "当前只允许查看任务事实和手动打开证据面板；不会用固定流程冒充智能协作";
+  ui.composerMode.dataset.state = checking ? "checking" : ready ? "agent" : "local"; ui.composerModeLabel.textContent = composerText; ui.composerMode.title = ready ? "当前对话可用；只有发生真实工具调用或专家委派时，具体角色才会出现在执行过程里" : providerMissing ? "模型服务尚未配置，因此不会创建任务或启动对话" : checking ? composerText : "当前只允许查看任务事实和手动打开证据面板；不会用固定流程冒充智能协作";
   ui.messageInput.disabled = false; ui.sendButton.disabled = !ready; ui.composerWrap.dataset.runtime = ready ? "agent" : checking ? "checking" : "unavailable";
-  if (!ready) ui.messageInput.placeholder = checking ? "正在连接训练协调器…" : providerMissing ? "请先在本机配置模型服务，再开始训练任务" : incompatible ? "AI 服务版本不兼容，请重启正式服务" : "训练协调器未连接，暂时不能创建或继续对话任务";
+  if (!ready) ui.messageInput.placeholder = checking ? "正在连接 AI…" : providerMissing ? "请先在本机配置模型服务，再开始训练任务" : incompatible ? "AI 服务版本不兼容，请重启正式服务" : "AI 未连接，暂时不能创建或继续对话";
   else ui.messageInput.placeholder = state.selectedTaskId ? "继续询问或补充下一步要求…" : "告诉我，你希望模型帮你完成什么？";
   if (providerMissing) showRuntimeSetupNotice("模型服务尚未配置。请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动；在此之前不会创建训练任务。");
   else if (ui.composerNotice.dataset.runtimeSetup === "true") hideNotice();
@@ -672,8 +713,8 @@ function runtimeDisplayMode() { return state.runtimeReady ? "agent" : state.runt
 function renderProductBoundary() {
   const byomExecutionAvailable = state.productRuntime?.byom_execution_available === true;
   if (ui.homeBoundary) ui.homeBoundary.textContent = byomExecutionAvailable
-    ? "说清楚你想解决的问题就够了。训练协调器会和你一起澄清目标、查找开源模型，并在确认后进入可验证的训练与评测。"
-    : "说清楚你想解决的问题就够了。训练协调器会和你一起澄清目标、查找开源模型，并在每个关键决定前停下来确认。";
+    ? "说清楚你想解决的问题就够了。AI 会和你一起澄清目标、查找开源模型，并在确认后进入可验证的训练与评测。"
+    : "说清楚你想解决的问题就够了。AI 会和你一起澄清目标、查找开源模型，并在每个关键决定前停下来确认。";
   if (ui.homeTrainingProof) {
     ui.homeTrainingProof.lastChild.textContent = byomExecutionAvailable ? "确认后进入真实训练" : "确认方案后才执行";
   }
@@ -717,7 +758,10 @@ async function loadTaskSpecFamilies() {
 async function loadTasks({ selectFromUrl = false } = {}) {
   state.tasks = (await request("/tasks", { timeoutMs: 12_000 })).tasks || []; renderTaskList();
   if (selectFromUrl && !state.selectedTaskId) {
-    const requested = new URL(location.href).searchParams.get("task");
+    const params = new URL(location.href).searchParams;
+    const requestedConversation = params.get("conversation");
+    if (requestedConversation) { await selectConversation(requestedConversation); return; }
+    const requested = params.get("task");
     if (!requested) { enterHomeState({ focusComposer: false }); return; }
     if (state.tasks.some((task) => task.task_id === requested)) { await selectTask(requested); return; }
     enterHomeState({ focusComposer: false });
@@ -771,14 +815,14 @@ function enterHomeState({ focusComposer = true } = {}) {
   renderRuntimeMode(runtimeDisplayMode()); syncComposerDelivery(null); restoreDraft(null); renderTaskList(); closeSidebar(); closeInspector(); if (focusComposer && state.runtimeReady) ui.messageInput.focus();
 }
 function openNewTask() {
-  saveDraft(); clearDraft(null); clearComposerAttachment({ force: true }); clearComposerRetry(); ui.messageInput.value = ""; resizeComposer(); stopPolling(); state.selectionToken += 1; Object.assign(state, { selectedTaskId: null, task: null, conversation: null, runEvents: [], pendingMessage: null, lastRenderKey: "", taskSpecRevisions: [], taskSpecDescriptionMode: false, taskSpecQuickReplyKey: "", taskSpecAlternativesOpen: false });
+  saveDraft(); clearDraft(null); clearComposerAttachment({ force: true }); clearComposerRetry(); ui.messageInput.value = ""; resizeComposer(); stopPolling(); state.selectionToken += 1; Object.assign(state, { selectedTaskId: null, task: null, conversationRecord: null, conversation: null, runEvents: [], pendingMessage: null, lastRenderKey: "", taskSpecRevisions: [], taskSpecDescriptionMode: false, taskSpecQuickReplyKey: "", taskSpecAlternativesOpen: false });
   restoreCheckpointCard(); state.workspaceAutoKey = null; state.workspaceDismissedKey = null; state.workspaceProjection = null; state.inspectorAutoOpened = false;
   resetHfDiscovery(); resetModelSourceDiscovery(); resetRunEvidence();
   enterHomeState();
 }
 async function selectTask(taskId, { saveCurrentDraft = true } = {}) {
   if (taskId !== state.selectedTaskId) { if (saveCurrentDraft) saveDraft(); restoreCheckpointCard(); resetHfDiscovery(); resetModelSourceDiscovery(); resetRunEvidence(); state.conversation = null; state.workspaceAutoKey = null; state.workspaceDismissedKey = null; state.workspaceProjection = null; state.inspectorAutoOpened = false; state.taskSpecRevisions = []; state.taskSpecDescriptionMode = false; state.taskSpecQuickReplyKey = ""; state.taskSpecAlternativesOpen = false; }
-  syncComposerAttachmentOwner(taskId); clearComposerRetry(); stopPolling(); hideNotice(); const token = ++state.selectionToken; state.selectedTaskId = taskId; state.lastRenderKey = ""; state.pendingMessage = state.pendingMessage?.task_id === taskId ? state.pendingMessage : null; history.replaceState(null, "", `${location.pathname}?task=${encodeURIComponent(taskId)}`);
+  syncComposerAttachmentOwner(taskId); clearComposerRetry(); stopPolling(); hideNotice(); const token = ++state.selectionToken; state.selectedTaskId = taskId; state.conversationRecord = null; state.lastRenderKey = ""; state.pendingMessage = state.pendingMessage?.task_id === taskId ? state.pendingMessage : null; history.replaceState(null, "", `${location.pathname}?task=${encodeURIComponent(taskId)}`);
   document.body.dataset.view = "task"; ui.conversationMain.append(ui.composerWrap); renderTaskList(); ui.emptyState.hidden = true; ui.conversation.hidden = false; ui.inspector.hidden = false; ui.workspaceToggleButton.hidden = false; ui.mobileViewNav.hidden = false; ui.inspectorEmpty.hidden = true; ui.inspectorContent.hidden = false; closeSidebar(); closeInspector();
   restoreDraft(taskId); await refreshSelected({ force: true, token });
   if (state.selectedTaskId === taskId && state.selectionToken === token) {
@@ -786,11 +830,52 @@ async function selectTask(taskId, { saveCurrentDraft = true } = {}) {
     state.pollTimer = window.setInterval(() => refreshSelected({ includeConversation: false }), 6000);
   }
 }
+async function selectConversation(conversationId, { saveCurrentDraft = true, record = null } = {}) {
+  if (conversationId !== state.selectedTaskId) {
+    if (saveCurrentDraft) saveDraft();
+    restoreCheckpointCard(); resetHfDiscovery(); resetModelSourceDiscovery(); resetRunEvidence();
+    state.conversation = null; state.workspaceAutoKey = null; state.workspaceDismissedKey = null; state.workspaceProjection = null; state.inspectorAutoOpened = false;
+    state.taskSpecRevisions = []; state.taskSpecDescriptionMode = false; state.taskSpecQuickReplyKey = ""; state.taskSpecAlternativesOpen = false;
+  }
+  syncComposerAttachmentOwner(conversationId); clearComposerRetry(); stopPolling(); hideNotice();
+  const token = ++state.selectionToken; state.selectedTaskId = conversationId; state.conversationRecord = record || { conversation_id: conversationId, status: "unbound", title: "新对话" }; state.task = conversationDraftTask(state.conversationRecord); state.lastRenderKey = "";
+  state.pendingMessage = state.pendingMessage?.task_id === conversationId ? state.pendingMessage : null;
+  history.replaceState(null, "", `${location.pathname}?conversation=${encodeURIComponent(conversationId)}`);
+  document.body.dataset.view = "conversation"; ui.conversationMain.append(ui.composerWrap); renderTaskList(); ui.emptyState.hidden = true; ui.conversation.hidden = false;
+  ui.inspector.hidden = true; ui.workspaceToggleButton.hidden = true; ui.mobileViewNav.hidden = true; ui.inspectorEmpty.hidden = false; ui.inspectorContent.hidden = true; ui.agentCheckpoint.hidden = true; closeSidebar(); closeInspector();
+  restoreDraft(conversationId); await refreshSelected({ force: true, token });
+  if (state.selectedTaskId === conversationId && state.selectionToken === token) {
+    startConversationStream(conversationId, token);
+    state.pollTimer = window.setInterval(() => refreshSelected({ includeConversation: false }), 6000);
+  }
+}
 async function refreshSelected({ force = false, token = state.selectionToken, includeConversation = true } = {}) {
   const taskId = state.selectedTaskId; if (!taskId || token !== state.selectionToken) return;
   if (state.refreshInFlight && !force) return;
   const seq = ++state.refreshSeq; state.refreshInFlight = true;
+  let promotedFromConversation = false;
   try {
+    if (isConversationDraft()) {
+      try {
+        const owner = await request(`/conversations/${encodeURIComponent(taskId)}`);
+        if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
+        state.conversationRecord = owner.conversation;
+        if (!owner.task) {
+          state.task = conversationDraftTask(owner.conversation);
+          checkpointCards.forEach((card) => { card.hidden = true; }); ui.agentCheckpoint.hidden = true;
+          if (includeConversation) await reconcileConversation(taskId, token, { render: false });
+          renderConversation(force);
+          return;
+        }
+        promotedFromConversation = true; state.task = owner.task;
+        state.tasks = [owner.task, ...state.tasks.filter((item) => item.task_id !== taskId)]; renderTaskList();
+        history.replaceState(null, "", `${location.pathname}?task=${encodeURIComponent(taskId)}`);
+        document.body.dataset.view = "task"; ui.inspector.hidden = false; ui.workspaceToggleButton.hidden = false; ui.mobileViewNav.hidden = false; ui.inspectorEmpty.hidden = true; ui.inspectorContent.hidden = false;
+      } catch (error) {
+        if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
+        showNotice(error.message); return;
+      }
+    }
     try {
       const previousSpecRevision = state.task?.task_id === taskId ? state.task.current_spec_revision : null;
       const response = await request(`/tasks/${encodeURIComponent(taskId)}`); if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return; state.task = response.task; await reconcileComposerDatasetUpload(response.task); if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
@@ -844,6 +929,7 @@ async function refreshSelected({ force = false, token = state.selectionToken, in
       await loadTasks();
       if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
     }
+    if (promotedFromConversation && state.selectedTaskId === taskId && token === state.selectionToken) startConversationStream(taskId, token);
   } finally {
     if (seq === state.refreshSeq) state.refreshInFlight = false;
   }
@@ -914,7 +1000,7 @@ async function reconcileConversation(taskId, token, { render = true } = {}) {
   const seq = ++state.conversationReconcileSeq; const cursorBefore = state.conversationStreamCursor; state.conversationReconcileInFlight = true;
   const operation = (async () => {
     try {
-      const remoteConversation = (await request(`/tasks/${encodeURIComponent(taskId)}/conversation`)).conversation;
+      const remoteConversation = (await request(conversationTransportPath(taskId, "snapshot"))).conversation;
       if (seq !== state.conversationReconcileSeq || cursorBefore !== state.conversationStreamCursor) return false;
       if (!acceptConversationSnapshot(taskId, token, remoteConversation)) { markConversationStreamDegraded("全量对话返回了不兼容的证据合同。"); return false; }
       if (render) renderConversation(true);
@@ -995,7 +1081,7 @@ function startConversationStream(taskId, token) {
   if (state.conversationStreamCursor !== null) query.set("after_seq", String(state.conversationStreamCursor));
   const expectedRevision = state.conversationStreamRevision || state.productRuntime?.agent?.conversation_projector_revision;
   if (expectedRevision) query.set("projector_revision", expectedRevision);
-  const source = new EventSource(`/tasks/${encodeURIComponent(taskId)}/conversation/stream${query.size ? `?${query}` : ""}`);
+  const source = new EventSource(`${conversationTransportPath(taskId, "stream")}${query.size ? `?${query}` : ""}`);
   state.conversationStream = source; state.conversationStreamTaskId = taskId;
   const current = () => state.conversationStream === source && state.selectedTaskId === taskId && state.selectionToken === token;
   source.addEventListener("snapshot", (event) => {
@@ -1054,15 +1140,16 @@ function syncConversationComposerPlaceholder(conversation = state.conversation, 
   const checkpoint = currentHumanCheckpoint(conversation);
   const uploadCheckpoint = dataUploadQuestionCheckpoint(checkpoint);
   const actionLabel = ["clarify_task_spec", "confirm_task_spec"].includes(task?.control?.next_action?.id) ? "确认任务理解" : task?.control?.next_action?.label;
-  if (!state.runtimeReady) ui.messageInput.placeholder = "训练协调器未连接，暂时不能继续对话";
+  if (!state.runtimeReady) ui.messageInput.placeholder = "AI 未连接，暂时不能继续对话";
   else if (state.cancelRequestInFlight || backgroundCancellationPending(conversation)) ui.messageInput.placeholder = "正在停止当前执行，请等待后端确认…";
   else if (uploadCheckpoint) ui.messageInput.placeholder = "请先在上方选择 CSV 文件…";
   else if (checkpoint?.kind === "question") ui.messageInput.placeholder = "直接回答当前问题…";
   else if (checkpoint?.kind === "approval") ui.messageInput.placeholder = "请使用上方的批准或拒绝按钮…";
   else if (conversationAgentResponseRunning(conversation)) ui.messageInput.placeholder = "补充下一步要求；消息将在本轮结束后处理…";
-  else if (conversationHasBackgroundTraining(conversation)) ui.messageInput.placeholder = "继续和训练协调器交流；后台训练不会阻塞新消息…";
-  else if (state.taskSpecDescriptionMode && stageKey(task) === "task_understanding") ui.messageInput.placeholder = "直接告诉训练协调器：模型接收什么、应该输出什么…";
-  else if (actionLabel) ui.messageInput.placeholder = `告诉训练协调器：${actionLabel}…`;
+  else if (conversationHasBackgroundTraining(conversation)) ui.messageInput.placeholder = "继续和 AI 交流；后台训练不会阻塞新消息…";
+  else if (isConversationDraft(state.conversationRecord, task)) ui.messageInput.placeholder = "继续补充你的目标、场景或限制…";
+  else if (state.taskSpecDescriptionMode && stageKey(task) === "task_understanding") ui.messageInput.placeholder = "直接告诉 AI：模型接收什么、应该输出什么…";
+  else if (actionLabel) ui.messageInput.placeholder = `告诉 AI：${actionLabel}…`;
   else ui.messageInput.placeholder = "继续询问或补充下一步要求…";
 }
 function renderTask(task) {
@@ -1943,6 +2030,7 @@ function localConversation(task) {
   return { items: [], pending: [], running: false };
 }
 function taskEvidenceLedger(task) {
+  if (isConversationDraft(state.conversationRecord, task)) return [];
   const ledger = []; const revisions = state.taskSpecRevisions.length ? state.taskSpecRevisions : task.task_spec ? [task.task_spec] : [];
   if (state.conversation && !state.conversation.session_id) {
     ledger.push({
@@ -1950,7 +2038,7 @@ function taskEvidenceLedger(task) {
       source: "persisted_task_projection",
       status: "warning",
       evidenceKey: `unsent:${task.task_id}`,
-      label: "任务已保存，尚未交给训练协调器",
+      label: "任务已保存，消息尚未发给 AI",
       detail: "业务目标仍是任务草稿，不代表消息已经发送。请在下方发送或使用“发送任务目标”继续。",
       time: task.created_at_utc,
     });
@@ -2161,15 +2249,16 @@ function renderProjectionHealth(conversation) {
   card.append(mark, copy, action); ui.messageList.append(card);
 }
 function renderAgentSurfaceState(conversation, projection) {
-  const specialists = projectionSpecialists(projection);
-  const activeSpecialists = activeProjectionSpecialists(projection);
   const hasSession = Boolean(conversation?.session_id || state.conversation?.session_id);
-  if (state.runtimeReady && hasSession && activeSpecialists.length) return;
-  const card = document.createElement("article"); card.className = "agent-surface-state"; card.dataset.state = state.runtimeReady ? "ready" : "unavailable";
-  const mark = document.createElement("span"); mark.textContent = state.runtimeReady ? "AI" : "!";
+  // A healthy conversation should look like a conversation. Agent identity and
+  // delegation belong to the concrete AI turn that produced those actions,
+  // not to a persistent banner above every message.
+  if (state.runtimeReady && hasSession) return;
+  const card = document.createElement("article"); card.className = "agent-surface-state"; card.dataset.state = state.runtimeReady ? "unsent" : "unavailable";
+  const mark = document.createElement("span"); mark.textContent = state.runtimeReady ? "↗" : "!"; mark.setAttribute("aria-hidden", "true");
   const copy = document.createElement("div"); const title = document.createElement("b"); const detail = document.createElement("p");
-  title.textContent = state.runtimeReady ? hasSession ? "当前由训练协调器处理" : "任务已保存，尚未发送" : state.runtimeIssue === "provider" ? "模型服务尚未配置，对话已暂停" : state.runtimeIssue === "incompatible" ? "AI 服务版本不兼容，对话已暂停" : "训练协调器未连接，对话已暂停";
-  detail.textContent = state.runtimeReady ? hasSession ? specialists.length ? `当前没有训练团队成员在执行；本任务保留 ${specialists.length} 类已验证协作记录。再次分工时，新动作会实时出现在对话中。` : "当前由训练协调器处理。需要模型检索、数据诊断、资源评估或训练时，训练团队及其真实动作才会出现在对话中。" : "这个任务只有已保存的业务目标，还没有被训练协调器接收。发送后才会创建真实 Agent 会话并开始回应。" : state.runtimeIssue === "provider" ? "请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动。完成前只能查看已保存的任务与证据，不会创建新任务或伪装智能体结果。" : state.runtimeIssue === "incompatible" ? "当前页面与智能协作服务的协议不匹配。页面不会把旧会话或固定步骤当成实时进展，请重启正式服务。" : "当前页面只能查看已经保存的任务与证据；无法理解新需求、生成计划或调度训练团队，也不会用固定步骤冒充实时进度。";
+  title.textContent = state.runtimeReady ? "任务已保存，消息尚未发送" : state.runtimeIssue === "provider" ? "模型服务尚未配置，对话已暂停" : state.runtimeIssue === "incompatible" ? "AI 服务版本不兼容，对话已暂停" : "AI 服务未连接，对话已暂停";
+  detail.textContent = state.runtimeReady ? "这个任务目前只有已保存的目标，还没有建立 AI 会话。重新发送后，回复和执行过程才会出现在这里。" : state.runtimeIssue === "provider" ? "请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动。完成前只能查看已保存的任务与证据，不会创建新任务或伪装智能体结果。" : state.runtimeIssue === "incompatible" ? "当前页面与智能协作服务的协议不匹配。页面不会把旧会话或固定步骤当成实时进展，请重启正式服务。" : "当前页面只能查看已经保存的任务与证据；无法理解新需求、生成计划或调度训练团队，也不会用固定步骤冒充实时进度。";
   copy.append(title, detail); card.append(mark, copy);
   if (state.runtimeReady && !hasSession) {
     const action = document.createElement("button"); action.type = "button"; action.textContent = "发送任务目标";
@@ -2191,7 +2280,7 @@ function renderAgentSurfaceState(conversation, projection) {
           await refreshSelected({ force: true });
           startConversationStream(state.selectedTaskId, state.selectionToken);
         } else if (state.runtimeIssue === "provider") showRuntimeSetupNotice("模型服务仍未配置。请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动；在此之前不会创建训练任务。");
-        else showNotice("训练协调器仍未连接；没有启动任何固定流程替代智能协作。");
+        else showNotice("AI 仍未连接；没有启动任何固定流程替代智能协作。");
       } finally { setButtonBusy(action, false, ""); }
     });
     card.append(action);
@@ -2201,21 +2290,24 @@ function renderAgentSurfaceState(conversation, projection) {
 function renderConversation(force = false) {
   const conversation = conversationView(state.task, state.conversation);
   const projection = interactionProjection(state.task, conversation);
+  const draftConversation = isConversationDraft();
   syncConversationComposerPlaceholder(conversation, state.task);
   const workItems = projectionWorkItems(projection);
   const activeSpecialists = activeProjectionSpecialists(projection);
   if (state.runtimeReady) {
-    ui.composerModeLabel.textContent = activeSpecialists.length ? `训练协调器 · ${activeSpecialists.length} 位专家协作中` : "训练协调器";
-    ui.composerMode.title = activeSpecialists.length ? "只统计当前仍在执行、且父子会话身份已验证的专家" : "当前没有专家在执行；历史专家记录不会冒充当前参与者";
+    ui.composerModeLabel.textContent = "AI 已连接";
+    ui.composerMode.title = activeSpecialists.length ? "当前存在真实专家委派；具体分工只在对应 AI 回合的执行过程中展示" : "当前对话可用；没有真实委派时不显示专家或内部调度信息";
   }
   syncComposerDelivery(conversation);
-  if (state.task) { syncTaskHeader(state.task, conversation, projection); syncTaskSpecCheckpointOwnership(conversation); syncLegacyConfirmationControls(state.task, conversation); syncSelectedTaskListStatus(conversation); }
+  if (state.task) syncTaskHeader(state.task, conversation, projection);
+  if (state.task && !draftConversation) { syncTaskSpecCheckpointOwnership(conversation); syncLegacyConfirmationControls(state.task, conversation); syncSelectedTaskListStatus(conversation); }
   const observation = conversationObservationKey(conversation);
   const optimistic = state.pendingMessage?.task_id === state.selectedTaskId ? state.pendingMessage : null;
   const items = [...(conversation.items || [])];
   const hasRuntimeCheckpoint = Boolean(projection.checkpoint);
   if (hasRuntimeCheckpoint) ui.agentCheckpoint.hidden = true;
-  else if (state.task) syncAgentCheckpoint(state.task);
+  else if (state.task && !draftConversation) syncAgentCheckpoint(state.task);
+  else ui.agentCheckpoint.hidden = true;
   const backgroundRun = activeBackgroundTrainingRun(conversation);
   const serverCancelling = backgroundCancellationPending(conversation);
   const renderKey = JSON.stringify({ schema: conversation.schema_version, actionSchema: conversation.action_schema_version, items: conversation.items, actions: conversation.actions, agents: conversation.agents, delegations: conversation.delegations, workItems: conversation.work_items, running: conversation.running, executionRunning: conversation.execution_running, agentResponseRunning: conversation.agent_response_running, backgroundActionRunning: conversation.background_action_running, trainingRun: backgroundRun ? [backgroundRun.training_run_id || backgroundRun.run_id || backgroundRun.action_id, backgroundRun.status, backgroundRun.domain_status, backgroundRun.cancel_requested] : null, interactionState: conversation.interaction_state, canonicalInteraction: conversation.interaction_projection, phase: projection.phase, workspace: projection.workspace, canCancelAgent: conversation.can_cancel_agent, active: conversation.active_event?.action_id || conversation.active_event?.event_id || conversation.active_event?.training_run_id || conversation.active_event?.run_id, observation, optimistic: optimistic?.text, taskStatus: state.task?.status, runtimeReady: state.runtimeReady, sessionId: state.conversation?.session_id || null });
@@ -2223,7 +2315,7 @@ function renderConversation(force = false) {
   const nearBottom = ui.conversation.scrollHeight - ui.conversation.scrollTop - ui.conversation.clientHeight < 120; clear(ui.messageList); ui.messageList.dataset.projectionHealth = conversation.projection_health?.status || "unknown"; renderProjectionHealth(conversation); renderAgentSurfaceState(conversation, projection);
   projection.turns.forEach((turn) => renderConversationTurn(turn, projection, conversation, workItems));
   if (optimistic && !items.some((item) => item.kind === "message" && item.role === "user" && item.text === optimistic.text)) renderConversationItem({ kind: "message", role: "user", text: optimistic.text, time: optimistic.time, optimistic: true });
-  renderWorkspaceExperience(state.task, conversation, projection);
+  if (!draftConversation) renderWorkspaceExperience(state.task, conversation, projection);
   ui.conversationIntro.hidden = projection.turns.length > 0 || Boolean(projection.actions?.length);
   const agentResponseRunning = conversationAgentResponseRunning(conversation);
   const backgroundTrainingRunning = conversationHasBackgroundTraining(conversation);
@@ -2232,8 +2324,8 @@ function renderConversation(force = false) {
   ui.agentWorking.hidden = !fallbackWorkingSurface;
   ui.cancelAgentButton.hidden = Boolean(currentAiTurn) || (conversation.can_cancel_agent !== true && !backgroundRun);
   if (optimistic && !agentResponseRunning && !backgroundTrainingRunning) ui.agentWorkingLabel.textContent = "正在发送";
-  else if (backgroundTrainingRunning) ui.agentWorkingLabel.textContent = `后台训练 ${shortId(backgroundRun?.training_run_id || backgroundRun?.run_id || backgroundRun?.action_id)} 正在运行；你可以继续和训练协调器交流`;
-  else if (agentResponseRunning && !conversation.active_event) ui.agentWorkingLabel.textContent = "训练协调器正在处理";
+  else if (backgroundTrainingRunning) ui.agentWorkingLabel.textContent = `后台训练 ${shortId(backgroundRun?.training_run_id || backgroundRun?.run_id || backgroundRun?.action_id)} 正在运行；你可以继续对话`;
+  else if (agentResponseRunning && !conversation.active_event) ui.agentWorkingLabel.textContent = "AI 正在处理";
   else ui.agentWorkingLabel.textContent = agentActivityLabel(conversation.active_event);
   syncCancelRequestUi(conversation);
   if (force || nearBottom) requestAnimationFrame(() => { ui.conversation.scrollTop = ui.conversation.scrollHeight; });
@@ -2678,8 +2770,8 @@ function finalSynthesisFallbackRefs(item) {
 }
 function renderFinalSynthesis(item, target = ui.messageList) {
   const row = document.createElement("article"); row.className = "message"; row.dataset.role = "assistant"; row.dataset.messageType = "final_synthesis"; row.dataset.interactionKind = "natural-dialogue"; const avatar = document.createElement("span"); avatar.className = "message-avatar"; avatar.textContent = "AI";
-  const body = document.createElement("div"); body.className = "message-body"; const meta = document.createElement("div"); meta.className = "message-meta"; const author = document.createElement("b"); author.textContent = "训练协调器"; const time = document.createElement("time"); time.textContent = formatTime(item.time); meta.append(author, time);
-  const copy = document.createElement("div"); copy.className = "message-copy"; renderRichText(copy, item.text || item.summary || "训练协调器没有返回综合结论。"); body.append(meta, copy);
+  const body = document.createElement("div"); body.className = "message-body"; const meta = document.createElement("div"); meta.className = "message-meta"; const author = document.createElement("b"); author.textContent = "AI"; const time = document.createElement("time"); time.textContent = formatTime(item.time); meta.append(author, time);
+  const copy = document.createElement("div"); copy.className = "message-copy"; renderRichText(copy, item.text || item.summary || "AI 没有返回综合结论。"); body.append(meta, copy);
   const projection = interactionProjection(state.task, conversationView(state.task, state.conversation)); if (!appendTerminalResultCard(item, body, projection)) appendObjectRefs(body, finalSynthesisFallbackRefs(item));
   row.append(avatar, body); target.append(row);
 }
@@ -2714,8 +2806,8 @@ function appendCoordinatorNextAction(body, item) {
 function renderCoordinatorNote(item, target = ui.messageList) {
   const row = document.createElement("article"); row.className = "message"; row.dataset.role = "assistant"; row.dataset.messageType = "coordinator_note"; row.dataset.interactionKind = "natural-dialogue";
   const avatar = document.createElement("span"); avatar.className = "message-avatar"; avatar.textContent = "AI";
-  const body = document.createElement("div"); body.className = "message-body"; const meta = document.createElement("div"); meta.className = "message-meta"; const author = document.createElement("b"); author.textContent = "训练协调器"; const truth = document.createElement("span"); truth.className = "message-truth"; truth.textContent = "协调器说明"; truth.title = "这是过程说明，最终结果以任务证据为准"; const time = document.createElement("time"); time.textContent = formatTime(item.time); meta.append(author, truth, time);
-  const content = item.text || item.summary || "训练协调器没有提供说明。"; body.append(meta);
+  const body = document.createElement("div"); body.className = "message-body"; const meta = document.createElement("div"); meta.className = "message-meta"; const author = document.createElement("b"); author.textContent = "AI"; const truth = document.createElement("span"); truth.className = "message-truth"; truth.textContent = "过程说明"; truth.title = "这是当前回合的过程说明，最终结果以任务证据为准"; const time = document.createElement("time"); time.textContent = formatTime(item.time); meta.append(author, truth, time);
+  const content = item.text || item.summary || "AI 没有提供说明。"; body.append(meta);
   if (content.length > 700 || content.split(/\r?\n/u).length > 10) {
     const preview = document.createElement("div"); preview.className = "message-copy message-preview"; renderRichText(preview, conversationPreview(content)); body.append(preview);
     const details = document.createElement("details"); details.className = "message-detail"; const summary = document.createElement("summary"); summary.textContent = "查看完整技术说明"; const copy = document.createElement("div"); copy.className = "message-copy"; renderRichText(copy, content); details.append(summary, copy); body.append(details);
@@ -2764,7 +2856,7 @@ function agentActivityLabel(active) {
 function renderCoordinatorPlan(item, target = ui.messageList) {
   if (item.compact) { renderCoordinatorProgress(item, target); return; }
   const card = document.createElement("article"); card.className = "coordinator-plan"; card.dataset.status = item.status;
-  const header = document.createElement("header"); const heading = document.createElement("div"); const kicker = document.createElement("span"); kicker.textContent = "训练协调器计划"; const title = document.createElement("h3"); title.textContent = item.title || "本轮执行计划"; heading.append(kicker, title); const status = document.createElement("b"); status.textContent = eventStatusLabel(item.status); header.append(heading, status); card.append(header);
+  const header = document.createElement("header"); const heading = document.createElement("div"); const kicker = document.createElement("span"); kicker.textContent = "本轮计划"; const title = document.createElement("h3"); title.textContent = item.title || "接下来这样推进"; heading.append(kicker, title); const status = document.createElement("b"); status.textContent = eventStatusLabel(item.status); header.append(heading, status); card.append(header);
   if (item.summary) { const summary = document.createElement("div"); summary.className = "coordinator-plan-summary"; renderRichText(summary, item.summary); card.append(summary); }
   const steps = Array.isArray(item.steps) ? item.steps : Array.isArray(item.plan?.steps) ? item.plan.steps : [];
   if (steps.length) { const list = document.createElement("ol"); list.className = "coordinator-plan-steps"; steps.forEach((step) => { const row = document.createElement("li"); row.dataset.status = step.status || "queued"; const mark = document.createElement("i"); mark.textContent = step.status === "completed" ? "✓" : step.status === "failed" ? "!" : String(step.order || step.index || list.children.length + 1); const copy = document.createElement("span"); const name = document.createElement("b"); name.textContent = step.title || step.goal || "计划步骤"; const owner = document.createElement("small"); owner.textContent = roleLabel(step.owner_role || step.role); copy.append(name, owner); row.append(mark, copy); list.append(row); }); card.append(list); }
@@ -2954,17 +3046,16 @@ function appendObjectRefs(container, refs = []) {
 async function submitMessage(message) {
   const text = message.trim(); if (!text) return; let attemptedTaskId = state.selectedTaskId; clearComposerRetry("message"); hideNotice(); ui.sendButton.disabled = true; ui.sendButton.dataset.busy = "true";
   try {
-    if (!state.runtimeReady) { if (state.runtimeIssue === "provider") showRuntimeSetupNotice("模型服务尚未配置。请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动；在此之前不会创建训练任务。"); else showNotice("训练协调器未连接：没有创建或修改任务，也没有启动固定流程替代智能协作。请先恢复连接。", "error"); return; }
+    if (!state.runtimeReady) { if (state.runtimeIssue === "provider") showRuntimeSetupNotice("模型服务尚未配置。请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动；在此之前不会创建训练任务。"); else showNotice("AI 未连接：没有创建或修改任务，也没有启动固定流程替代对话。请先恢复连接。", "error"); return; }
     if (state.cancelRequestInFlight || backgroundCancellationPending(state.conversation)) { showNotice("当前执行正在停止。为避免新消息与取消请求发生竞态，请等待后端确认最终状态。", "ok"); return; }
     if (!state.selectedTaskId) {
       const creation = beginTaskCreationSubmission(text);
       try {
-        const created = await request("/tasks", {
+        const created = await request("/conversations", {
           method: "POST",
           timeoutMs: 20_000,
           json: {
-            name: deriveTaskName(text),
-            business_goal: text,
+            title: "新对话",
             initial_message: text,
             create_request_id: creation.create_request_id,
             message_request_id: creation.request_id,
@@ -2972,16 +3063,16 @@ async function submitMessage(message) {
         });
         const status = runtimeStatusToken(created?.submission?.status);
         if (created?.submission?.accepted !== true || ["failed", "cancelled", "canceled", "rejected", "interrupted"].includes(status)) {
-          const error = new Error(structuredErrorMessage(created?.submission, "训练协调器没有接收首条消息"));
+          const error = new Error(structuredErrorMessage(created?.submission, "AI 没有接收首条消息"));
           error.payload = created;
           throw error;
         }
-        const taskId = created.task.task_id; attemptedTaskId = taskId; creation.task_id = taskId;
-        state.pendingMessage = { task_id: taskId, text, time: Date.now() };
-        state.messageSubmission = null; state.tasks = [created.task, ...state.tasks.filter((item) => item.task_id !== taskId)];
-        clearDraft(null); ui.messageInput.value = ""; resizeComposer(); await selectTask(taskId, { saveCurrentDraft: false });
-        clearComposerRetry("message"); clearDraft(taskId); if (state.selectedTaskId === taskId) { ui.messageInput.value = ""; resizeComposer(); }
-        showTransientNotice(created.created === false ? "任务已恢复，首条消息已经交给训练协调器。" : "任务已创建，首条消息已经交给训练协调器。", "ok");
+        const conversationId = created.conversation.conversation_id; attemptedTaskId = conversationId; creation.task_id = conversationId;
+        state.pendingMessage = { task_id: conversationId, text, time: Date.now() };
+        state.messageSubmission = null;
+        clearDraft(null); ui.messageInput.value = ""; resizeComposer(); await selectConversation(conversationId, { saveCurrentDraft: false, record: created.conversation });
+        clearComposerRetry("message"); clearDraft(conversationId); if (state.selectedTaskId === conversationId) { ui.messageInput.value = ""; resizeComposer(); }
+        showTransientNotice(created.created === false ? "对话已恢复，AI 正在继续处理。" : "对话已开始，AI 正在理解你的需求。", "ok");
         window.setTimeout(() => refreshSelected({ force: true }), 250); return;
       } catch (error) {
         const detail = error?.payload?.detail;
@@ -2997,11 +3088,11 @@ async function submitMessage(message) {
       if (inferenceInputQuestionCheckpoint(checkpoint)) { const field = ui.messageList.querySelector(".inference-input-checkpoint .inference-sample-json"); const choose = ui.messageList.querySelector(".inference-input-checkpoint .checkpoint-upload-button"); if (field) field.focus(); else choose?.click(); showNotice("这个问题需要一份未参与训练的新样本。样本会先安全暂存，真正试跑前仍会单独征求你的批准。", "ok"); return; }
       if (checkpoint.questions?.length !== 1) { openQuestionDialog(checkpoint); showNotice("这组问题需要分别回答，已为你打开结构化回答面板。", "ok"); return; }
       const question = checkpoint.questions[0]; if (!question?.id) { showNotice("当前问题缺少可验证身份，无法把文字回答写入该检查点。请刷新后重试。", "error"); return; }
-      await postQuestionAnswers(checkpoint, [{ id: question.id, selected: [], custom: text }]); clearDraft(state.selectedTaskId); ui.messageInput.value = ""; resizeComposer(); showNotice("回答已提交给当前问题，协调器会从同一任务继续。", "ok"); await refreshSelected({ force: true }); return;
+      await postQuestionAnswers(checkpoint, [{ id: question.id, selected: [], custom: text }]); clearDraft(state.selectedTaskId); ui.messageInput.value = ""; resizeComposer(); showNotice("回答已提交，AI 会从当前对话继续。", "ok"); await refreshSelected({ force: true }); return;
     }
     const taskId = state.selectedTaskId; attemptedTaskId = taskId; const queuedAfterTurn = conversationAgentResponseRunning(state.conversation);
     await postQueuedConversationMessage(taskId, text); clearComposerRetry("message"); clearDraft(taskId); if (state.selectedTaskId === taskId) { ui.messageInput.value = ""; resizeComposer(); }
-    showTransientNotice(queuedAfterTurn ? "消息已排队，将在本轮结束后继续。" : "消息已提交给训练协调器。", "ok"); window.setTimeout(() => refreshSelected({ force: true }), 250);
+    showTransientNotice(queuedAfterTurn ? "消息已排队，将在本轮结束后继续。" : "消息已发给 AI。", "ok"); window.setTimeout(() => refreshSelected({ force: true }), 250);
   } catch (error) {
     if (state.pendingMessage?.task_id === state.selectedTaskId) state.pendingMessage = null;
     const failedSubmission = state.messageSubmission?.status === "failed" ? state.messageSubmission : null;
@@ -3065,7 +3156,7 @@ function openCancelAgentDialog() {
     const cancelReason = reason.value.trim(); if (!cancelReason) { showNotice("请先填写取消理由。", "error"); return; }
     state.cancelRequestInFlight = true; syncCancelRequestUi(); setButtonBusy(allow, true, "取消中");
     try {
-      await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/conversation/cancel`, { method: "POST", json: { reason: cancelReason } });
+      await request(conversationTransportPath(state.selectedTaskId, "cancel"), { method: "POST", json: { reason: cancelReason } });
       ui.decisionDialog.close(); showNotice("停止请求已被接受，正在确认当前智能协作与任务后台动作的最终状态。", "ok");
       try { await refreshSelected({ force: true }); } catch (refreshError) { showNotice(`取消请求已提交，但状态刷新失败：${refreshError.message}。请手动刷新确认最终状态。`, "error"); }
     } catch (error) {
@@ -3088,10 +3179,10 @@ function navigateToTrainingRecoveryCheckpoint() {
   ui.messageInput.focus();
   showNotice(`请在对话中让训练协调器核对旧 Run ${shortId(result.run_id)} 的失败证据并提出恢复方案。只有随后出现的 HumanCheckpoint 才能授权创建新 Run。`, "ok");
 }
-async function answerApproval(item, outcome, button) { setButtonBusy(button, true, "提交中"); try { await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/conversation/approvals/${encodeURIComponent(item.rpc_id)}`, { method: "POST", json: { outcome } }); await refreshSelected({ force: true }); } catch (error) { showNotice(error.message); } finally { setButtonBusy(button, false, ""); } }
+async function answerApproval(item, outcome, button) { setButtonBusy(button, true, "提交中"); try { await request(conversationTransportPath(state.selectedTaskId, "approvals", item.rpc_id), { method: "POST", json: { outcome } }); await refreshSelected({ force: true }); } catch (error) { showNotice(error.message); } finally { setButtonBusy(button, false, ""); } }
 async function postQuestionAnswers(item, answers, { taskId = state.selectedTaskId } = {}) {
   if (!taskId || !item?.rpc_id) throw new Error("当前问题缺少任务或会话身份，无法提交回答");
-  return request(`/tasks/${encodeURIComponent(taskId)}/conversation/questions/${encodeURIComponent(item.rpc_id)}`, { method: "POST", json: { answers } });
+  return request(conversationTransportPath(taskId, "questions", item.rpc_id), { method: "POST", json: { answers } });
 }
 function openQuestionDialog(item) {
   clear(ui.dialogBody); clear(ui.dialogActions); ui.dialogKicker.textContent = "训练协调器正在等待"; ui.dialogTitle.textContent = item.questions?.[0]?.header || item.title || "补充训练信息"; const fields = [];

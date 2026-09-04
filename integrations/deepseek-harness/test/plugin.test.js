@@ -347,16 +347,17 @@ function jsonResponse(value, status = 200) {
 }
 
 
-test("plugin registers the complete task-first conversational toolchain", () => {
+test("plugin registers the complete conversation-first model-training toolchain", () => {
   const mounted = mountPlugin();
   assert.deepEqual(inject, ["tools", "systemPrompt"]);
   const names = new Set(mounted.tools.map((tool) => tool.name));
-  assert.equal(names.size, 54);
+  assert.equal(names.size, 55);
   for (const required of [
     "model_harness_list_tasks",
     "model_harness_list_data_adapters",
     "model_harness_match_capability",
     "model_harness_create_task",
+    "model_harness_promote_conversation",
     "model_harness_update_task_spec",
     "model_harness_get_task",
     "model_harness_clarify_task_spec",
@@ -422,6 +423,14 @@ test("plugin registers the complete task-first conversational toolchain", () => 
   assert.match(mounted.sections[0].text, /EvaluationReport/);
   assert.match(mounted.sections[0].text, /40-character commit/);
   assert.match(mounted.sections[0].text, /ask exactly one high-impact clarification question/);
+  assert.match(mounted.sections[0].text, /Conversation and training-task lifecycles are separate/);
+  assert.match(mounted.sections[0].text, /Reflect a vague request and ask one concise natural-language question/);
+  assert.match(mounted.sections[0].text, /natural intake clarification must not use ask_user_question/);
+  assert.match(mounted.sections[0].text, /sole model_harness_\* exception in intake is model_harness_promote_conversation/);
+  assert.match(mounted.sections[0].text, /Only after promotion succeeds may you call model_harness_get_task/);
+  assert.match(mounted.sections[0].text, /A greeting or general product, capability, method or process question/);
+  assert.match(mounted.sections[0].text, /do not call model_harness_get_task, create a checkpoint, delegate a specialist/);
+  assert.match(mounted.sections[0].text, /Only for current-task work, read task\.control/);
   assert.match(mounted.sections[0].text, /separate the user's desired outcome from the implementation method/);
   assert.match(mounted.sections[0].text, /first run an existing open model locally \(recommended\)/);
   assert.match(mounted.sections[0].text, /Use a human conversation contract, not an operator log/);
@@ -451,12 +460,128 @@ test("plugin registers the complete task-first conversational toolchain", () => 
   assert.match(mounted.sections[0].text, /bundle_request_sha256/);
   assert.match(mounted.sections[0].text, /Never let the child request a second native approval/);
   assert.match(mounted.sections[0].text, /never invent decorative expert activity/);
+  assert.match(mounted.sections[0].text, /Never reveal private chain-of-thought/);
+  assert.match(mounted.sections[0].text, /Mention a specialist role only inside the real action item/);
   assert.match(mounted.sections[0].text, /workspace default location/);
   assert.match(mounted.sections[0].text, /configured workspace exports directory/);
   assert.match(mounted.sections[0].text, /never infer a destination from the process working directory/);
   assert.match(mounted.sections[0].text, /requires the exact existing approval_checkpoint_id/);
   assert.match(PRESET_SOURCE, /workspace default location/);
   assert.match(PRESET_SOURCE, /configured workspace exports directory/);
+});
+
+
+test("an unbound conversation is promoted atomically without creating a second task", async () => {
+  const mounted = mountPlugin();
+  const tool = mounted.tools.find(
+    (item) => item.name === "model_harness_promote_conversation",
+  );
+  assert.ok(tool);
+  const conversationId = "task-draft-1";
+  const requests = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({
+      url: new URL(url).pathname,
+      method: options.method || "GET",
+      body: options.body ? JSON.parse(options.body) : null,
+    });
+    return jsonResponse({
+      conversation: {
+        conversation_id: conversationId,
+        status: "bound",
+        task_id: conversationId,
+      },
+      task: {
+        task_id: conversationId,
+        record_type: "training_task",
+        name: "本地普通话转写",
+        business_goal: "把普通话录音转成文字并在本地设备运行",
+        blockers: [],
+      },
+      promoted: true,
+      idempotent_replay: false,
+    });
+  };
+
+  try {
+    const result = await tool.execute({
+      conversation_id: conversationId,
+      name: "本地普通话转写",
+      business_goal: "把普通话录音转成文字并在本地设备运行",
+      capability_request: {
+        modality: "audio",
+        objective: "speech_to_text",
+        target_kind: "transcript",
+      },
+    }, {
+      callId: "promote-call-1",
+      agent: rootAgent(),
+      signal: undefined,
+    });
+
+    assert.equal(result.promoted, true);
+    assert.equal(result.task.task_id, conversationId);
+    assert.equal(
+      result.workbench_url,
+      `http://127.0.0.1:8765/app?task=${encodeURIComponent(conversationId)}`,
+    );
+    assert.deepEqual(requests, [{
+      url: `/conversations/${conversationId}/promote`,
+      method: "POST",
+      body: {
+        request_id: `conversation-promote-${createHash("sha256")
+          .update("promote-call-1")
+          .digest("hex")
+          .slice(0, 32)}`,
+        name: "本地普通话转写",
+        business_goal: "把普通话录音转成文字并在本地设备运行",
+        capability_request: {
+          modality: "audio",
+          objective: "speech_to_text",
+          target_kind: "transcript",
+        },
+      },
+    }]);
+    assert.equal(requests.some((request) => request.url === "/tasks"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
+test("conversation promotion requires a verifiable root tool call", async () => {
+  const mounted = mountPlugin();
+  const tool = mounted.tools.find(
+    (item) => item.name === "model_harness_promote_conversation",
+  );
+  assert.ok(tool);
+  await assert.rejects(
+    () => tool.execute({
+      conversation_id: "task-draft-1",
+      name: "本地普通话转写",
+      business_goal: "把普通话录音转成文字",
+    }, { agent: rootAgent(), signal: undefined }),
+    /verifiable DSH tool call id/,
+  );
+
+  const listener = mounted.listeners.get("tools/pre-execute");
+  assert.deepEqual(
+    await listener(
+      { name: "model_harness_promote_conversation", agent: rootAgent() },
+      async () => ({ kind: "allow" }),
+    ),
+    { kind: "allow" },
+  );
+  const childDecision = await listener(
+    {
+      name: "model_harness_promote_conversation",
+      agent: specialistAgent("research_source"),
+    },
+    async () => ({ kind: "allow" }),
+  );
+  assert.equal(childDecision.kind, "deny");
+  assert.match(childDecision.reason, /训练协调器/);
 });
 
 
@@ -1435,6 +1560,15 @@ test("root persona is an evidence-bound Training Orchestrator", () => {
   )?.[1];
   assert.ok(rootPersona);
   assert.match(rootPersona, /You are the Training Orchestrator/);
+  assert.match(rootPersona, /Own the conversation first/);
+  assert.match(rootPersona, /In INTAKE, greet greetings naturally/);
+  assert.match(rootPersona, /Do not call model_harness_\* tools, use ask_user_question, delegate a specialist/);
+  assert.match(rootPersona, /model_harness_promote_conversation once/);
+  assert.match(rootPersona, /sole model_harness_\* exception in INTAKE/);
+  assert.match(rootPersona, /only after it succeeds may you read the TrainingTask/);
+  assert.match(rootPersona, /A greeting or general product, capability, method or/);
+  assert.match(rootPersona, /do not call[\s\S]*model_harness_get_task, create a checkpoint, delegate or mutate the task/);
+  assert.match(rootPersona, /only when the user wants to continue, inspect or change current-task work/);
   for (const role of Object.keys(ROLE_TOOL_ALLOWLISTS)) {
     assert.match(rootPersona, new RegExp(role));
   }
@@ -1476,6 +1610,8 @@ test("root persona is an evidence-bound Training Orchestrator", () => {
   assert.match(rootPersona, /bundle_request_sha256/);
   assert.match(rootPersona, /spend the grant[\s\S]*exactly once on model_harness_build_artifact_bundle/);
   assert.match(rootPersona, /never as decorative narration/);
+  assert.match(rootPersona, /Never expose private chain-of-thought/);
+  assert.match(rootPersona, /name a specialist only in an action backed by a real DSH child/);
   const buildDelegate = parseDelegateBlocks(PRESET_SOURCE).find(
     (delegate) => delegate.toolName === "build_training",
   );
