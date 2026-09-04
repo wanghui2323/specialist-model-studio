@@ -386,7 +386,7 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
     assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.2-one-product`));
   }
   for (const asset of ["styles.css", "visual-system.css", "app.js"]) {
-    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.4-conversation-intake`));
+    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.4\\.1-conversation-intake`));
   }
   assert.match(app, /function renderAgentSurfaceState\(conversation, projection\)/);
   assert.doesNotMatch(app, /开始 Agent 会话/);
@@ -596,6 +596,7 @@ test("unbound intake keeps one conversation identity until the Agent promotes a 
   const { app } = await sources();
   const refresh = app.slice(app.indexOf("async function refreshSelected"), app.indexOf("function conversationStreamEntryKey"));
   const presentation = app.slice(app.indexOf("function interactionPresentation"), app.indexOf("function taskListStatus"));
+  const draftGuard = app.slice(app.indexOf("function isConversationDraft"), app.indexOf("function conversationDraftTask"));
   assert.match(app, /conversationRecord: null/);
   assert.match(app, /record_type: "conversation_draft"/);
   assert.match(app, /history\.replaceState\(null, "", `\$\{location\.pathname\}\?conversation=\$\{encodeURIComponent\(conversationId\)\}`\)/);
@@ -607,6 +608,9 @@ test("unbound intake keeps one conversation identity until the Agent promotes a 
   assert.match(presentation, /label: "等待你的消息"/);
   assert.ok(presentation.indexOf('return { label: "等待你的消息"') < presentation.indexOf('result_ready: { label: "本轮结果已就绪"'),
     "conversation-draft presentation must return before task result labels are considered");
+  assert.match(draftGuard, /const ownerId = task\?\.conversation_id \|\| task\?\.task_id/);
+  assert.match(draftGuard, /ownerId === conversationId/,
+    "the selected intake record must not leak its state into unrelated sidebar tasks");
   assert.match(app, /if \(isConversationDraft\(state\.conversationRecord, task\)\) return \[\]/);
 });
 

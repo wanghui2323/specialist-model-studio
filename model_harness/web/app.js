@@ -654,7 +654,13 @@ function restoreDraft(taskId = state.selectedTaskId) { ui.messageInput.value = D
 function clearDraft(taskId = state.selectedTaskId) { if (DraftStore) DraftStore.clear(localStorage, draftId(taskId)); }
 
 function isConversationDraft(record = state.conversationRecord, task = state.task) {
-  return record?.status === "unbound" || task?.record_type === "conversation_draft";
+  if (task?.record_type === "conversation_draft") return true;
+  if (record?.status !== "unbound") return false;
+  const conversationId = record?.conversation_id;
+  const ownerId = task?.conversation_id || task?.task_id;
+  // The selected intake conversation must never leak its presentation state
+  // into unrelated persisted tasks in the sidebar.
+  return Boolean(conversationId && (!ownerId || ownerId === conversationId));
 }
 function conversationDraftTask(record) {
   const conversationId = record?.conversation_id;
