@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 from typing import Any
 
 
@@ -305,7 +306,10 @@ def capability_decision(
     looks_audio = _looks_audio(text, modality)
     looks_image = _looks_image(text, modality)
     looks_tabular = _looks_tabular(text, modality)
-    looks_time_series = _looks_time_series(text, modality)
+    # The temporal conflict guard must not turn an explicitly rejected option
+    # into a requirement. Keep the original goal unchanged in the TaskSpec.
+    temporal_text = _positive_temporal_text(text)
+    looks_time_series = _looks_time_series(temporal_text, modality)
     looks_text = _looks_text(text, modality)
     explicit_custom_intent = _contains_any(
         text,
@@ -444,7 +448,7 @@ def capability_decision(
         reason_codes.append("text_mentions_named_entities")
 
     forecasting_intent = _contains_any(
-        text,
+        temporal_text,
         "时间序列预测",
         "时序预测",
         "销量预测",
@@ -452,7 +456,7 @@ def capability_decision(
         "forecasting",
         "forecast",
     ) or (
-        _contains_any(text, "预测", "预估") and looks_time_series
+        _contains_any(temporal_text, "预测", "预估") and looks_time_series
     )
     if forecasting_intent:
         strong_families.add("time_series_forecasting")
@@ -773,6 +777,32 @@ def _family_sort_key(family: str) -> tuple[int, str]:
         "custom": 15,
     }
     return order.get(family, 99), family
+
+
+_NEGATED_TEMPORAL_MENTION = re.compile(
+    r"(?:不是|并非|而非|不属于|不涉及|不使用|不采用|不做|不需要|无需|不含|不包含|没有)"
+    r"\s*(?:任何|一个|这种|基于|进行|做)?\s*[‘“\"]?"
+    r"(?:时间序列(?:预测|模型|数据|任务)?|时序(?:预测|模型|数据|任务)?|历史序列|"
+    r"销量预测|需求预测|下个月|下一周|未来7天|未来一周|未来一个月|逐日|每小时|按天|按周)"
+    r"|\b(?:not\s+(?:a\s+|using\s+|doing\s+)?|no\s+|without\s+(?:using\s+)?)"
+    r"(?:time[- ]series(?:\s+forecasting)?|forecast(?:ing)?)\b"
+)
+
+
+def _positive_temporal_text(text: str) -> str:
+    """Exclude only locally, explicitly negated temporal terms from the guard.
+
+    This is not a general intent parser or authorization. Affirmative mentions
+    elsewhere and structured time-series modality still trigger the guard;
+    double negatives and unrecognized wording are conservatively retained.
+    """
+    def replace(match: re.Match[str]) -> str:
+        before = text[:match.start()]
+        if re.search(r"(?:不是|并非|不能|不必|不要|not|never)\s*$", before):
+            return match.group()
+        return " "
+
+    return _NEGATED_TEMPORAL_MENTION.sub(replace, text)
 
 
 def _contains_any(text: str, *needles: str) -> bool:

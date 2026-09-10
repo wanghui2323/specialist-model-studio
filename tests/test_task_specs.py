@@ -160,6 +160,39 @@ class CapabilityDecisionCandidateTests(unittest.TestCase):
             decision["reason_codes"],
         )
 
+    def test_explicitly_rejected_temporal_options_do_not_reopen_clarification(self) -> None:
+        for rejected in (
+            "不是时间序列", "并非时序预测", "不使用历史序列，也不需要未来的时间窗口",
+            "不需要时间序列预测", "无需按天预测", "不是“时间序列预测”",
+            "not forecasting", "without using time series forecasting",
+        ):
+            with self.subTest(rejected=rejected):
+                decision = capability_decision(
+                    "房屋售价数值预测",
+                    f"每行 CSV 是独立房屋，用面积预测价格，{rejected}。",
+                    {"family": "tabular_regression", "modality": "tabular", "objective": "regression"},
+                )
+                self.assertEqual(decision["status"], "resolved", decision)
+                self.assertEqual(decision["selected_family"], "tabular_regression")
+                self.assertNotIn("text_mentions_forecasting_output", decision["reason_codes"])
+
+    def test_temporal_negation_cannot_hide_affirmative_or_double_negative_intent(self) -> None:
+        for goal in (
+            "不是时间序列分类，而是时序预测，预测下个月的销量",
+            "不做时间序列预测，但需要按天预测需求",
+            "不是不做时序预测", "并非不需要时序预测", "不能不做时序预测",
+            "not only forecasting", "not without forecasting",
+            "不要放弃时序预测",
+        ):
+            with self.subTest(goal=goal):
+                decision = capability_decision("CSV 数值任务", goal, {"family": "tabular_regression"})
+                self.assertEqual(decision["status"], "needs_clarification", decision)
+        structured = capability_decision(
+            "数值任务", "不是时间序列，要预测价格",
+            {"family": "tabular_regression", "modality": "time_series", "objective": "regression"},
+        )
+        self.assertEqual(structured["status"], "needs_clarification")
+
     def test_unknown_modality_retains_generic_fallback(self) -> None:
         decision = capability_decision(
             "未知专用模型",
@@ -296,6 +329,27 @@ class CapabilityFamilyMigrationTests(unittest.TestCase):
 
 @unittest.skipIf(TestClient is None, "server extra is not installed")
 class TaskSpecRevisionTests(unittest.TestCase):
+    def test_temporal_exclusion_survives_repeated_revision_and_keeps_goal(self) -> None:
+        goal = "每行独立房屋 CSV 用面积预测价格，不是时间序列，不使用历史序列、也不需要未来的时间窗口。"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with TestClient(create_app(Path(temp_dir) / "runs")) as client:
+                task = client.post("/tasks", json={"name": "房价预测", "business_goal": goal}).json()["task"]
+                for index in range(2):
+                    updated_goal = goal if index == 0 else goal + "采用独立样本随机划分。"
+                    response = client.patch(f"/tasks/{task['task_id']}/spec", json={
+                        "base_revision": task["current_spec_revision"],
+                        "selected_family": "tabular_regression", "business_goal": updated_goal,
+                        "user_note": "每行只输出一个售价数值",
+                    })
+                    self.assertEqual(response.status_code, 200, response.text)
+                    task = response.json()["task"]
+                    self.assertEqual(task["business_goal"], updated_goal)
+                    self.assertEqual(task["capability_status"], "matched")
+                    self.assertEqual(task["recipe_id"], "tabular-regression")
+                    self.assertEqual(task["control"]["next_action"]["id"], "upload_dataset")
+                    self.assertFalse(task["contract_confirmed"])
+                    self.assertIsNone(task["current_run_id"])
+
     def test_vague_time_series_revision_cannot_enter_tabular_recipe(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             app = create_app(Path(temp_dir) / "runs")
