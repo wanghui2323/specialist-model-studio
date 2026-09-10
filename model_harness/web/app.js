@@ -3127,7 +3127,7 @@ function setObjectViewerState(ref, { stateLabel, summary, payload = null }) {
 }
 function returnedObjectMatchesRef(ref, payload) {
   const type = normalizeObjectRefType(ref?.type);
-  if (type === "blocker") { const blocker = payload?.blocker; return Boolean(blocker && blocker.task_id === ref.task_id && blocker.blocker_id === ref.id && blocker.semantic_digest === ref.digest); }
+  if (type === "blocker") { const blocker = payload?.blocker; return Boolean(blocker && blocker.task_id === ref.task_id && blocker.blocker_id === ref.id && typeof ref.digest === "string" && /^[a-f0-9]{64}$/.test(ref.digest) && blocker.content_digest === ref.digest); }
   if (type === "inference_input") { const input = payload?.inference_input; return Boolean(input && payload?.task?.task_id === ref.task_id && payload?.run_id === ref.run_id && input.task_id === ref.task_id && input.run_id === ref.run_id && input.inference_input_id === ref.id && input.sha256 === ref.digest); }
   if (!TERMINAL_RESULT_REF_TYPES.has(type)) return true;
   if (payload?.task?.task_id !== ref.task_id || payload?.run_id !== ref.run_id) return false;

@@ -54,6 +54,20 @@ test("inference input opens only its exact task run id and content digest", () =
   assert.equal(context.matches(ref, null), false);
 });
 
+test("blocker viewer matches the observed content digest, never the semantic identity digest", () => {
+  const context = { normalizeObjectRefType: (v) => v, TERMINAL_RESULT_REF_TYPES: new Set() };
+  vm.runInNewContext(section("function returnedObjectMatchesRef", "async function openObjectRef") + "\nglobalThis.matches = returnedObjectMatchesRef;", context);
+  const ref = { type: "blocker", task_id: "task", id: "blocker-id", digest: "a".repeat(64) };
+  const blocker = { task_id: "task", blocker_id: "blocker-id", content_digest: ref.digest, semantic_digest: "b".repeat(64) };
+  assert.equal(context.matches(ref, { blocker }), true);
+  for (const key of ["task_id", "blocker_id", "content_digest"]) {
+    assert.equal(context.matches(ref, { blocker: { ...blocker, [key]: "wrong" } }), false);
+  }
+  assert.equal(context.matches({ ...ref, digest: blocker.semantic_digest }, { blocker }), false);
+  assert.equal(context.matches({ ...ref, digest: undefined }, { blocker: { ...blocker, content_digest: undefined } }), false);
+  assert.equal(context.matches(ref, null), false);
+});
+
 test("native approval labels use the tool identity, never generic data or compute prose", () => {
   const context = {};
   vm.runInNewContext(section("function approvalPresentation", "function appendApprovalScope") + "\nglobalThis.present = approvalPresentation;", context);
