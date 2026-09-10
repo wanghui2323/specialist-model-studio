@@ -382,11 +382,8 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(css, /\.inspector\[data-open="true"\]\{[^}]*visibility:visible[^}]*pointer-events:auto[^}]*transform:translateX\(0\)/);
   assert.match(css, /@media\(max-width:720px\)[\s\S]*?\.inspector\{width:100%;z-index:42\}/);
   assert.match(css, /@media\(max-width:720px\)[\s\S]*body\[data-workspace="open"\] \.mobile-view-nav\{display:none\}/);
-  for (const asset of ["interaction-shell.js"]) {
-    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.2-one-product`));
-  }
-  for (const asset of ["styles.css", "visual-system.css", "app.js", "conversation-view.js"]) {
-    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.4\\.8-pc-rc`));
+  for (const asset of ["styles.css", "visual-system.css", "app.js", "conversation-view.js", "interaction-shell.js"]) {
+    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.4\\.9-pc-rc`));
   }
   assert.match(app, /function renderAgentSurfaceState\(conversation, projection\)/);
   assert.doesNotMatch(app, /开始 Agent 会话/);

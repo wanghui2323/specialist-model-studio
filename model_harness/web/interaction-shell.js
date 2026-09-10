@@ -493,13 +493,13 @@
       isRecord(run)
       && (!run.object_type || run.object_type === "TrainingRun")
       && taskOwned(run, task?.task_id || null)
-      && (run.running === true || run.worker_running === true || run.cancel_requested === true || RUNNING_STATUSES.has(normalizedToken(run.status)) || RUNNING_STATUSES.has(normalizedToken(run.domain_status)) || ["cancel_requested", "cancelling", "stopping"].includes(normalizedToken(run.status)))
+      && (run.running === true || run.worker_running === true || cancellationPending({ runs: [run] }) || RUNNING_STATUSES.has(normalizedToken(run.status)) || RUNNING_STATUSES.has(normalizedToken(run.domain_status)))
     ));
     const activeBackgroundActions = asArray(conversation?.background_actions).filter((backgroundAction) => (
       isRecord(backgroundAction)
       && normalizedToken(backgroundAction.action_type || backgroundAction.object_type) === "training_run"
       && taskOwned(backgroundAction, task?.task_id || null)
-      && (backgroundAction.running === true || backgroundAction.cancel_requested === true || RUNNING_STATUSES.has(normalizedToken(backgroundAction.status)) || ["cancel_requested", "cancelling", "stopping"].includes(normalizedToken(backgroundAction.status)))
+      && (backgroundAction.running === true || backgroundAction.worker_running === true || cancellationPending({ runs: [backgroundAction] }) || RUNNING_STATUSES.has(normalizedToken(backgroundAction.status)))
     ));
     const activeTaskResult = isRecord(task?.current_result)
       && RUNNING_STATUSES.has(normalizedToken(task.current_result.status))
@@ -527,7 +527,10 @@
       ...asArray(conversation?.background_actions),
       ...asArray(conversation?.runs),
       ...asArray(conversation?.agent_turns),
-    ].some((entry) => isRecord(entry) && (
+    ].some((entry) => isRecord(entry) && !(
+      ["cancelled", "canceled", "completed", "failed", "interrupted"].includes(normalizedToken(entry.status))
+      && entry.running !== true && entry.worker_running !== true
+    ) && (
       entry.cancel_requested === true
       || cancellingStatuses.has(normalizedToken(entry.status))
       || cancellingStatuses.has(normalizedToken(entry.domain_status))

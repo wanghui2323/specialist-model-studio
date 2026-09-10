@@ -89,6 +89,17 @@ test("specialist termination never claims the coordinator stopped or exposes who
   assert.match(section("function aiTurnPresentation", "function createAiTurnContainer"), /terminalEventScope\(item\) === "root"/);
 });
 
+test("completed cancellation audit flags do not keep a training entry live", () => {
+  const context = { BACKGROUND_CANCELLING_STATUSES: new Set(["cancel_requested", "cancelling", "stopping"]), BACKGROUND_TRAINING_STATUSES: new Set(["running", "cancel_requested"]), runtimeStatusToken: (v) => String(v || "").toLowerCase() };
+  vm.runInNewContext(section("function trainingEntryCancelling", "function activeBackgroundTrainingRun") + "\nglobalThis.cancelling=trainingEntryCancelling; globalThis.running=trainingEntryRunning;", context);
+  const finished = { status: "cancelled", domain_status: "cancelled", cancel_requested: true, running: false, worker_running: false };
+  assert.equal(context.cancelling(finished), false);
+  assert.equal(context.running(finished), false);
+  assert.equal(context.cancelling({ ...finished, worker_running: true }), true);
+  assert.equal(context.running({ ...finished, worker_running: true }), true);
+  assert.equal(context.cancelling({ ...finished, status: "cancel_requested" }), true);
+});
+
 test("native approval labels use the tool identity, never generic data or compute prose", () => {
   const context = {};
   vm.runInNewContext(section("function approvalPresentation", "function appendApprovalScope") + "\nglobalThis.present = approvalPresentation;", context);

@@ -90,6 +90,19 @@ function workItem(values = {}) {
   };
 }
 
+test("a finished background cancellation cannot lock a new native approval", () => {
+  const finished = { task_id: "task-1", action_type: "model_binding_analysis", status: "cancelled", domain_status: "cancelled", cancel_requested: true, running: false, worker_running: false };
+  const conversation = { schema_version: "2.0", items: [{ kind: "approval", event_id: "approval-new", turn_id: "turn-new", status: "pending", rpc_id: "rpc-new" }], background_actions: [finished] };
+  const restored = projection({ task_id: "task-1" }, conversation);
+  assert.equal(restored.phase, "awaiting_approval");
+  assert.equal(restored.background.cancelling, false);
+  assert.equal(projection({ task_id: "task-1" }, { ...conversation, background_actions: [{ ...finished, worker_running: true }] }).background.cancelling, true);
+  assert.equal(projection({ task_id: "task-1" }, { ...conversation, background_actions: [{ ...finished, status: "cancel_requested" }] }).background.cancelling, true);
+  const training = projection({ task_id: "task-1" }, { ...conversation, background_actions: [{ ...finished, action_type: "training_run", run_id: "run-old" }] });
+  assert.equal(training.phase, "awaiting_approval");
+  assert.equal(training.background.training_running, false);
+});
+
 test("AI turn DOM owns its execution timeline while the user node remains timeline-free", () => {
   const documentRef = new FakeDocument();
   const root = documentRef.createElement("main");

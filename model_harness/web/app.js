@@ -414,6 +414,7 @@ function conversationTrainingEntries(conversation) {
   return [...typedRuns, ...backgroundRuns];
 }
 function trainingEntryCancelling(entry) {
+  if (["cancelled", "canceled", "completed", "failed", "interrupted"].includes(runtimeStatusToken(entry?.status)) && entry?.running !== true && entry?.worker_running !== true) return false;
   return entry?.cancel_requested === true
     || BACKGROUND_CANCELLING_STATUSES.has(runtimeStatusToken(entry?.status))
     || BACKGROUND_CANCELLING_STATUSES.has(runtimeStatusToken(entry?.domain_status));
