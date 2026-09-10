@@ -2411,7 +2411,7 @@ function aiTurnPresentation(turn, projection, conversation, actions) {
     return { ...presentation, current: true };
   }
   const failed = InteractionShell.turnHasActiveFailure(turn, actions, conversation.risks);
-  const cancelled = (turn.items || []).some((item) => item.kind === "turn_cancelled");
+  const cancelled = (turn.items || []).some((item) => item.kind === "turn_cancelled" && terminalEventScope(item) === "root");
   const blocked = (turn.items || []).some((item) => item.kind === "blocker");
   if (failed || blocked) return { label: "本轮需要处理", tone: "failed", current: false, can_cancel: false };
   if (cancelled) return { label: "本轮已停止", tone: "cancelled", current: false, can_cancel: false };
@@ -3034,7 +3034,19 @@ function renderHumanCheckpoint(item, { interactive = true, target = ui.messageLi
   }
   appendObjectRefs(card, item.object_refs); target.append(card);
 }
+function terminalEventScope(item) {
+  if (!item?.session_id || !item?.root_session_id) return "unknown";
+  if (item.session_id !== item.root_session_id) return "specialist";
+  return item.delegation_id ? "unknown" : "root";
+}
 function renderTurnTerminal(item, target = ui.messageList) {
+  const scope = terminalEventScope(item);
+  if (scope !== "root") {
+    const card = document.createElement("details"); card.className = "turn-terminal"; card.dataset.status = item.kind === "turn_cancelled" ? "cancelled" : "failed"; card.dataset.terminalScope = scope;
+    const title = document.createElement("summary"); title.textContent = scope === "specialist" ? `${roleLabel(item.actor_role)}的本次执行${item.kind === "turn_cancelled" ? "已停止" : "失败"}` : "执行终止记录（归属待核对）";
+    const copy = document.createElement("p"); copy.textContent = `这是${scope === "specialist" ? "专家执行" : "归属未确认的执行"}记录，不代表协调器回合已停止。原始原因：${item.summary || item.reason || item.error?.message || "运行时未提供原因"}`;
+    card.append(title, copy); appendObjectRefs(card, item.object_refs); target.append(card); return;
+  }
   const reasonCode = item.reason_code || item.cancellation_reason || item.error?.code || "";
   if (item.kind === "turn_cancelled" && item.payload?.reason === "checkpoint_discussion") {
     const note = document.createElement("p"); note.className = "checkpoint-discussion-hint";

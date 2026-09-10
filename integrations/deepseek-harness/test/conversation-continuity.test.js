@@ -68,6 +68,27 @@ test("blocker viewer matches the observed content digest, never the semantic ide
   assert.equal(context.matches(ref, null), false);
 });
 
+test("specialist termination never claims the coordinator stopped or exposes whole-turn recovery", () => {
+  const rendered = []; let recoveries = 0;
+  const context = { roleLabel: () => "研究与来源", appendObjectRefs() {}, appendRecoveryActions() { recoveries++; },
+    ui: { messageList: { append: (node) => rendered.push(node) } },
+    document: { createElement: (tag) => ({ tag, dataset: {}, children: [], append(...children) { this.children.push(...children); } }) } };
+  vm.runInNewContext(section("function terminalEventScope", "function renderEvidenceLedger") + "\nglobalThis.scope = terminalEventScope; globalThis.render = renderTurnTerminal;", context);
+  const root = { kind: "turn_cancelled", session_id: "root", root_session_id: "root", summary: "stopped" };
+  context.render({ ...root, session_id: "child", delegation_id: "delegation", actor_role: "research_source" });
+  assert.equal(rendered[0].tag, "details");
+  assert.equal(rendered[0].children[0].textContent, "研究与来源的本次执行已停止");
+  assert.equal(recoveries, 0);
+  context.render({ ...root, session_id: undefined });
+  assert.equal(rendered[1].dataset.terminalScope, "unknown");
+  assert.equal(recoveries, 0);
+  context.render(root);
+  assert.equal(rendered[2].children[0].textContent, "本轮智能体已停止");
+  assert.equal(recoveries, 1);
+  assert.equal(context.scope({ ...root, delegation_id: "conflicting" }), "unknown");
+  assert.match(section("function aiTurnPresentation", "function createAiTurnContainer"), /terminalEventScope\(item\) === "root"/);
+});
+
 test("native approval labels use the tool identity, never generic data or compute prose", () => {
   const context = {};
   vm.runInNewContext(section("function approvalPresentation", "function appendApprovalScope") + "\nglobalThis.present = approvalPresentation;", context);
