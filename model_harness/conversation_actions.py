@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Literal, Mapping, Sequence
 
@@ -16,7 +16,7 @@ from .object_refs import (
 ACTION_SCHEMA_VERSION = "1.0"
 
 ToolClass = Literal["domain", "control", "delegation", "unknown"]
-ActionStatus = Literal["running", "completed", "failed", "identity_error"]
+ActionStatus = Literal["running", "completed", "failed", "cancelled", "identity_error"]
 TruthType = Literal["observed_call", "observed_result", "identity_error"]
 
 
@@ -158,7 +158,7 @@ def _tool_name(event: Mapping[str, Any]) -> str | None:
 
 
 def _result_error(event: Mapping[str, Any]) -> ActionError:
-    """Preserve an explicit human rejection without presenting it as a system fault."""
+    """Runtime rejection prose does not prove that a human rejected an action."""
 
     def text_fragments(value: Any) -> list[str]:
         if isinstance(value, str):
@@ -179,8 +179,8 @@ def _result_error(event: Mapping[str, Any]) -> ActionError:
     observed = " ".join(text_fragments(_payload(event).get("result"))).lower()
     if "the user rejected tool" in observed:
         return ActionError(
-            code="user_rejected",
-            message="你已拒绝本次授权，操作未执行。",
+            code="authorization_not_granted",
+            message="运行时未获授权，操作未执行；没有记录到你拒绝此操作。",
         )
     return ActionError(
         code="tool_result_error",
@@ -596,6 +596,12 @@ def classify_conversation_actions(
     for identity, group in groups.items():
         calls = group["calls"]
         results = group["results"]
+        suspended = next((event for event in events
+            if event.get("source") == "dsh_pending"
+            and event.get("projector_revision") == projector_revision
+            and event.get("payload", {}).get("phase") == "resolved"
+            and event.get("payload", {}).get("outcome") == "superseded_for_discussion"
+            and _identity(event) == identity), None)
         if len(calls) > 1:
             actions.append(
                 _identity_error_action(
@@ -627,9 +633,35 @@ def classify_conversation_actions(
                 )
             )
         elif not results:
-            actions.append(_running_action(identity, calls[0]))
+            action = _running_action(identity, calls[0])
+            # A suspended checkpoint is not a successful result. Only its exact
+            # task/run/session/turn/call resolution can retire a waiting action.
+            if suspended is not None:
+                action = replace(action, status="cancelled",
+                    ended_at_utc=_string(suspended, "timestamp_utc"),
+                    error=ActionError("checkpoint_suspended", "检查点已暂缓，没有提交答案或批准。"))
+            actions.append(action)
         else:
-            actions.append(_paired_action(identity, calls[0], results[0]))
+            action = _paired_action(identity, calls[0], results[0])
+            rejected = any(
+                event.get("source") == "dsh_pending"
+                and event.get("projector_revision") == projector_revision
+                and _event_type(event) == "approval"
+                and _payload(event).get("phase") == "resolved"
+                and _payload(event).get("outcome") in {"denied", "rejected"}
+                and _identity(event) == identity
+                for event in events
+            )
+            if rejected and action.status == "failed":
+                action = replace(action, error=ActionError(
+                    "user_rejected", "你已拒绝本次授权，操作未执行。"))
+            if suspended is not None and action.status == "failed":
+                # DSH returns a tool error when a pending question is aborted.
+                # Preserve the exact result/ref for audit, but derive lifecycle
+                # from the explicit suspension receipt, never error prose.
+                action = replace(action, status="cancelled",
+                    error=ActionError("checkpoint_suspended", "检查点已暂缓；运行时中止记录保留在技术详情中。"))
+            actions.append(action)
 
     # Projected event ``seq`` is the canonical observation order across root
     # and child sessions.  DSH timestamps may be epoch integers (and older

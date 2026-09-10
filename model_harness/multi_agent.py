@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
+from time import monotonic, sleep
 from typing import Any, Callable, Mapping, Protocol, Sequence
 from uuid import uuid4
 
@@ -28,6 +29,7 @@ from .conversation_payloads import (
     project_conversation_objects,
 )
 from .io_utils import read_json, sha256_bytes, write_json
+from .continuation_lineage import bind_child_invocations, complete_history, in_source_window, structured_arguments
 from .synthesis_evidence import (
     SYNTHESIS_VERDICT_VERSION,
     RunBoundary,
@@ -39,7 +41,7 @@ from .synthesis_evidence import (
 
 TEAM_SCHEMA_VERSION = "1.0"
 CONVERSATION_EVENT_SCHEMA_VERSION = "2.0"
-CONVERSATION_PROJECTOR_REVISION = "3.2"
+CONVERSATION_PROJECTOR_REVISION = "3.3"
 AGENT_WORK_ITEM_SCHEMA_VERSION = "1.0"
 COMPOSER_REQUEST_SCHEMA_VERSION = "1.0"
 SUPPORTED_COMPOSER_MODES = frozenset({"queue_after_turn"})
@@ -668,6 +670,45 @@ class DshAgentTeamStore:
             and event.get("projector_revision") == CONVERSATION_PROJECTOR_REVISION
         ]
 
+    def reproject_root_checkpoint_audit(self, task_id: str) -> None:
+        """Preserve 3.2 human receipts only after exact 3.3 root-call replay.
+
+        Child ownership changed in 3.3; those old receipts are audit-only.
+        This never recreates a live pending RPC or grants an authorization.
+        """
+        team = self.load_team(task_id)
+        if not team:
+            return
+        events = self.list_events(task_id)
+        calls = [event for event in events if event.get("source") == "dsh"
+            and event.get("projector_revision") == CONVERSATION_PROJECTOR_REVISION
+            and event.get("event_type") == "tool_call"
+            and event.get("session_id") == team.get("root_session_id")]
+        identity_fields = ("task_id", "agent_run_id", "session_id", "turn_id", "call_id")
+        for event in events:
+            payload = event.get("payload", {})
+            if (event.get("source") != "dsh_pending" or event.get("projector_revision") != "3.2"
+                or event.get("event_type") not in {"approval", "question"}
+                or payload.get("phase") not in {"requested", "resolved"}
+                or not payload.get("rpc_id")
+                or any(not event.get(field) for field in identity_fields)):
+                continue
+            matches = [call for call in calls if all(call.get(field) == event[field] for field in identity_fields)]
+            if len(matches) != 1:
+                continue
+            if any(current.get("source") == "dsh_pending"
+                and current.get("projector_revision") == CONVERSATION_PROJECTOR_REVISION
+                and current.get("payload", {}).get("rpc_id") == payload["rpc_id"]
+                and current.get("payload", {}).get("phase") == payload["phase"]
+                and all(current.get(field) == event[field] for field in identity_fields) for current in events):
+                continue
+            self.append_event(task_id=task_id, event={**event,
+                "projector_revision": CONVERSATION_PROJECTOR_REVISION,
+                "source_key": f"dsh-pending:{CONVERSATION_PROJECTOR_REVISION}:replay:{event['event_id']}",
+                "payload": {**payload, "origin_event_id": matches[0]["event_id"],
+                    "replayed_from_event_id": event["event_id"], "replayed_from_projector_revision": "3.2"},
+            })
+
     def get_projected_event(
         self,
         task_id: str,
@@ -793,6 +834,17 @@ class DshConversationV2Projector:
                 if completed_session_id:
                     open_child_sessions.discard(completed_session_id)
             source_seq = raw_event.get("seq")
+            if not is_root_session:
+                invocation = self._verified_child_projection_identity(
+                    team=team, session_id=observed_session_id,
+                    expected_agent_id=session_agent_id,
+                    source_seq=source_seq if isinstance(source_seq, int) else -1,
+                )
+                current_agent_run_id = invocation["agent_run_id"] if invocation else None
+                owning_delegation_id = invocation["delegation_id"] if invocation else None
+                owning_parent_delegation_id = invocation["parent_delegation_id"] if invocation else None
+                if event_type == "turn/start" and isinstance(data.get("turn"), int) and data["turn"] > 0:
+                    turn_number = data["turn"]
             source_key = self._source_key(
                 root_session_id=observed_session_id,
                 source_seq=source_seq,
@@ -988,6 +1040,14 @@ class DshConversationV2Projector:
                 reason = data.get("reason", {})
                 reason = reason if isinstance(reason, Mapping) else {}
                 reason_kind = str(reason.get("kind") or "unknown")
+                discussion_handoff = next((run.get("discussion_handoff") for run in team.get("runs", [])
+                    if run.get("run_id") == current_agent_run_id), None)
+                if (is_root_session and discussion_handoff
+                        and reason_kind in {"interrupted", "aborted", "cancelled"}):
+                    projected.append({**base, "category": "agent_status", "type": "turn_cancelled",
+                        "status": "cancelled", "payload": {"reason": "checkpoint_discussion",
+                        "text": "已暂缓当前检查点，继续讨论；没有提交答案或批准。"}})
+                    continue
                 if reason_kind == "completed":
                     if not is_root_session:
                         projected.append(
@@ -1128,6 +1188,8 @@ class DshConversationV2Projector:
         team: Mapping[str, Any],
         session_id: str,
         expected_agent_id: str | None,
+        source_seq: int | None = None,
+        delegation_id: str | None = None,
     ) -> dict[str, str | None] | None:
         """Resolve child ownership only from a unique, verified team binding."""
 
@@ -1160,10 +1222,14 @@ class DshConversationV2Projector:
             for key, value in delegations.items():
                 if not isinstance(value, Mapping):
                     continue
-                delegation_id = value.get("delegation_id")
-                if not isinstance(delegation_id, str) or not delegation_id:
+                binding_id = value.get("delegation_id")
+                if not isinstance(binding_id, str) or not binding_id:
                     continue
-                if str(key) != delegation_id:
+                if str(key) != binding_id:
+                    continue
+                if selected_session_id == session_id and delegation_id is not None and binding_id != delegation_id:
+                    continue
+                if selected_session_id == session_id and source_seq is not None and not in_source_window(value, source_seq):
                     continue
                 if (
                     value.get("dsh_session_id") != selected_session_id
@@ -1695,6 +1761,27 @@ class DshMultiAgentRuntime:
         composer_mode: str = "queue_after_turn",
         request_id: str | None = None,
         actor: str = "user",
+        checkpoint_rpc_id: str | None = None,
+    ) -> dict[str, Any]:
+        # Serialize discussion handoff with answers/approvals: an obsolete card
+        # must never authorize a tool after its waiting turn has been retired.
+        with self._lock:
+            return self._submit_message(
+                task_id, title, message, composer_mode=composer_mode,
+                request_id=request_id, actor=actor,
+                checkpoint_rpc_id=checkpoint_rpc_id,
+            )
+
+    def _submit_message(
+        self,
+        task_id: str,
+        title: str,
+        message: str,
+        *,
+        composer_mode: str,
+        request_id: str | None,
+        actor: str,
+        checkpoint_rpc_id: str | None,
     ) -> dict[str, Any]:
         selected = message.strip()
         if not selected:
@@ -1707,6 +1794,10 @@ class DshMultiAgentRuntime:
         selected_actor = actor.strip() if isinstance(actor, str) else ""
         if selected_actor not in {"user", "system", "operator"}:
             raise ValueError("actor 必须是 user、operator 或 system")
+        if checkpoint_rpc_id is not None and (
+            not isinstance(checkpoint_rpc_id, str) or not checkpoint_rpc_id.strip()
+        ):
+            raise ValueError("checkpoint_rpc_id 必须是非空文本")
         selected_request_id = (
             request_id.strip() if isinstance(request_id, str) else ""
         )
@@ -1730,6 +1821,8 @@ class DshMultiAgentRuntime:
                 existing_run.get("user_message") != selected
                 or existing_request.get("mode") != composer_mode
                 or existing_request.get("actor") != selected_actor
+                or (existing_run.get("checkpoint_discussion") or {}).get("rpc_id")
+                != checkpoint_rpc_id
             ):
                 raise ComposerRequestConflictError(
                     "request_id 已绑定到不同的 message、mode 或 actor"
@@ -1749,6 +1842,11 @@ class DshMultiAgentRuntime:
                 run=existing_run,
                 idempotent_replay=True,
             )
+        discussion = None
+        if checkpoint_rpc_id is not None:
+            discussion = self._suspend_checkpoint_for_discussion(
+                task_id, team, checkpoint_rpc_id,
+            )
         source_floors, boundary_complete = self._capture_source_seq_boundary(team)
         run = self.store.append_prompt_run(
             task_id=task_id,
@@ -1760,6 +1858,11 @@ class DshMultiAgentRuntime:
             source_seq_floor_by_session=source_floors,
             source_boundary_complete=boundary_complete,
         )
+        if discussion is not None:
+            run = self.store.update_run(
+                task_id=task_id, run_id=run["run_id"], status=run["status"],
+                evidence={"checkpoint_discussion": discussion},
+            )
         instruction = self._root_instruction(
             task_id=task_id,
             agent_run_id=run["run_id"],
@@ -1767,6 +1870,18 @@ class DshMultiAgentRuntime:
             record_type=str(task.get("record_type") or "training_task"),
             user_message=selected,
         )
+        if discussion is not None:
+            instruction = (
+                "CHECKPOINT_DISCUSSION: 用户在等待输入或批准时继续交流，旧检查点已暂缓，未批准、未回答。"
+                "先回应用户这条消息的真实意图：解释、追问、补充或修改目标。"
+                "不要把它机械地填入旧字段，不要宣称已上传数据或已获得授权。"
+                "本轮仅讨论和读取必要事实，不调用修改任务、数据、合同、授权或执行的工具。"
+                "如用户提出修改目标，先复述变更及其对已有结果的影响，下一轮经用户确认再更新规范任务，"
+                "既有证据保留为历史；旧确认不能用于新目标。"
+                "不要立即重建刚才的问题或批准卡；用户明确要求继续执行时再核对最新状态并重新发起。\n"
+                f"SUSPENDED_CHECKPOINT_JSON: {json.dumps(discussion, ensure_ascii=False)}\n"
+                + instruction
+            )
         try:
             self.client.call(
                 "session.prompt",
@@ -1791,6 +1906,56 @@ class DshMultiAgentRuntime:
             ) from exc
         return self._composer_submission(team=team, run=run)
 
+    def _suspend_checkpoint_for_discussion(
+        self, task_id: str, team: Mapping[str, Any], rpc_id: str,
+    ) -> dict[str, Any]:
+        pending = self._pending(team)
+        self._persist_pending_requested(task_id=task_id, team=team, pending=pending)
+        pending = self._invalidate_pending_after_terminal(
+            task_id=task_id, team=team, pending=pending,
+        )
+        item = next((value for value in pending if value.get("rpc_id") == rpc_id), None)
+        if item is None or item.get("kind") not in {"question", "approval"}:
+            raise HumanCheckpointConflictError("这个检查点已变化，请刷新后继续发送；没有提交任何批准或答案")
+        root_session = str(team["root_session_id"])
+        if item.get("session_id") != root_session:
+            raise HumanCheckpointConflictError("这个检查点属于专家执行，请先停止当前执行再讨论；不会代替你批准")
+        active_runs = [run for run in team.get("runs", [])
+                       if run.get("status") in {"queued", "running", "waiting_for_human"}]
+        if len(active_runs) > 1:
+            raise HumanCheckpointConflictError("已有其他消息在排队，请先处理或停止当前执行后再讨论；不会丢弃排队消息")
+        # Cancels only the waiting coordinator turn, NOT task-owned workers or
+        # training runs. Native cancellation never emits an approval response.
+        self.client.call("session.cancel", {"sessionId": root_session})
+        deadline = monotonic() + 2.0
+        while True:
+            summaries = self.client.call("session.list", {})
+            observed = next((value for value in summaries.get("items", [])
+                             if value.get("sessionId") == root_session), None)
+            if observed is not None and observed.get("running") is False:
+                break
+            if monotonic() >= deadline:
+                raise HumanCheckpointConflictError("仍在等待当前回合停止，请刷新后重试；新消息尚未发送")
+            sleep(0.05)
+        for checkpoint in pending:
+            if checkpoint.get("session_id") != root_session:
+                continue
+            self._persist_pending_resolved(
+                task_id=task_id, team=team, session_id=root_session,
+                item=checkpoint, outcome="superseded_for_discussion",
+            )
+            self.events.resolve_local(root_session, str(checkpoint["rpc_id"]))
+        for old_run in team.get("runs", []):
+            if old_run.get("status") in {"queued", "running", "waiting_for_human"}:
+                self.store.update_run(
+                    task_id=task_id, run_id=old_run["run_id"], status="cancelled",
+                    evidence={"discussion_handoff": {"rpc_id": rpc_id,
+                        "outcome": "superseded_for_discussion", "session_id": root_session}},
+                )
+        return {"rpc_id": rpc_id, "kind": item["kind"],
+                "questions": deepcopy(item.get("questions", [])),
+                "outcome": "superseded_for_discussion"}
+
     @staticmethod
     def _composer_submission(
         *,
@@ -1810,6 +1975,7 @@ class DshMultiAgentRuntime:
             "agent_turn_id": run["agent_turn_id"],
             "status": run.get("status"),
             "idempotent_replay": idempotent_replay,
+            "checkpoint_discussion": run.get("checkpoint_discussion"),
         }
 
     def prompt(
@@ -1942,6 +2108,7 @@ class DshMultiAgentRuntime:
             return {
                 "schema_version": CONVERSATION_EVENT_SCHEMA_VERSION,
                 "event_payload_mode": CONVERSATION_EVENT_PAYLOAD_MODE,
+                "task_id": task_id,
                 "team_id": None,
                 "session_id": None,
                 "running": background_action_running,
@@ -1990,12 +2157,9 @@ class DshMultiAgentRuntime:
             }
         root_session_id = str(team["root_session_id"])
         try:
-            history = self.client.call(
-                "session.history",
-                {"sessionId": root_session_id, "maxMessages": 240},
-            )
+            history = complete_history(self.client.call, root_session_id)
             summaries = self.client.call("session.list", {})
-        except AgentRuntimeError as exc:
+        except (AgentRuntimeError, ValueError) as exc:
             raise MultiAgentRuntimeError(f"无法读取多智能体会话：{exc}") from exc
         summary_items = summaries.get("items", []) if isinstance(summaries, dict) else []
         summaries_by_session = {
@@ -2057,15 +2221,17 @@ class DshMultiAgentRuntime:
                 continue
             child_running = child_running or bool(child_summary.get("running"))
             try:
-                child_history = self.client.call(
-                    "session.history",
-                    {"sessionId": child_session_id, "maxMessages": 240},
-                )
-            except AgentRuntimeError as exc:
+                child_history = complete_history(self.client.call, child_session_id)
+            except (AgentRuntimeError, ValueError) as exc:
                 projection_errors.append(
                     {"session_id": child_session_id, "error": str(exc)}
                 )
                 continue
+            team = bind_child_invocations(
+                team=team, child_session_id=child_session_id, history=child_history,
+                root_events=self.store.current_projection_events(task_id),
+            )
+            self.store.update_team(task_id, delegations=team["delegations"])
             child_projection = self.projector.project(
                 task_id=task_id,
                 team=team,
@@ -2109,11 +2275,8 @@ class DshMultiAgentRuntime:
             observed_child_sessions.add(child_session_id)
             child_running = child_running or bool(child_summary.get("running"))
             try:
-                child_history = self.client.call(
-                    "session.history",
-                    {"sessionId": child_session_id, "maxMessages": 240},
-                )
-            except AgentRuntimeError as exc:
+                child_history = complete_history(self.client.call, child_session_id)
+            except (AgentRuntimeError, ValueError) as exc:
                 projection_errors.append(
                     {"session_id": child_session_id, "error": str(exc)}
                 )
@@ -2129,6 +2292,7 @@ class DshMultiAgentRuntime:
                 ),
             )
             self.store.persist_projection(task_id=task_id, events=child_projection)
+        self.store.reproject_root_checkpoint_audit(task_id)
         pending = self._pending(team, summaries_by_session=summaries_by_session)
         self._persist_pending_requested(task_id=task_id, team=team, pending=pending)
         pending = self._invalidate_pending_after_terminal(
@@ -2213,7 +2377,7 @@ class DshMultiAgentRuntime:
         for action in classify_conversation_actions(
             task_id=task_id,
             projector_revision=CONVERSATION_PROJECTOR_REVISION,
-            events=effective_projection,
+            events=events,
         ):
             value = asdict(action)
             canonical_agent_turn_id = _agent_turn_id_for_run(
@@ -2295,6 +2459,7 @@ class DshMultiAgentRuntime:
         )
         response = {
             "schema_version": CONVERSATION_EVENT_SCHEMA_VERSION,
+            "task_id": task_id,
             "team_id": team["team_id"],
             "session_id": root_session_id,
             "running": lifecycle_running,
@@ -2408,6 +2573,7 @@ class DshMultiAgentRuntime:
                 team=team,
                 session_id=child_session_id,
                 expected_agent_id=target_agent_id,
+                delegation_id=delegation_id,
             )
             if (
                 identity is None
@@ -2741,6 +2907,17 @@ class DshMultiAgentRuntime:
             )
         cancelled_session_ids: list[str] = []
         cascade_errors: list[dict[str, str]] = []
+        root_was_running = False
+        if team is not None:
+            try:
+                summaries = self.client.call("session.list", {})
+                root_was_running = any(isinstance(item, Mapping)
+                    and item.get("sessionId") == team["root_session_id"]
+                    and item.get("running") is True for item in summaries.get("items", []))
+            except AgentRuntimeError:
+                # The actual cancel RPC remains authoritative; missing pre-read
+                # state must not manufacture a cancelled lifecycle.
+                pass
         for session_id in session_ids:
             try:
                 self.client.call(
@@ -2772,11 +2949,13 @@ class DshMultiAgentRuntime:
                 )
         runs = team.get("runs", []) if team is not None else []
         for run in runs:
-            if not isinstance(run, Mapping) or run.get("status") not in {
+            delayed_active = bool(root_was_running and runs and run is runs[-1]
+                and isinstance(run, Mapping) and run.get("status") == "idle_without_final")
+            if not isinstance(run, Mapping) or (not delayed_active and run.get("status") not in {
                 "queued",
                 "running",
                 "waiting_for_human",
-            }:
+            }):
                 continue
             run_id = run.get("run_id")
             if not isinstance(run_id, str) or not run_id:
@@ -2825,6 +3004,10 @@ class DshMultiAgentRuntime:
         rpc_id: str,
         outcome: str,
     ) -> None:
+        with self._lock:
+            self._answer_approval(task_id, rpc_id, outcome)
+
+    def _answer_approval(self, task_id: str, rpc_id: str, outcome: str) -> None:
         team = self._require_team(task_id)
         session_id, item = self._pending_item(
             team,
@@ -2857,6 +3040,10 @@ class DshMultiAgentRuntime:
         rpc_id: str,
         answers: list[dict[str, Any]],
     ) -> None:
+        with self._lock:
+            self._answer_question(task_id, rpc_id, answers)
+
+    def _answer_question(self, task_id: str, rpc_id: str, answers: list[dict[str, Any]]) -> None:
         team = self._require_team(task_id)
         session_id, item = self._pending_item(
             team,
@@ -3153,6 +3340,17 @@ class DshMultiAgentRuntime:
                 for field in ("turn_id", "call_id"):
                     if observed.get(field):
                         selected[field] = observed[field]
+                if selected.get("kind") == "approval" and selected.get("tool_name") == "model_harness_bind_model_source":
+                    calls = [event for event in self.store.current_projection_events(str(team["task_id"]))
+                        if event.get("event_type") == "tool_call"
+                        and event.get("payload", {}).get("tool_name") == selected["tool_name"]
+                        and all(event.get(field) == selected.get(field) and selected.get(field)
+                            for field in ("session_id", "agent_run_id", "turn_id", "call_id"))]
+                    if len(calls) == 1:
+                        args = structured_arguments(calls[0]["payload"].get("arguments"))
+                        commit = args.get("expected_resolved_commit")
+                        if isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40}", commit):
+                            selected["approval_scope"] = f"固定来源版本 {commit}；只读源文件静态分析"
                 values.append(selected)
         return sorted(values, key=lambda item: str(item.get("received_at") or ""))
 
@@ -3285,7 +3483,8 @@ class DshMultiAgentRuntime:
                 return True
             if session_id in visiting:
                 return False
-            bindings = delegations_by_session.get(session_id, [])
+            bindings = [binding for binding in delegations_by_session.get(session_id, [])
+                if not binding.get("continuation_of")]
             if len(bindings) != 1:
                 return False
             binding = bindings[0]
@@ -3714,6 +3913,7 @@ class DshMultiAgentRuntime:
                 "cancelled",
                 "answered",
                 "invalidated_by_turn_terminal",
+                "superseded_for_discussion",
             }
             else "submitted"
         )
@@ -3868,6 +4068,8 @@ class DshMultiAgentRuntime:
                         delegation.get("lineage_verified") is True
                         and delegation.get("lineage_origin") == "subagent"
                     ),
+                    source_seq_floor=delegation.get("child_source_seq_floor"),
+                    source_seq_ceiling=delegation.get("child_source_seq_ceiling"),
                 )
             )
         return tuple(bindings)
@@ -4103,6 +4305,7 @@ class DshMultiAgentRuntime:
                 "queued",
                 "running",
                 "waiting_for_human",
+                "idle_without_final",
             }:
                 run_updates.append(
                     self.store.update_run(
@@ -4114,6 +4317,7 @@ class DshMultiAgentRuntime:
             elif running and latest.get("status") in {
                 "queued",
                 "waiting_for_human",
+                "idle_without_final",
             }:
                 run_updates.append(
                     self.store.update_run(
@@ -4140,6 +4344,7 @@ class DshMultiAgentRuntime:
                     team=team,
                     run=latest,
                 )
+                turn_cancelled = self._latest_run_turn_cancelled(events=events, team=team, run=latest)
                 reason_codes = list(verdict.reason_codes) if verdict else [
                     "missing_run_verdict"
                 ]
@@ -4159,6 +4364,8 @@ class DshMultiAgentRuntime:
                 terminal_status = (
                     "failed"
                     if turn_error is not None
+                    else "cancelled"
+                    if turn_cancelled is not None
                     else "observation_degraded"
                     if observation_degraded
                     else "completed"
@@ -4171,6 +4378,9 @@ class DshMultiAgentRuntime:
                     else None
                 )
                 evidence = {
+                    **({"terminal_cancel_event_id": turn_cancelled.get("event_id"),
+                        "cancellation_convergence": "observed_turn_cancelled"}
+                        if terminal_status == "cancelled" else {}),
                     "synthesis_verdict_version": verdict_index.version,
                     "synthesis_candidate_event_id": (
                         verdict.accepted_candidate_event_id if verdict else None
@@ -4582,9 +4792,19 @@ class DshMultiAgentRuntime:
             "只有本轮成功领域工具返回的、与当前 task_id 一致的 canonical ObjectRef "
             "才能支撑完成结论；get_task、list 类和 Agent 散文都不是完成证据。"
             "如果证据不足，请如实说明仍在等待什么，不要声称训练、评测或交付已经完成。\n"
-            "任务已绑定后，缺少数据文件、目标列或其他用户输入时，必须使用 ask_user_question 创建一次只问一个字段的"
-            "结构化 question checkpoint，并使用稳定 question id（例如 data_upload 或 target_column）；"
-            "禁止只用自然语言提出请求后结束回合。用户上传或回答后应解析同一个 rpc_id 并续接根会话。\n"
+            "任务绑定前后保持同一种自然对话。先区分用户在回答、追问、补充背景、修改目标，还是要求执行。"
+            "普通澄清、方法解释和目标讨论直接用自然语言交流，不强制逐字段确认；已知信息不要重复询问。"
+            "先直接回答本轮问题，再补充必要依据和一个有用的下一步；短追问不要重述整套方案。"
+            "区分方法本身的可能性与本产品当前可执行能力，不要把暂不支持说成技术上不可能。"
+            "样本数量、模型优劣和误差门槛只能作为待验证建议，不作无证据的绝对断言或替用户定门槛。"
+            "明确区分讨论中的新目标与已保存的任务版本；只有更新工具成功后才能说任务已修改。"
+            "若原任务标题明确描述旧目标，修改目标时通过同一个 update_task_spec 的 name 字段同步标题；"
+            "与目标无关的用户自定义名称保持不变，除非用户要求改名。"
+            "只有需要实际文件、精确选项或不可变人工决策时才用结构化检查点，使用稳定 question id"
+            "（例如 data_upload 或 target_column）。用户尚无数据时先提供格式示例或准备建议，不反复催上传。"
+            "上传和明确回答通过原 rpc_id 续接；普通聊天不作为授权。目标或数据变化后旧确认必须失效。"
+            "建议下一步前核对工具能力；任意外部模型目前仅可发现、分析、规划和资源检查，"
+            "不能把现成模型试跑或适配训练说成已经可执行，只有已验证 Recipe 与 Adapter 可创建 Run。\n"
             "启动真实训练前，根会话必须调用 model_harness_authorize_task_run_start，让用户只批准一次当前"
             "合同、数据指纹和任务版本；再把返回的 run_authorization_id 交给 build_training 专家。"
             "该专家委派必须保持 continuable（省略 run_in_background 或设为 true，绝不能设为 false），"

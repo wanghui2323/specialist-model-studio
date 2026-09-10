@@ -20,7 +20,7 @@ const ui = Object.fromEntries([
   "emptyState", "conversation", "conversationIntro", "messageList",
   "workspaceToggleButton", "workspaceExperience", "workspaceEyebrow", "workspaceTitle", "workspacePhaseBadge", "workspaceSummary", "workspaceTeam", "workspaceTeamTitle", "workspaceTeamCount", "workspaceTeamList", "workspaceResults", "workspaceResultsTitle", "workspaceResultCount", "workspaceResultList", "workspaceTechnicalButton", "workspaceTruthNote", "agentCheckpoint", "agentCheckpointStage", "agentCheckpointTitle", "agentCheckpointState", "agentCheckpointSummary", "agentCheckpointBody", "agentCheckpointActions", "agentCheckpointWorkspaceButton", "agentCheckpointWorkspaceLabel", "agentCheckpointWorkspaceHint", "homeComposerSlot", "homeBoundary", "homeTrainingProof", "composerWrap",
   "agentWorking", "agentWorkingLabel", "cancelAgentButton", "composerForm", "composerNotice", "composerRetry", "composerRetryHint", "composerRetryButton", "composerDelivery", "composerDeliveryLabel", "composerDeliveryDetail", "messageInput", "sendButton", "composerMode", "composerModeLabel",
-  "composerAttachment", "attachmentType", "attachmentName", "attachmentMeta", "attachmentStatus", "retryAttachmentButton", "removeAttachmentButton", "datasetButton", "datasetButtonLabel", "datasetInput", "recipeSampleInput", "inspectorDatasetButton", "inspectorEmpty", "inspectorContent", "objectViewer", "objectViewerTitle", "objectViewerState", "objectViewerSummary", "objectViewerIdentity", "objectViewerJson", "taskStatus", "contextTabs",
+  "composerAttachment", "attachmentType", "attachmentName", "attachmentMeta", "attachmentStatus", "retryAttachmentButton", "removeAttachmentButton", "datasetButton", "datasetButtonLabel", "datasetInput", "recipeSampleInput", "inspectorDatasetButton", "inspectorEmpty", "inspectorContent", "objectViewer", "objectViewerTitle", "objectViewerState", "objectViewerSummary", "objectViewerOverview", "objectViewerIdentity", "objectViewerJson", "taskStatus", "contextTabs",
   "capabilityState", "capabilitySummary", "capabilityFacts", "capabilityAxes", "diagnosticCapabilityState", "diagnosticCapabilityReason", "trainingCapabilityState", "trainingCapabilityReason", "capabilityRecovery", "capabilityNonAction", "datasetCard", "datasetCount", "datasetSummary", "contractCard", "contractState",
   "scaffoldRecipeButton",
   "gateGrid", "confirmations", "confirmContractButton", "approveRunProposalButton", "runEventCount", "inspectorEvents", "resultCard",
@@ -63,7 +63,7 @@ const state = {
   modelSourceProviders: [], modelSourceCandidates: [], modelSourceResolutions: [], modelSourceSearches: [], modelSourceSearch: null, modelSourceMode: "search", modelSourceOperationSeq: 0, modelSourceLoadedTaskId: null, modelSourceCandidateRenderKey: "", modelSourceCheckpointRenderKey: "", modelSourceSearchInFlight: false,
   checkpointCard: null, workspaceAutoKey: null, workspaceProjection: null, workspaceDismissedKey: null, inspectorAutoOpened: false, inspectorOpener: null, inspectorMode: "closed", activeObjectRef: null, activeObjectPayload: null, objectViewerRequestSeq: 0, productRuntime: null, runtimeIssue: null, taskSpecFamilies: [], taskSpecFamiliesError: null, taskSpecRevisions: [], taskSpecDescriptionMode: false, taskSpecQuickReplyKey: "", taskSpecAlternativesOpen: false,
   actionTimelineDisclosure: new Map(), actionResultCache: new Map(), actionResultRequests: new Map(),
-  noticeDismissTimer: null, runtimeRetryTimer: null, runtimeRetryAttempt: 0,
+  noticeDismissTimer: null, runtimeRetryTimer: null, runtimeRetryAttempt: 0, homeAvailabilityProbeSeq: 0, homeTasksReachable: null,
 };
 const checkpointCards = [ui.taskSpecCard, ui.capabilityCard, ui.modelSourceCheckpointCard, ui.modelSourceCard, ui.repositoryAnalysisCard, ui.trainingPlanCard, ui.resourceFeasibilityCard, ui.datasetCard, ui.contractCard].filter(Boolean);
 const checkpointHomes = new Map();
@@ -120,6 +120,7 @@ function responseErrorMessage(status, value, contentType = "") {
   if (isHtmlErrorPayload(value, contentType)) return `服务返回了异常页面（HTTP ${status}），请稍候刷新重试。`;
   return structuredErrorMessage(value);
 }
+function isWorkspaceConnectionError(error) { return error?.status === 0 || [502, 503, 504].includes(error?.status); }
 async function request(path, options = {}) {
   const { json, timeoutMs = 0, ...requestOptions } = options;
   const headers = { ...(requestOptions.headers || {}) };
@@ -182,9 +183,15 @@ function formatRelativeTime(value) {
 }
 function shortId(value) { return value && value.length > 24 ? `${value.slice(0, 12)}…${value.slice(-8)}` : value || "—"; }
 function clearNoticeDismissTimer() { if (state.noticeDismissTimer !== null) { window.clearTimeout(state.noticeDismissTimer); state.noticeDismissTimer = null; } }
-function showNotice(message, tone = "error") { clearNoticeDismissTimer(); delete ui.composerNotice.dataset.runtimeSetup; ui.composerNotice.hidden = false; ui.composerNotice.dataset.tone = tone; ui.composerNotice.textContent = message; }
-function showRuntimeSetupNotice(message) { clearNoticeDismissTimer(); ui.composerNotice.dataset.runtimeSetup = "true"; ui.composerNotice.hidden = false; ui.composerNotice.dataset.tone = "error"; ui.composerNotice.textContent = message; }
-function hideNotice() { clearNoticeDismissTimer(); delete ui.composerNotice.dataset.runtimeSetup; ui.composerNotice.hidden = true; ui.composerNotice.textContent = ""; }
+function showNotice(message, tone = "error") { clearNoticeDismissTimer(); delete ui.composerNotice.dataset.runtimeSetup; delete ui.composerNotice.dataset.noticeScope; ui.composerNotice.hidden = false; ui.composerNotice.dataset.tone = tone; ui.composerNotice.textContent = message; }
+function showConnectionNotice(message, tone = "error") { showNotice(message, tone); ui.composerNotice.dataset.noticeScope = "connection"; }
+function showRuntimeSetupNotice(message) { clearNoticeDismissTimer(); delete ui.composerNotice.dataset.noticeScope; ui.composerNotice.dataset.runtimeSetup = "true"; ui.composerNotice.hidden = false; ui.composerNotice.dataset.tone = "error"; ui.composerNotice.textContent = message; }
+function hideNotice() { clearNoticeDismissTimer(); delete ui.composerNotice.dataset.runtimeSetup; delete ui.composerNotice.dataset.noticeScope; ui.composerNotice.hidden = true; ui.composerNotice.textContent = ""; }
+function clearConnectionNotice() { if (ui.composerNotice.dataset.noticeScope === "connection") hideNotice(); }
+function prepareHomeAvailabilityProbe() {
+  if (ui.composerNotice.dataset.noticeScope === "connection") showConnectionNotice("正在重新检查训练工作台连接…", "ok");
+  else if (ui.composerNotice.dataset.runtimeSetup !== "true") hideNotice();
+}
 function showTransientNotice(message, tone = "ok", durationMs = 6_000) {
   showNotice(message, tone);
   state.noticeDismissTimer = window.setTimeout(() => { state.noticeDismissTimer = null; ui.composerNotice.hidden = true; ui.composerNotice.textContent = ""; }, durationMs);
@@ -302,7 +309,7 @@ function dataUploadQuestionCheckpoint(item) {
   if (!item || item.kind !== "question" || !item.rpc_id || !isPendingHumanCheckpoint(item)) return null;
   const questions = Array.isArray(item.questions) ? item.questions : [];
   const ids = new Set(questions.map((question) => question?.id));
-  return [...DATA_UPLOAD_QUESTION_IDS, "target_column"].some((id) => ids.has(id)) ? item : null;
+  return [...DATA_UPLOAD_QUESTION_IDS].some((id) => ids.has(id)) ? item : null;
 }
 function dataUploadCheckpointAnswers(item, datasetId, targetColumn) {
   if (!dataUploadQuestionCheckpoint(item) || !datasetId) return [];
@@ -474,12 +481,18 @@ function createConversationRequestId() {
   return `message-${Date.now()}-${state.messageRequestSequence}`;
 }
 function beginMessageSubmission(taskId, text) {
+  const checkpoint = taskId === state.selectedTaskId ? currentHumanCheckpoint(state.conversation) : null;
   const previous = state.messageSubmission;
   if (previous?.task_id === taskId && previous.text === text && previous.status === "failed") {
     previous.status = "sending";
+    if (previous.new_request_required === true) {
+      previous.request_id = createConversationRequestId();
+      previous.checkpoint_rpc_id = checkpoint?.rpc_id || null;
+      previous.new_request_required = false;
+    }
     return previous;
   }
-  const submission = { task_id: taskId, text, request_id: createConversationRequestId(), status: "sending" };
+  const submission = { task_id: taskId, text, request_id: createConversationRequestId(), status: "sending", checkpoint_rpc_id: checkpoint?.rpc_id || null };
   state.messageSubmission = submission;
   return submission;
 }
@@ -509,7 +522,7 @@ async function postQueuedConversationMessage(taskId, text) {
   try {
     const response = await request(conversationTransportPath(taskId, "messages"), {
       method: "POST",
-      json: { message: text, mode: DEFAULT_CONVERSATION_MESSAGE_MODE, request_id: submission.request_id },
+      json: { message: text, mode: DEFAULT_CONVERSATION_MESSAGE_MODE, request_id: submission.request_id, ...(submission.checkpoint_rpc_id ? { checkpoint_rpc_id: submission.checkpoint_rpc_id } : {}) },
     });
     const status = runtimeStatusToken(response?.status);
     if (response?.accepted !== true || ["failed", "cancelled", "canceled", "rejected", "interrupted"].includes(status)) {
@@ -520,7 +533,11 @@ async function postQueuedConversationMessage(taskId, text) {
     if (state.messageSubmission?.request_id === submission.request_id) state.messageSubmission = null;
     return response;
   } catch (error) {
-    if (state.messageSubmission?.request_id === submission.request_id) state.messageSubmission.status = "failed";
+    if (state.messageSubmission?.request_id === submission.request_id) {
+      state.messageSubmission.status = "failed";
+      const detail = error?.payload?.detail;
+      state.messageSubmission.new_request_required = detail?.new_request_required === true || detail?.code === "checkpoint_changed";
+    }
     if (state.pendingMessage?.task_id === taskId && state.pendingMessage.text === text) state.pendingMessage = null;
     throw error;
   }
@@ -706,7 +723,7 @@ function renderRuntimeMode(mode) {
   syncComposerDelivery();
 }
 function compatibleAgentRuntime(agent) {
-  return agent?.available === true && agent.real_agent === true && agent.implementation === "dsh_native_subagents" && agent.conversation_schema_version === "2.0" && agent.conversation_projector_revision === "3.2" && agent.synthesis_verdict_version === "1.0" && agent.conversation_action_schema_version === "1.0" && agent.task_truth_source === "TrainingTask";
+  return agent?.available === true && agent.real_agent === true && agent.implementation === "dsh_native_subagents" && agent.conversation_schema_version === "2.0" && agent.conversation_projector_revision === "3.3" && agent.synthesis_verdict_version === "1.0" && agent.conversation_action_schema_version === "1.0" && agent.task_truth_source === "TrainingTask";
 }
 function agentProviderReady(agent) { return agent?.provider?.ready === true && agent.provider.active === true && agent.provider.configured === true; }
 function applyAgentRuntimeStatus(agent) {
@@ -739,13 +756,42 @@ async function loadRuntime() {
   renderProductBoundary();
   renderRuntimeMode(runtimeDisplayMode());
   if (state.task) renderConversation(true);
-  if (state.runtimeReady) state.runtimeRetryAttempt = 0;
+  if (state.runtimeReady) {
+    state.runtimeRetryAttempt = 0;
+    if (state.homeTasksReachable === true) clearConnectionNotice();
+  }
   else if (!state.runtimeIssue) {
     const delays = [2_000, 5_000, 10_000, 15_000];
     const delay = delays[Math.min(state.runtimeRetryAttempt, delays.length - 1)];
     state.runtimeRetryAttempt += 1;
     state.runtimeRetryTimer = window.setTimeout(() => loadRuntime(), delay);
   }
+}
+function reconcileHomeAvailability(tasksFailure = null) {
+  if (tasksFailure) {
+    state.runtimeReady = false; state.runtimeIssue = null;
+    renderRuntimeMode("local");
+    showConnectionNotice(`任务列表暂时无法读取：${tasksFailure.message}。你仍可编辑草稿，连接恢复后再发送。`, "error");
+    return false;
+  }
+  if (state.runtimeReady && state.homeTasksReachable === true) { clearConnectionNotice(); return true; }
+  if (state.runtimeIssue === "provider") {
+    showRuntimeSetupNotice("模型服务尚未配置。请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动；在此之前不会创建训练任务。");
+  } else if (state.runtimeIssue === "incompatible") {
+    showConnectionNotice("AI 服务版本不兼容，对话已暂停。请重启正式服务后再试。", "error");
+  } else {
+    showConnectionNotice("暂时无法连接训练工作台服务。请检查网络后重试。", "error");
+  }
+  return false;
+}
+async function refreshHomeAvailability({ announce = true } = {}) {
+  const probeSeq = ++state.homeAvailabilityProbeSeq;
+  state.homeTasksReachable = null;
+  if (announce) prepareHomeAvailabilityProbe();
+  const results = await Promise.allSettled([loadRuntime(), loadTasks()]);
+  if (probeSeq !== state.homeAvailabilityProbeSeq || state.selectedTaskId) return false;
+  const tasksFailure = results[1].status === "rejected" ? results[1].reason : null;
+  return reconcileHomeAvailability(tasksFailure);
 }
 async function loadHfCapability() {
   try { state.hfCapability = await request("/model-assets/huggingface/capability"); }
@@ -762,7 +808,10 @@ async function loadTaskSpecFamilies() {
   catch (error) { state.taskSpecFamilies = []; state.taskSpecFamiliesError = error.message; return false; }
 }
 async function loadTasks({ selectFromUrl = false } = {}) {
-  state.tasks = (await request("/tasks", { timeoutMs: 12_000 })).tasks || []; renderTaskList();
+  let payload;
+  try { payload = await request("/tasks", { timeoutMs: 12_000 }); state.homeTasksReachable = true; }
+  catch (error) { state.homeTasksReachable = false; throw error; }
+  state.tasks = payload.tasks || []; renderTaskList();
   if (selectFromUrl && !state.selectedTaskId) {
     const params = new URL(location.href).searchParams;
     const requestedConversation = params.get("conversation");
@@ -791,10 +840,10 @@ function renderTaskList() {
     button.addEventListener("click", () => selectTask(task.task_id)); archive.addEventListener("click", () => confirmTaskArchive(task)); row.append(button, archive); ui.taskList.append(row);
   });
 }
-function syncSelectedTaskListStatus(conversation = state.conversation) {
+function syncSelectedTaskListStatus(conversation = state.conversation, projection = null) {
   const task = state.tasks.find((item) => item.task_id === state.selectedTaskId); if (!task) return;
   const button = [...ui.taskList.querySelectorAll(".task-item")].find((item) => item.dataset.taskId === task.task_id); const status = button?.querySelector(".task-workflow"); const dot = status?.querySelector("i"); if (!status || !dot) return;
-  const workflow = taskListStatus(task, conversation); dot.dataset.status = workflow.tone; status.replaceChildren(dot, document.createTextNode(workflow.label));
+  const workflow = conversation?.task_id === task.task_id && projection ? interactionPresentation(task, conversation, projection) : taskListStatus(task, conversation); dot.dataset.status = workflow.tone; status.replaceChildren(dot, document.createTextNode(workflow.label));
 }
 function confirmTaskArchive(task) {
   if (task.status === "running") { showNotice("真实训练运行中，暂不能归档任务。请等待运行结束或先取消训练。"); return; }
@@ -1145,18 +1194,16 @@ function startConversationStream(taskId, token) {
 function syncConversationComposerPlaceholder(conversation = state.conversation, task = state.task) {
   const checkpoint = currentHumanCheckpoint(conversation);
   const uploadCheckpoint = dataUploadQuestionCheckpoint(checkpoint);
-  const actionLabel = ["clarify_task_spec", "confirm_task_spec"].includes(task?.control?.next_action?.id) ? "确认任务理解" : task?.control?.next_action?.label;
   if (!state.runtimeReady) ui.messageInput.placeholder = "AI 未连接，暂时不能继续对话";
   else if (state.cancelRequestInFlight || backgroundCancellationPending(conversation)) ui.messageInput.placeholder = "正在停止当前执行，请等待后端确认…";
-  else if (uploadCheckpoint) ui.messageInput.placeholder = "请先在上方选择 CSV 文件…";
-  else if (checkpoint?.kind === "question") ui.messageInput.placeholder = "直接回答当前问题…";
-  else if (checkpoint?.kind === "approval") ui.messageInput.placeholder = "请使用上方的批准或拒绝按钮…";
+  else if (uploadCheckpoint) ui.messageInput.placeholder = "还没准备好数据？可以先讨论格式或下一步…";
+  else if (checkpoint?.kind === "question") ui.messageInput.placeholder = "继续提问或补充想法；发送后暂缓当前问题…";
+  else if (checkpoint?.kind === "approval") ui.messageInput.placeholder = "有疑问可以先讨论；发送不会批准执行…";
   else if (conversationAgentResponseRunning(conversation)) ui.messageInput.placeholder = "补充下一步要求；消息将在本轮结束后处理…";
   else if (conversationHasBackgroundTraining(conversation)) ui.messageInput.placeholder = "继续和 AI 交流；后台训练不会阻塞新消息…";
   else if (isConversationDraft(state.conversationRecord, task)) ui.messageInput.placeholder = "继续补充你的目标、场景或限制…";
   else if (state.taskSpecDescriptionMode && stageKey(task) === "task_understanding") ui.messageInput.placeholder = "直接告诉 AI：模型接收什么、应该输出什么…";
-  else if (actionLabel) ui.messageInput.placeholder = `告诉 AI：${actionLabel}…`;
-  else ui.messageInput.placeholder = "继续询问或补充下一步要求…";
+  else ui.messageInput.placeholder = "继续提问、补充信息或调整目标…";
 }
 function renderTask(task) {
   syncTaskHeader(task);
@@ -2178,8 +2225,8 @@ function renderWorkspaceDecision(outcome) {
   section.append(gate); ui.workspaceResultList.prepend(section); return true;
 }
 function renderWorkspaceExperience(task, conversation, projection) {
-  state.workspaceProjection = projection; const basePhaseCopy = WORKSPACE_PHASE_COPY[projection.phase] || WORKSPACE_PHASE_COPY.idle; const phaseCopy = projection.phase === "executing" && projection.background?.coordinator_reply_complete ? { ...basePhaseCopy, title: "协调器已回复，后台任务仍在运行", badge: "后台运行中", summary: "协调器这一轮已经回复，但训练或评测尚未终态。最终指标与发布判断会等真实评测完成后再出现。" } : basePhaseCopy; const specialists = projectionSpecialists(projection); const activeSpecialists = activeProjectionSpecialists(projection); const refs = uniqueTaskObjectRefs(task, projection); const evaluationOutcome = workspaceEvaluationOutcome(task);
-  ui.workspaceExperience.hidden = false; ui.workspaceExperience.dataset.phase = projection.phase; ui.workspaceEyebrow.textContent = phaseCopy.eyebrow; ui.workspaceTitle.textContent = phaseCopy.title; ui.workspacePhaseBadge.textContent = phaseCopy.badge; ui.workspaceSummary.textContent = phaseCopy.summary; ui.workspaceToggleButton.querySelector("span").textContent = phaseCopy.toggle;
+  state.workspaceProjection = projection; const evaluationOutcome = workspaceEvaluationOutcome(task); const displayPhase = projection.phase === "idle" && evaluationOutcome.ready ? "result_ready" : projection.phase; const basePhaseCopy = WORKSPACE_PHASE_COPY[displayPhase] || WORKSPACE_PHASE_COPY.idle; const phaseCopy = projection.phase === "executing" && projection.background?.coordinator_reply_complete ? { ...basePhaseCopy, title: "协调器已回复，后台任务仍在运行", badge: "后台运行中", summary: "协调器这一轮已经回复，但训练或评测尚未终态。最终指标与发布判断会等真实评测完成后再出现。" } : basePhaseCopy; const specialists = projectionSpecialists(projection); const activeSpecialists = activeProjectionSpecialists(projection); const refs = uniqueTaskObjectRefs(task, projection);
+  ui.workspaceExperience.hidden = false; ui.workspaceExperience.dataset.phase = displayPhase; ui.workspaceEyebrow.textContent = phaseCopy.eyebrow; ui.workspaceTitle.textContent = phaseCopy.title; ui.workspacePhaseBadge.textContent = phaseCopy.badge; ui.workspaceSummary.textContent = phaseCopy.summary; ui.workspaceToggleButton.querySelector("span").textContent = phaseCopy.toggle;
   clear(ui.workspaceTeamList); const showExecution = projection.phase === "executing" || specialists.length > 0; ui.workspaceTeam.hidden = !showExecution;
   if (showExecution) {
     const visibleSpecialists = activeSpecialists.length ? activeSpecialists : specialists;
@@ -2260,6 +2307,11 @@ function renderAgentSurfaceState(conversation, projection) {
   // delegation belong to the concrete AI turn that produced those actions,
   // not to a persistent banner above every message.
   if (state.runtimeReady && hasSession) return;
+  if (state.runtimeReady && state.conversation == null) {
+    const loading = document.createElement("p"); loading.className = "agent-surface-state";
+    loading.dataset.state = "loading"; loading.setAttribute("role", "status");
+    loading.textContent = "正在恢复对话和执行记录…"; ui.messageList.append(loading); return;
+  }
   const card = document.createElement("article"); card.className = "agent-surface-state"; card.dataset.state = state.runtimeReady ? "unsent" : "unavailable";
   const mark = document.createElement("span"); mark.textContent = state.runtimeReady ? "↗" : "!"; mark.setAttribute("aria-hidden", "true");
   const copy = document.createElement("div"); const title = document.createElement("b"); const detail = document.createElement("p");
@@ -2306,7 +2358,7 @@ function renderConversation(force = false) {
   }
   syncComposerDelivery(conversation);
   if (state.task) syncTaskHeader(state.task, conversation, projection);
-  if (state.task && !draftConversation) { syncTaskSpecCheckpointOwnership(conversation); syncLegacyConfirmationControls(state.task, conversation); syncSelectedTaskListStatus(conversation); }
+  if (state.task && !draftConversation) { syncTaskSpecCheckpointOwnership(conversation); syncLegacyConfirmationControls(state.task, conversation); syncSelectedTaskListStatus(conversation, projection); }
   const observation = conversationObservationKey(conversation);
   const optimistic = state.pendingMessage?.task_id === state.selectedTaskId ? state.pendingMessage : null;
   const items = [...(conversation.items || [])];
@@ -2388,15 +2440,23 @@ function appendAiTurnPlaceholder(target, presentation) {
   placeholder.textContent = presentation.phase === "executing" ? "正在理解任务并准备下一步…" : presentation.phase === "clarifying" ? "我需要你确认一项信息后再继续。" : "这一回合还没有返回可展示的内容。";
   target.append(placeholder);
 }
+function visibleNarrativeIndexes(items) {
+  const lastByText = new Map();
+  items.forEach((item, index) => {
+    if (["coordinator_note", "final_synthesis"].includes(item.kind)) {
+      const text = String(item.text || item.summary || "").trim();
+      lastByText.set(text || `empty:${index}`, index);
+    }
+  });
+  return new Set(lastByText.values());
+}
 function renderConversationTurn(turn, projection, conversation, workItems) {
   const actions = actionsForTurn(turn, projection); let actionsRendered = false; let aiTurn = null;
   const resolvedCheckpoints = [];
   const items = turn.render_items || turn.items || [];
   const current = projection.current_turn?.group_key === turn.group_key;
   const latestPlanIndex = items.reduce((latest, item, index) => item.kind === "coordinator_plan" ? index : latest, -1);
-  const finalNarrativeIndex = items.reduce((latest, item, index) => item.kind === "final_synthesis" ? index : latest, -1);
-  const latestNoteIndex = items.reduce((latest, item, index) => item.kind === "coordinator_note" ? index : latest, -1);
-  const visibleNarrativeIndex = finalNarrativeIndex >= 0 ? finalNarrativeIndex : latestNoteIndex;
+  const narrativeIndexes = visibleNarrativeIndexes(items);
   const recoveredFailures = recoveredDataExperimentFailures(actions, conversation.risks); const failedAction = actions.find((action) => ["failed", "identity_error"].includes(action.status) && !recoveredFailures.has(action));
   const verifiedRoles = new Set(workItems.map((item) => item.role?.role_id).filter(Boolean));
   const verifiedIds = new Set(workItems.flatMap((item) => [item.delegation_id, item.work_item_id]).filter(Boolean));
@@ -2405,12 +2465,13 @@ function renderConversationTurn(turn, projection, conversation, workItems) {
   const delegations = (conversation.delegations || []).filter((item) => verifiedIds.has(item.delegation_id));
   const ensureAiTurn = () => { if (!aiTurn) aiTurn = createAiTurnContainer(turn, projection, conversation, actions); return aiTurn.content; };
   const turnTarget = (role) => InteractionShell.conversationTurnTarget({ role, root: ui.messageList, aiContent: role === "user" ? null : ensureAiTurn() });
-  const renderActions = () => { if (!actionsRendered && actions.length) { renderActionTimeline(actions, delegations, { interactionState: projection.phase === "executing" ? "working" : ["clarifying", "awaiting_approval"].includes(projection.phase) ? "waiting_for_human" : "idle", expertCount: turnVerifiedRoles.size, recoveredFailures, target: turnTarget("assistant") }); actionsRendered = true; } };
+  const turnInteractionState = !current ? "idle" : projection.phase === "executing" ? "working" : ["clarifying", "awaiting_approval"].includes(projection.phase) ? "waiting_for_human" : "idle";
+  const renderActions = () => { if (!actionsRendered && actions.length) { renderActionTimeline(actions, delegations, { interactionState: turnInteractionState, expertCount: turnVerifiedRoles.size, recoveredFailures, target: turnTarget("assistant") }); actionsRendered = true; } };
   items.forEach((item, itemIndex) => {
     if (item.kind === "message" && item.role === "user") { renderConversationItem(item, turnTarget("user")); return; }
     if ((item.kind === "approval" || item.kind === "question") && !isPendingHumanCheckpoint(item)) { resolvedCheckpoints.push(item); return; }
     if (item.kind === "coordinator_plan" && itemIndex !== latestPlanIndex) return;
-    if (["coordinator_note", "final_synthesis"].includes(item.kind) && itemIndex !== visibleNarrativeIndex) return;
+    if (["coordinator_note", "final_synthesis"].includes(item.kind) && !narrativeIndexes.has(itemIndex)) return;
     if (item.kind === "team_activity") {
       const events = (item.events || []).filter((event) => {
         if (!["delegation", "specialist_status", "specialist_output"].includes(event.kind)) return false;
@@ -2435,19 +2496,25 @@ function renderConversationTurn(turn, projection, conversation, workItems) {
   if (aiTurn) appendAiTurnPlaceholder(aiTurn.content, aiTurn.presentation);
 }
 function isWaitingForAnswerAction(action, waitingForHuman = false) {
-  return waitingForHuman && action.status === "running" && action.tool_name === "ask_user_question";
+  if (!waitingForHuman || action.status !== "running") return false;
+  const checkpoint = currentHumanCheckpoint(state.conversation);
+  if (checkpoint?.call_id && action.call_id) return checkpoint.call_id === action.call_id && checkpoint.session_id === action.session_id;
+  return action.tool_name === "ask_user_question" && (!checkpoint?.session_id || checkpoint.session_id === action.session_id);
 }
 function isUserDeclinedAction(action) {
   return action?.status === "failed" && action?.error?.code === "user_rejected";
 }
 function actionDisplayStatus(action, waitingForHuman = false) {
   if (isWaitingForAnswerAction(action, waitingForHuman)) return "waiting";
+  if (action.status === "cancelled" && action.error?.code === "checkpoint_suspended") return "suspended";
   if (isUserDeclinedAction(action)) return "declined";
   return action.status;
 }
 function actionStatusLabel(action, { waitingForHuman = false } = {}) {
   const displayStatus = actionDisplayStatus(action, waitingForHuman);
-  if (displayStatus === "waiting") return "等待回答";
+  if (displayStatus === "waiting") return currentHumanCheckpoint(state.conversation)?.kind === "approval" ? "等待批准" : "等待回答";
+  if (displayStatus === "suspended") return "已暂缓";
+  if (displayStatus === "cancelled") return "已停止";
   if (displayStatus === "running") return "执行中";
   if (displayStatus === "completed") return action.object_refs?.length ? "已返回证据" : "工具已返回";
   if (displayStatus === "declined") return "未执行";
@@ -2467,9 +2534,10 @@ function formatActionDuration(action) {
 function actionTimelineGlance(actions, waitingForHuman, working, recoveredFailures = new Set()) {
   const failed = actions.find((action) => ["failed", "identity_error"].includes(action.status) && !recoveredFailures.has(action) && !isUserDeclinedAction(action));
   if (failed) return `需要处理：${actionTitle(failed)}`;
+  if (waitingForHuman) return "当前有待确认事项；你可以回答、批准，也可以先继续讨论";
+  if (actions.length && actions.every((action) => action.status === "cancelled")) return "检查点已暂缓，正在继续讨论";
   const running = actions.find((action) => action.status === "running" && action.tool_class !== "control");
   if (running) return `正在执行：${actionTitle(running)}`;
-  if (waitingForHuman) return "本轮工具调用已暂停，正在等待你的回答";
   if (actions.some(isUserDeclinedAction)) return "你选择暂不执行，关键操作没有启动";
   const completed = actions.find((action) => action.status === "completed");
   if (working) return completed ? `AI 正在继续处理 · 最近完成：${actionTitle(completed)}` : "AI 正在规划下一步";
@@ -2567,12 +2635,13 @@ function renderActionRow(action, target, { waitingForHuman = false, recovered = 
   if (recovered) { renderRecoveredActionRow(action, target); return; }
   const waitingForAnswer = isWaitingForAnswerAction(action, waitingForHuman); const displayStatus = actionDisplayStatus(action, waitingForHuman);
   const row = document.createElement("article"); row.className = "agent-action"; row.dataset.status = displayStatus; row.dataset.toolClass = action.tool_class; row.dataset.actionId = action.action_id || "identity-error";
-  const mark = document.createElement("i"); mark.setAttribute("aria-hidden", "true"); mark.textContent = displayStatus === "failed" || displayStatus === "identity_error" ? "!" : displayStatus === "declined" ? "—" : displayStatus === "waiting" ? "…" : displayStatus === "running" ? "→" : "✓";
-  const copy = document.createElement("div"); const meta = document.createElement("span"); meta.className = "agent-action-meta"; const role = document.createElement("b"); role.textContent = roleLabel(action.actor_role); const timing = document.createElement("small"); const startedAt = action.started_at || action.created_at || action.time; const heartbeatAt = action.last_heartbeat_at || action.updated_at || action.finished_at; const timingParts = [waitingForAnswer ? "等待回答" : formatActionDuration(action)]; if (startedAt) timingParts.push(`开始 ${formatTime(startedAt)}`); if (displayStatus === "running" && heartbeatAt) timingParts.push(`最近事件 ${formatRelativeTime(heartbeatAt)}`); if (action.tool_class === "control") timingParts.push("控制动作"); timing.textContent = timingParts.join(" · "); meta.append(role, timing);
+  const mark = document.createElement("i"); mark.setAttribute("aria-hidden", "true"); mark.textContent = displayStatus === "failed" || displayStatus === "identity_error" ? "!" : ["declined", "suspended", "cancelled"].includes(displayStatus) ? "—" : displayStatus === "waiting" ? "…" : displayStatus === "running" ? "→" : "✓";
+  const copy = document.createElement("div"); const meta = document.createElement("span"); meta.className = "agent-action-meta"; const role = document.createElement("b"); role.textContent = roleLabel(action.actor_role); const timing = document.createElement("small"); const startedAt = action.started_at || action.created_at || action.time; const heartbeatAt = action.last_heartbeat_at || action.updated_at || action.finished_at; const timingParts = [waitingForAnswer || displayStatus === "suspended" ? actionStatusLabel(action, { waitingForHuman }) : formatActionDuration(action)]; if (startedAt) timingParts.push(`开始 ${formatTime(startedAt)}`); if (displayStatus === "running" && heartbeatAt) timingParts.push(`最近事件 ${formatRelativeTime(heartbeatAt)}`); if (action.tool_class === "control") timingParts.push("控制动作"); timing.textContent = timingParts.join(" · "); meta.append(role, timing);
   const title = document.createElement("h4"); title.textContent = actionTitle(action); copy.append(meta, title);
   if (displayStatus === "declined") { const note = document.createElement("p"); note.className = "agent-action-result"; note.dataset.state = "declined"; note.textContent = "你选择暂不执行，系统没有运行这项操作。"; copy.append(note); }
+  else if (displayStatus === "suspended") { const note = document.createElement("p"); note.className = "agent-action-result"; note.dataset.state = "suspended"; note.textContent = "已暂缓，未提交答案或批准；保留记录供回看。"; copy.append(note); }
   else if (action.error) { const error = document.createElement("p"); error.className = "agent-action-error"; error.textContent = action.error.message || action.error.code || "工具失败但没有返回可读原因。"; copy.append(error); }
-  else { const result = document.createElement("p"); result.className = "agent-action-result"; result.dataset.actionId = action.action_id || "identity-error"; result.dataset.state = displayStatus; result.textContent = waitingForAnswer ? "正在等待你的回答。" : action.status === "running" ? "正在执行，结果返回后会显示在这里。" : action.event_result_ref ? "已返回结果，展开后显示摘要。" : action.object_refs?.length ? `已产生 ${action.object_refs.length} 个可追溯对象。` : "工具已完成，没有返回额外对象。"; copy.append(result); }
+  else { const result = document.createElement("p"); result.className = "agent-action-result"; result.dataset.actionId = action.action_id || "identity-error"; result.dataset.state = displayStatus; result.textContent = waitingForAnswer ? (currentHumanCheckpoint(state.conversation)?.kind === "approval" ? "尚未执行，等待你明确批准；也可以先讨论。" : "正在等待你的回答，也可以先继续讨论。") : action.status === "running" ? "正在执行，结果返回后会显示在这里。" : action.event_result_ref ? "已返回结果，展开后显示摘要。" : action.object_refs?.length ? `已产生 ${action.object_refs.length} 个可追溯对象。` : "工具已完成，没有返回额外对象。"; copy.append(result); }
   const evidence = document.createElement("div"); evidence.className = "agent-action-evidence"; appendObjectRefs(evidence, action.object_refs || []);
   if (action.event_result_ref) { const button = document.createElement("button"); button.type = "button"; button.textContent = "技术详情"; button.setAttribute("aria-label", `查看“${actionTitle(action)}”的完整脱敏技术详情`); button.addEventListener("click", () => openEventResultRef(action.event_result_ref)); evidence.append(button); }
   if (evidence.childElementCount) copy.append(evidence); const status = document.createElement("em"); status.textContent = actionStatusLabel(action, { waitingForHuman }); row.append(mark, copy, status); target.append(row);
@@ -2580,13 +2649,13 @@ function renderActionRow(action, target, { waitingForHuman = false, recovered = 
 function renderDelegationGroup(group, groups, target, visited, depth = 0, { waitingForHuman = false, recoveredFailures = new Set() } = {}) {
   if (visited.has(group.id)) return; visited.add(group.id);
   const details = document.createElement("details"); details.className = "delegation-group"; const hasDeclined = group.actions.some(isUserDeclinedAction); const hasFailure = group.actions.some((action) => ["failed", "identity_error"].includes(action.status) && !recoveredFailures.has(action) && !isUserDeclinedAction(action)); const waitingForAnswer = group.actions.some((action) => isWaitingForAnswerAction(action, waitingForHuman)); const running = group.actions.some((action) => action.status === "running" && !isWaitingForAnswerAction(action, waitingForHuman)); details.open = depth === 0 || running || waitingForAnswer || hasFailure; details.dataset.status = hasFailure ? "failed" : running ? "running" : waitingForAnswer ? "waiting" : hasDeclined ? "declined" : "completed";
-  const summary = document.createElement("summary"); const copy = document.createElement("span"); const title = document.createElement("b"); const first = group.actions[0]; const delegationAction = group.actions.find((action) => action.tool_class === "delegation"); const delegatedRole = delegationAction?.tool_name && ConversationView?.ROLE_LABELS?.[delegationAction.tool_name] ? delegationAction.tool_name : null; const summaryRole = group.root ? "orchestrator" : group.binding?.target_agent_id || delegatedRole || first?.actor_role; title.textContent = group.unverified ? "未能验证归属的运行时观察" : group.root ? "训练协调器" : roleLabel(summaryRole); const counts = document.createElement("small"); const domainCount = group.actions.filter((action) => action.tool_class === "domain").length; const controlCount = group.actions.filter((action) => action.tool_class === "control").length; const objectCount = group.actions.reduce((total, action) => total + (action.object_refs?.length || 0), 0); counts.textContent = `${roleLabel(summaryRole)} · ${domainCount} 个领域动作 · ${controlCount} 个控制动作 · ${objectCount} 个对象`; copy.append(title, counts); const stateLabel = document.createElement("em"); stateLabel.textContent = hasFailure ? "需要处理" : running ? "执行中" : waitingForAnswer ? "等待回答" : hasDeclined ? "你选择暂不执行" : "已结束"; summary.append(copy, stateLabel); details.append(summary);
+  const summary = document.createElement("summary"); const copy = document.createElement("span"); const title = document.createElement("b"); const first = group.actions[0]; const delegationAction = group.actions.find((action) => action.tool_class === "delegation"); const delegatedRole = delegationAction?.tool_name && ConversationView?.ROLE_LABELS?.[delegationAction.tool_name] ? delegationAction.tool_name : null; const summaryRole = group.root ? "orchestrator" : group.binding?.target_agent_id || delegatedRole || first?.actor_role; title.textContent = group.unverified ? "未能验证归属的运行时观察" : group.root ? "训练协调器" : roleLabel(summaryRole); const counts = document.createElement("small"); const domainCount = group.actions.filter((action) => action.tool_class === "domain").length; const controlCount = group.actions.filter((action) => action.tool_class === "control").length; const objectCount = group.actions.reduce((total, action) => total + (action.object_refs?.length || 0), 0); counts.textContent = `${roleLabel(summaryRole)} · ${domainCount} 个领域动作 · ${controlCount} 个控制动作 · ${objectCount} 个对象`; copy.append(title, counts); const stateLabel = document.createElement("em"); stateLabel.textContent = hasFailure ? "需要处理" : running ? "执行中" : waitingForAnswer ? "等待你的决定" : hasDeclined ? "你选择暂不执行" : "已结束"; summary.append(copy, stateLabel); details.append(summary);
   const list = document.createElement("div"); list.className = "agent-action-list"; group.actions.forEach((action) => renderActionRow(action, list, { waitingForHuman, recovered: recoveredFailures.has(action) }));
   (group.children || []).map((id) => groups.get(id)).filter(Boolean).forEach((child) => renderDelegationGroup(child, groups, list, visited, depth + 1, { waitingForHuman, recoveredFailures })); details.append(list); target.append(details);
 }
 function renderActionTimeline(actions, delegations = [], { interactionState = "idle", expertCount = 0, recoveredFailures = new Set(), target = ui.messageList } = {}) {
   if (!actions.length) return; const section = document.createElement("details"); section.className = "action-timeline"; section.dataset.interactionKind = "action-group"; section.setAttribute("aria-label", "智能体真实执行过程");
-  const waitingForHuman = interactionState === "waiting_for_human"; const declinedCount = actions.filter(isUserDeclinedAction).length; const failedCount = actions.filter((action) => ["failed", "identity_error"].includes(action.status) && !recoveredFailures.has(action) && !isUserDeclinedAction(action)).length; const waitingActionCount = actions.filter((action) => isWaitingForAnswerAction(action, waitingForHuman)).length; const runningCount = actions.filter((action) => action.status === "running" && !isWaitingForAnswerAction(action, waitingForHuman)).length; const working = interactionState === "working"; section.dataset.status = failedCount ? "failed" : runningCount || working ? "running" : waitingActionCount ? "waiting" : declinedCount ? "declined" : "completed"; section.dataset.recoveredFailures = String(recoveredFailures.size);
+  const waitingForHuman = interactionState === "waiting_for_human"; const declinedCount = actions.filter(isUserDeclinedAction).length; const failedCount = actions.filter((action) => ["failed", "identity_error"].includes(action.status) && !recoveredFailures.has(action) && !isUserDeclinedAction(action)).length; const waitingActionCount = actions.filter((action) => isWaitingForAnswerAction(action, waitingForHuman)).length; const runningCount = actions.filter((action) => action.status === "running" && !isWaitingForAnswerAction(action, waitingForHuman)).length; const working = interactionState === "working"; const suspended = actions.some((action) => action.status === "cancelled"); section.dataset.status = failedCount ? "failed" : runningCount || working ? "running" : waitingActionCount ? "waiting" : declinedCount ? "declined" : suspended ? "suspended" : "completed"; section.dataset.recoveredFailures = String(recoveredFailures.size);
   const turnKey = actions.find((action) => action.turn_id)?.turn_id || actions[0]?.agent_run_id || "unscoped"; const disclosureKey = `${state.selectedTaskId || "task"}:${turnKey}`; const savedOpen = state.actionTimelineDisclosure.get(disclosureKey); section.open = savedOpen === undefined ? Boolean(failedCount) : savedOpen; section.dataset.defaultDisclosure = section.open ? "open" : "closed";
   const header = document.createElement("summary"); const copy = document.createElement("div"); const kicker = document.createElement("span"); kicker.textContent = "执行过程"; const title = document.createElement("h3"); title.textContent = waitingForHuman ? "本轮已经做了什么" : runningCount ? "AI 正在调用工具" : working ? "AI 正在处理" : failedCount ? "执行过程包含需要处理的问题" : declinedCount ? "你选择暂不执行" : "查看智能体执行过程"; const glance = document.createElement("p"); glance.className = "action-timeline-glance"; glance.textContent = actionTimelineGlance(actions, waitingForHuman, working, recoveredFailures); copy.append(kicker, title, glance); const count = document.createElement("b"); const countLabel = () => `${expertCount ? `${expertCount} 位专家 · ` : ""}${actions.length} 项 · ${section.open ? "收起" : "展开"}`; count.textContent = countLabel(); header.append(copy, count); section.append(header);
   section.addEventListener("toggle", () => { state.actionTimelineDisclosure.set(disclosureKey, section.open); count.textContent = countLabel(); hydrateActionTimelineResults(section, actions); });
@@ -2609,7 +2678,7 @@ function renderCheckpointHistory(items, target = ui.messageList) {
   const details = document.createElement("details"); details.className = "checkpoint-history";
   const summary = document.createElement("summary"); const label = document.createElement("span"); const title = document.createElement("b"); title.textContent = "已处理的人工确认"; const hint = document.createElement("small"); hint.textContent = "仅供回看，不是当前待办"; label.append(title, hint); const count = document.createElement("em"); count.textContent = `${items.length} 项`; summary.append(label, count); details.append(summary);
   const list = document.createElement("div"); list.className = "checkpoint-history-list";
-  items.slice(-8).forEach((item) => { const row = document.createElement("div"); const name = document.createElement("b"); name.textContent = item.kind === "approval" ? item.title || "关键操作批准" : item.title || item.questions?.[0]?.header || "补充信息"; const status = document.createElement("span"); status.textContent = eventStatusLabel(item.status); row.append(name, status); list.append(row); });
+  items.slice(-8).forEach((item) => { const row = document.createElement("div"); const name = document.createElement("b"); name.textContent = item.kind === "approval" ? item.title || "关键操作批准" : item.title || item.questions?.[0]?.header || "补充信息"; const status = document.createElement("span"); status.textContent = (item.outcome || item.payload?.outcome) === "superseded_for_discussion" ? "已暂缓 · 继续讨论" : eventStatusLabel(item.status); row.append(name, status); list.append(row); });
   details.append(list); target.append(details);
 }
 function renderConversationItem(item, target = ui.messageList) {
@@ -2798,27 +2867,13 @@ function conversationPreview(value, limit = 460) {
   const text = humanizeCoordinatorText(selected || String(value || ""));
   return text.length > limit ? `${text.slice(0, limit).trim()}…` : text;
 }
-function latestCoordinatorNoteEventId() {
-  return [...(state.conversation?.items || [])].reverse().find((event) => event?.type === "coordinator_note" || event?.event_type === "coordinator_note")?.event_id || null;
-}
-function appendCoordinatorNextAction(body, item) {
-  if (item?.event_id !== latestCoordinatorNoteEventId() || currentHumanCheckpoint(state.conversation) || state.task?.status !== "awaiting_data") return;
-  const row = document.createElement("div"); row.className = "message-next-action";
-  const button = document.createElement("button"); button.type = "button"; button.className = "checkpoint-upload-button"; button.textContent = state.task?.recipe_id === "tabular-regression" ? "选择 CSV 文件" : "选择数据文件";
-  button.addEventListener("click", () => { ui.datasetInput.value = ""; ui.datasetInput.click(); });
-  const hint = document.createElement("small"); hint.textContent = "文件会先在本机导入并体检；页面不会要求你填写电脑路径。";
-  row.append(button, hint); body.append(row);
-}
 function renderCoordinatorNote(item, target = ui.messageList) {
   const row = document.createElement("article"); row.className = "message"; row.dataset.role = "assistant"; row.dataset.messageType = "coordinator_note"; row.dataset.interactionKind = "natural-dialogue";
   const avatar = document.createElement("span"); avatar.className = "message-avatar"; avatar.textContent = "AI";
-  const body = document.createElement("div"); body.className = "message-body"; const meta = document.createElement("div"); meta.className = "message-meta"; const author = document.createElement("b"); author.textContent = "AI"; const truth = document.createElement("span"); truth.className = "message-truth"; truth.textContent = "过程说明"; truth.title = "这是当前回合的过程说明，最终结果以任务证据为准"; const time = document.createElement("time"); time.textContent = formatTime(item.time); meta.append(author, truth, time);
+  const body = document.createElement("div"); body.className = "message-body"; const meta = document.createElement("div"); meta.className = "message-meta"; const author = document.createElement("b"); author.textContent = "AI"; const time = document.createElement("time"); time.textContent = formatTime(item.time); meta.append(author, time);
   const content = item.text || item.summary || "AI 没有提供说明。"; body.append(meta);
-  if (content.length > 700 || content.split(/\r?\n/u).length > 10) {
-    const preview = document.createElement("div"); preview.className = "message-copy message-preview"; renderRichText(preview, conversationPreview(content)); body.append(preview);
-    const details = document.createElement("details"); details.className = "message-detail"; const summary = document.createElement("summary"); summary.textContent = "查看完整技术说明"; const copy = document.createElement("div"); copy.className = "message-copy"; renderRichText(copy, content); details.append(summary, copy); body.append(details);
-  } else { const copy = document.createElement("div"); copy.className = "message-copy"; renderRichText(copy, humanizeCoordinatorText(content)); body.append(copy); }
-  appendCoordinatorNextAction(body, item);
+  // Answer visibility is independent from evidence-backed training completion.
+  const copy = document.createElement("div"); copy.className = "message-copy"; renderRichText(copy, humanizeCoordinatorText(content)); body.append(copy);
   row.append(avatar, body); target.append(row);
 }
 function roleLabel(value) { return ConversationView?.ROLE_LABELS?.[value] || value || "训练团队"; }
@@ -2832,13 +2887,18 @@ function optionPresentation(value) {
 }
 function eventStatusLabel(value) { return ({ queued: "排队中", running: "执行中", waiting: "等待中", pending: "待处理", completed: "已完成", failed: "失败", cancelled: "已取消", rejected: "已拒绝", allowed: "已批准", resolved: "已处理", invalidated: "已失效" })[value] || value || "状态未知"; }
 function approvalPresentation(item) {
-  const raw = `${item?.title || ""} ${item?.reason || ""} ${item?.summary || ""} ${item?.tool_name || item?.name || ""}`.toLowerCase();
-  if (/(?:start_task_run|start.*run|build_training|启动.*训练|开始.*训练)/u.test(raw)) return { title: "批准方案并启动本次训练", copy: "批准后，训练协调器只会按当前已冻结的数据与训练合同启动一次真实 Run。", allow: "批准并启动训练", reject: "暂不启动" };
-  if (/(?:confirm_contract|configure_contract|训练合同|contract)/u.test(raw)) return { title: "确认并锁定这版训练合同", copy: "请核对目标、数据、评测门槛和资源限制；批准只对当前版本有效。", allow: "确认并锁定", reject: "返回修改" };
-  if (/(?:authorize_sample_inference|sample[ _-]*inference|新样本.*试跑|样本.*试跑)/u.test(raw)) return { title: "批准这次新样本试跑", copy: "批准后只会对当前任务、当前训练结果和这份已上传的新样本执行一次推理；不会重新训练或修改模型。", allow: "批准本次试跑", reject: "暂不试跑" };
-  if (/(?:download_artifact_bundle|download.*artifact bundle|下载.*交付包)/u.test(raw)) return { title: "确认下载这个交付包", copy: "批准只允许下载当前任务中这个已核验的 ZIP 一次，并写入你选择的新文件；不会复用构建授权，也不会覆盖已有文件。", allow: "确认并下载", reject: "暂不下载" };
-  if (/(?:build_artifact_bundle|artifact bundle|构建.*交付包)/u.test(raw)) return { title: "构建可下载交付包", copy: "批准后会把本次运行中允许交付的模型、指标与预测结果打包；原始数据和内部路径不会进入交付包。", allow: "批准构建交付包", reject: "暂不打包" };
-  if (/(?:dataset|data|数据)/u.test(raw)) return { title: "批准导入并体检这份数据", copy: "系统会按当前任务的数据合同读取文件，并留下可追溯的数据指纹。", allow: "批准并继续", reject: "暂不导入" };
+  // The approval subject is a typed runtime fact, never inferred from prose.
+  const raw = String(item?.tool_name || item?.name || "").toLowerCase();
+  if (raw === "model_harness_bind_model_source") return { title: "确认绑定来源并做静态分析", copy: "批准只会绑定已解析的不可变来源，并读取公开源文件保存静态分析证据；不代表批准下载权重、安装代码或训练。", allow: "确认绑定并分析", reject: "暂不绑定" };
+  if (raw === "model_harness_decide_training_plan") return { title: "确认这版执行计划", copy: "请核对计划版本、资源和安全边界；计划批准不等同于运行或能力注册批准。", allow: "确认当前计划", reject: "返回修改" };
+  if (raw === "model_harness_register_recipe") return { title: "批准注册这份已验证能力", copy: "注册必须匹配本次真实验证证据与摘要，不会自动启动训练。", allow: "批准本次注册", reject: "暂不注册" };
+  if (raw === "model_harness_check_resource_feasibility") return { title: "批准检查本机资源条件", copy: "按当前已批准计划记录机器与隔离环境情况；探测到 GPU 不代表当前执行器能使用它。", allow: "批准资源检查", reject: "暂不检查" };
+  if (["model_harness_authorize_task_run_start", "model_harness_start_task_run"].includes(raw)) return { title: "批准方案并启动本次训练", copy: "批准后，训练协调器只会按当前已冻结的数据与训练合同启动一次真实 Run。", allow: "批准并启动训练", reject: "暂不启动" };
+  if (raw === "model_harness_confirm_contract") return { title: "确认并锁定这版训练合同", copy: "请核对目标、数据、评测门槛和资源限制；批准只对当前版本有效。", allow: "确认并锁定", reject: "返回修改" };
+  if (["model_harness_authorize_sample_inference", "model_harness_run_sample_inference"].includes(raw)) return { title: "批准这次新样本试跑", copy: "批准后只会对当前任务、当前训练结果和这份已上传的新样本执行一次推理；不会重新训练或修改模型。", allow: "批准本次试跑", reject: "暂不试跑" };
+  if (raw === "model_harness_download_artifact_bundle") return { title: "确认下载这个交付包", copy: "批准只允许下载当前任务中这个已核验的 ZIP 一次，并写入你选择的新文件；不会复用构建授权，也不会覆盖已有文件。", allow: "确认并下载", reject: "暂不下载" };
+  if (["model_harness_authorize_artifact_bundle_build", "model_harness_build_artifact_bundle"].includes(raw)) return { title: "构建可下载交付包", copy: "批准后会把本次运行中允许交付的模型、指标与预测结果打包；原始数据和内部路径不会进入交付包。", allow: "批准构建交付包", reject: "暂不打包" };
+  if (raw === "model_harness_import_dataset") return { title: "批准导入并体检这份数据", copy: "系统会按当前任务的数据合同读取文件，并留下可追溯的数据指纹。", allow: "批准并继续", reject: "暂不导入" };
   return { title: item?.title || "批准关键操作", copy: item?.reason || item?.summary || "协调器请求执行会改变任务状态的操作。", allow: "批准并继续", reject: "暂不执行" };
 }
 function appendApprovalScope(card, item) {
@@ -2850,7 +2910,7 @@ function appendApprovalScope(card, item) {
   ].filter(([, value]) => value !== undefined && value !== null && value !== "");
   if (!fields.length) return;
   const list = document.createElement("dl"); list.className = "approval-scope";
-  fields.forEach(([label, value]) => { const row = document.createElement("div"); const term = document.createElement("dt"); term.textContent = label; const detail = document.createElement("dd"); detail.textContent = shortId(String(value)); row.append(term, detail); list.append(row); });
+  fields.forEach(([label, value]) => { const row = document.createElement("div"); const term = document.createElement("dt"); term.textContent = label; const detail = document.createElement("dd"); detail.textContent = String(value); row.append(term, detail); list.append(row); });
   card.append(list);
 }
 function agentActivityLabel(active) {
@@ -2947,7 +3007,7 @@ function appendInferenceInputActions(actions, checkpoint) {
   actions.append(picker, choose, hint);
 }
 function renderHumanCheckpoint(item, { interactive = true, target = ui.messageList } = {}) {
-  const card = document.createElement("article"); card.className = "decision-card human-checkpoint"; card.dataset.status = item.status; card.dataset.interactionKind = "human-checkpoint"; if (item.rpc_id) card.dataset.rpcId = item.rpc_id; card.tabIndex = -1; const pending = item.status === "pending" || item.status === "waiting" || !item.status; const canRespond = pending && interactive && state.runtimeReady; card.dataset.interactive = String(canRespond); const uploadCheckpoint = canRespond ? dataUploadQuestionCheckpoint(item) : null; const inferenceCheckpoint = canRespond ? inferenceInputQuestionCheckpoint(item) : null; const approval = item.kind === "approval" ? approvalPresentation(item) : null;
+  const card = document.createElement("article"); card.className = "decision-card human-checkpoint"; card.dataset.status = item.status; card.dataset.interactionKind = "human-checkpoint"; if (item.rpc_id) card.dataset.rpcId = item.rpc_id; card.tabIndex = -1; const pending = item.status === "pending" || item.status === "waiting" || !item.status; const discussing = state.messageSubmission?.status === "sending" && state.messageSubmission?.checkpoint_rpc_id === item.rpc_id; const canRespond = pending && interactive && state.runtimeReady && !discussing; card.dataset.interactive = String(canRespond); const uploadCheckpoint = canRespond ? dataUploadQuestionCheckpoint(item) : null; const inferenceCheckpoint = canRespond ? inferenceInputQuestionCheckpoint(item) : null; const approval = item.kind === "approval" ? approvalPresentation(item) : null;
   if (uploadCheckpoint) card.classList.add("data-upload-checkpoint");
   if (inferenceCheckpoint) card.classList.add("inference-input-checkpoint");
   const cancelling = state.cancelRequestInFlight === true || backgroundCancellationPending(state.conversation);
@@ -2959,22 +3019,27 @@ function renderHumanCheckpoint(item, { interactive = true, target = ui.messageLi
     const actions = document.createElement("div"); actions.className = "decision-actions";
     if (item.kind === "approval") { const allow = document.createElement("button"); allow.type = "button"; allow.textContent = approval.allow; const reject = document.createElement("button"); reject.type = "button"; reject.textContent = approval.reject; allow.addEventListener("click", () => answerApproval(item, "allowed-once", allow)); reject.addEventListener("click", () => answerApproval(item, "rejected", reject)); actions.append(allow, reject); }
     else if (uploadCheckpoint) {
-      actions.classList.add("data-upload-actions"); const choose = document.createElement("button"); choose.type = "button"; choose.className = "checkpoint-upload-button"; choose.textContent = "选择 CSV 文件"; choose.addEventListener("click", () => { ui.datasetInput.value = ""; ui.datasetInput.click(); }); const hint = document.createElement("small"); hint.textContent = "页面不会展示本机路径；协调器只会收到导入后的数据集编号和你选择的预测列。"; actions.append(choose, hint);
+      actions.classList.add("data-upload-actions"); const choose = document.createElement("button"); choose.type = "button"; choose.className = "checkpoint-upload-button"; choose.textContent = state.task?.recipe_id === "tabular-regression" ? "选择 CSV 文件" : "选择 CSV 或 ZIP 文件"; choose.addEventListener("click", () => { ui.datasetInput.value = ""; ui.datasetInput.click(); }); const hint = document.createElement("small"); hint.textContent = "页面不会展示本机路径；协调器只会收到导入后的数据集编号和你选择的预测列。"; actions.append(choose, hint);
     } else if (inferenceCheckpoint) appendInferenceInputActions(actions, inferenceCheckpoint);
     else {
       const question = item.questions?.length === 1 ? item.questions[0] : null; const options = question?.options || []; const inline = question && !question.multiSelect && options.length >= 2 && options.length <= 4;
       if (inline) {
         actions.classList.add("human-choice-list");
         options.forEach((option) => { const presentation = optionPresentation(option.label); const button = document.createElement("button"); button.type = "button"; button.className = "human-choice"; button.dataset.recommended = String(presentation.recommended); const label = document.createElement("b"); label.textContent = presentation.label; const detail = document.createElement("small"); detail.textContent = option.description || "选择后，协调器会按这条路径继续。"; button.append(label, detail); button.addEventListener("click", async () => { const buttons = [...actions.querySelectorAll("button")]; buttons.forEach((candidate) => { candidate.disabled = true; }); button.setAttribute("aria-busy", "true"); try { await postQuestionAnswers(item, [{ id: question.id, selected: [option.label] }]); await refreshSelected({ force: true }); } catch (error) { showNotice(error.message); buttons.forEach((candidate) => { candidate.disabled = false; }); } finally { button.removeAttribute("aria-busy"); } }); actions.append(button); });
-        const custom = document.createElement("button"); custom.type = "button"; custom.className = "human-choice-custom"; custom.textContent = "都不符合，我想补充说明"; custom.addEventListener("click", () => { ui.messageInput.focus(); showNotice("请直接在下方输入你的想法；这条消息会回答当前问题，不会启动另一条流程。", "ok"); }); actions.append(custom);
+        const custom = document.createElement("button"); custom.type = "button"; custom.className = "human-choice-custom"; custom.textContent = "填写其他答案"; custom.addEventListener("click", () => openQuestionDialog(item)); actions.append(custom);
       } else { const answer = document.createElement("button"); answer.type = "button"; answer.textContent = "填写回答"; answer.addEventListener("click", () => openQuestionDialog(item)); actions.append(answer); }
     }
     card.append(actions);
+    const discussion = document.createElement("p"); discussion.className = "checkpoint-discussion-hint"; discussion.textContent = "也可以在下方继续提问或修改想法。发送消息会暂缓此检查点，不会批准执行或代填答案；讨论后需要时会重新确认。"; card.append(discussion);
   }
   appendObjectRefs(card, item.object_refs); target.append(card);
 }
 function renderTurnTerminal(item, target = ui.messageList) {
   const reasonCode = item.reason_code || item.cancellation_reason || item.error?.code || "";
+  if (item.kind === "turn_cancelled" && item.payload?.reason === "checkpoint_discussion") {
+    const note = document.createElement("p"); note.className = "checkpoint-discussion-hint";
+    note.textContent = "已暂缓这次确认，继续讨论；没有提交答案或批准。"; target.append(note); return;
+  }
   const cancelledTitles = { user_cancelled: "你已停止本轮智能体", safety_stop: "安全检查停止了本轮执行", tool_rejected: "关键操作未获批准，本轮已停止", timeout: "等待超时，本轮已停止", stopped_with_checkpoint: "本轮已停在人工确认点" };
   const card = document.createElement("article"); card.className = "turn-terminal"; card.dataset.status = item.kind === "turn_cancelled" ? reasonCode || "stopped" : "failed"; const title = document.createElement("b"); title.textContent = item.kind === "turn_cancelled" ? cancelledTitles[reasonCode] || "本轮智能体已停止" : "本轮智能体执行失败"; const copy = document.createElement("p"); copy.textContent = item.summary || item.reason || item.error?.message || "运行时没有提供失败原因。"; card.append(title, copy); appendObjectRefs(card, item.object_refs); appendRecoveryActions(card, item); target.append(card);
 }
@@ -3005,19 +3070,65 @@ function objectRefEndpoint(ref) {
   if (type === "blocker") return `/tasks/${taskId}/blockers/${id}`;
   if (type === "evaluation_report" && runId) return `/tasks/${taskId}/runs/${runId}/evaluation-report`;
   if (type === "artifact_bundle" && runId) return `/tasks/${taskId}/runs/${runId}/artifact-bundles/${id}`;
+  if (type === "inference_input" && runId) return `/tasks/${taskId}/runs/${runId}/inference-inputs/${id}`;
   if (type === "resource_feasibility") {
     const kind = resourceRefKind(ref); if (kind === "resource_probe") return `/tasks/${taskId}/resource-probes/${id}`; if (kind === "environment_lock") return `/tasks/${taskId}/environment-locks/${id}`; if (kind === "resource_fit_report") return `/tasks/${taskId}/resource-fit-reports/${id}`;
   }
   return null;
 }
+function objectViewerPresentation(ref, payload) {
+  const type = normalizeObjectRefType(ref?.type);
+  if (type === "blocker" && payload?.blocker) {
+    const blocker = payload.blocker;
+    return { title: "当前阻断原因", rows: [["诊断结果", blocker.message || "未记录原因"], ["阻断类型", blocker.code || "未记录"], ["发生阶段", blocker.stage || "未记录"], ["是否允许创建训练", blocker.rule?.run_creation_allowed === false ? "不允许" : "须另行核对执行门槛"]], note: "阻断证据说明当前不能继续的原因，不是训练成功。复核或更换方案不会自动获得执行许可。", files: [] };
+  }
+  if (type === "inference_input" && payload?.inference_input) {
+    const input = payload.inference_input;
+    return { title: "独立推理样本", rows: [["文件", input.filename || "未记录"], ["样本类型", input.sample_type || "未记录"], ["使用状态", ({ staged: "待试跑", consumed: "已用于试跑", consuming: "试跑中", failed: "试跑失败" })[input.status] || input.status || "未记录"], ["试跑记录", input.outcome?.sample_inference_check_id || "未记录"]], note: "这里只展示这条输入的保存与使用记录，不代表预测准确度。没有参考答案的试跑只能验证执行链路。", files: [] };
+  }
+  if (type === "artifact_bundle" && payload?.artifact_bundle) {
+    const bundle = payload.artifact_bundle; const manifest = bundle.manifest || {}; const privacy = manifest.privacy_boundary || {};
+    const files = Array.isArray(manifest.files) ? manifest.files.filter((file) => typeof file?.path === "string") : [];
+    const privacyKnown = ["raw_data_included", "test_references_included", "internal_state_included"].every((key) => privacy[key] === false);
+    return { title: "模型交付包", rows: [
+      ["生成状态", bundle.status === "completed" ? "已生成" : bundle.status || "未记录"],
+      ["文件大小", Number.isFinite(bundle.archive?.size_bytes) ? `${(bundle.archive.size_bytes / 1024).toFixed(1)} KB` : "未记录"],
+      ["文件数量", `${files.length} 项（另附清单）`],
+      ["发布审阅", bundle.release_ready === true ? "评测允许进入审阅，尚不代表已发布" : "未确认满足发布门槛"],
+    ], note: privacyKnown ? "清单确认未打包原始数据、最终测试集引用或内部运行状态。模型本身仍需按数据使用要求管理。" : "隐私排除项未完整确认，请展开原始证据核对后再分享。", files: files.map((file) => file.path) };
+  }
+  if (type === "evaluation_report" && payload?.evaluation_report) {
+    const report = payload.evaluation_report; const checks = Array.isArray(report.integrity_checks) ? report.integrity_checks : []; const gates = Object.entries(report.metric_gates || {});
+    return { title: "可信评测报告", rows: [
+      ["评测结论", report.release_ready === true ? "允许进入发布审阅" : report.conclusion || "未记录"],
+      ["证据完整性", `${checks.filter((item) => item.passed === true).length} / ${checks.length} 项通过`],
+      ["指标门槛", `${gates.filter(([, passed]) => passed === true).length} / ${gates.length} 项通过`],
+      ["最终测试样本", Number.isFinite(report.test_sample_count) ? `${report.test_sample_count} 条` : "未记录"],
+      ["测试集污染", report.test_contaminated === false ? "未发现" : report.test_contaminated === true ? "已发现，不能据此发布" : "未记录"],
+    ], note: "这是所选 Run 的固定评测证据。指标通过不等同于真实业务验收或生产发布。", files: [] };
+  }
+  return null;
+}
+function renderObjectViewerOverview(ref, payload) {
+  clear(ui.objectViewerOverview); const presentation = objectViewerPresentation(ref, payload); ui.objectViewerOverview.hidden = !presentation;
+  if (!presentation) return;
+  const title = document.createElement("h3"); title.textContent = presentation.title; const list = document.createElement("dl");
+  presentation.rows.forEach(([label, value]) => { const row = document.createElement("div"); const term = document.createElement("dt"); term.textContent = label; const detail = document.createElement("dd"); detail.textContent = value; row.append(term, detail); list.append(row); });
+  const note = document.createElement("p"); note.textContent = presentation.note; ui.objectViewerOverview.append(title, list, note);
+  if (presentation.files.length) { const heading = document.createElement("h4"); heading.textContent = "包内文件"; const files = document.createElement("ul"); presentation.files.forEach((path) => { const item = document.createElement("li"); item.textContent = path; files.append(item); }); ui.objectViewerOverview.append(heading, files); }
+}
 function setObjectViewerState(ref, { stateLabel, summary, payload = null }) {
   state.activeObjectPayload = payload; ui.objectViewerState.textContent = stateLabel; ui.objectViewerState.dataset.state = stateLabel === "读取成功" ? "completed" : stateLabel === "读取中" ? "running" : "failed"; ui.objectViewerTitle.textContent = ref.label || `${ref.type || "对象"} · ${shortId(ref.id)}`; ui.objectViewerSummary.textContent = summary; clear(ui.objectViewerIdentity);
   const identity = [["type", ref.type], ["id", ref.id], ["task_id", ref.task_id], ["run_id", ref.run_id], ["revision", ref.revision || ref.base_spec_revision], ["digest", ref.digest || ref.semantic_digest || ref.plan_sha256 || ref.report_sha256 || ref.manifest_sha256]];
   identity.filter(([, value]) => value !== undefined && value !== null && value !== "").forEach(([label, value]) => { const row = document.createElement("div"); const term = document.createElement("dt"); term.textContent = label; const detail = document.createElement("dd"); detail.textContent = String(value); row.append(term, detail); ui.objectViewerIdentity.append(row); });
+  renderObjectViewerOverview(ref, payload);
   ui.objectViewerJson.textContent = payload ? JSON.stringify(payload, null, 2) : "";
+  if (!payload) ui.objectViewer.querySelectorAll("details").forEach((details) => { details.open = false; });
 }
 function returnedObjectMatchesRef(ref, payload) {
   const type = normalizeObjectRefType(ref?.type);
+  if (type === "blocker") { const blocker = payload?.blocker; return Boolean(blocker && blocker.task_id === ref.task_id && blocker.blocker_id === ref.id && blocker.semantic_digest === ref.digest); }
+  if (type === "inference_input") { const input = payload?.inference_input; return Boolean(input && payload?.task?.task_id === ref.task_id && payload?.run_id === ref.run_id && input.task_id === ref.task_id && input.run_id === ref.run_id && input.inference_input_id === ref.id && input.sha256 === ref.digest); }
   if (!TERMINAL_RESULT_REF_TYPES.has(type)) return true;
   if (payload?.task?.task_id !== ref.task_id || payload?.run_id !== ref.run_id) return false;
   if (type === "evaluation_report") {
@@ -3088,28 +3199,22 @@ async function submitMessage(message) {
       }
     }
     const checkpoint = currentHumanCheckpoint(state.conversation);
-    if (checkpoint?.kind === "approval") { showNotice("这是一次会改变任务状态的批准请求。请使用上方明确的“允许”或“拒绝”按钮，聊天文字不会被当作授权。", "error"); return; }
-    if (checkpoint?.kind === "question" && checkpoint.rpc_id) {
-      if (dataUploadQuestionCheckpoint(checkpoint)) { ui.datasetInput.value = ""; ui.datasetInput.click(); showNotice("这个问题需要先选择 CSV 文件；上传后再指定预测列，我不会要求你填写本机路径。", "ok"); return; }
-      if (inferenceInputQuestionCheckpoint(checkpoint)) { const field = ui.messageList.querySelector(".inference-input-checkpoint .inference-sample-json"); const choose = ui.messageList.querySelector(".inference-input-checkpoint .checkpoint-upload-button"); if (field) field.focus(); else choose?.click(); showNotice("这个问题需要一份未参与训练的新样本。样本会先安全暂存，真正试跑前仍会单独征求你的批准。", "ok"); return; }
-      if (checkpoint.questions?.length !== 1) { openQuestionDialog(checkpoint); showNotice("这组问题需要分别回答，已为你打开结构化回答面板。", "ok"); return; }
-      const question = checkpoint.questions[0]; if (!question?.id) { showNotice("当前问题缺少可验证身份，无法把文字回答写入该检查点。请刷新后重试。", "error"); return; }
-      await postQuestionAnswers(checkpoint, [{ id: question.id, selected: [], custom: text }]); clearDraft(state.selectedTaskId); ui.messageInput.value = ""; resizeComposer(); showNotice("回答已提交，AI 会从当前对话继续。", "ok"); await refreshSelected({ force: true }); return;
-    }
     const taskId = state.selectedTaskId; attemptedTaskId = taskId; const queuedAfterTurn = conversationAgentResponseRunning(state.conversation);
     await postQueuedConversationMessage(taskId, text); clearComposerRetry("message"); clearDraft(taskId); if (state.selectedTaskId === taskId) { ui.messageInput.value = ""; resizeComposer(); }
-    showTransientNotice(queuedAfterTurn ? "消息已排队，将在本轮结束后继续。" : "消息已发给 AI。", "ok"); window.setTimeout(() => refreshSelected({ force: true }), 250);
+    showTransientNotice(checkpoint ? "已暂缓当前确认，AI 将先回应你的消息；没有批准执行或提交答案。" : queuedAfterTurn ? "消息已排队，将在本轮结束后继续。" : "消息已发给 AI。", "ok"); window.setTimeout(() => refreshSelected({ force: true }), 250);
   } catch (error) {
     if (state.pendingMessage?.task_id === state.selectedTaskId) state.pendingMessage = null;
     const failedSubmission = state.messageSubmission?.status === "failed" ? state.messageSubmission : null;
     if (failedSubmission?.task_id === state.selectedTaskId && !ui.messageInput.value.trim()) { ui.messageInput.value = failedSubmission.text; resizeComposer(); }
     saveDraft(attemptedTaskId); renderConversation(true);
     if (failedSubmission) {
-      showNotice(`消息发送失败：${error.message}。再次发送同一条消息会复用请求编号；“重试发送”不会创建第二条排队请求。`);
-      showComposerRetry({ label: "重试发送", hint: "复用原请求身份与原消息；不会新建第二条排队请求。", kind: "message", action: async () => {
+      showNotice(failedSubmission.new_request_required ? `消息未继续：${error.message}。草稿已保留，请刷新后重新发送。` : `消息发送失败：${error.message}。再次发送同一条消息会复用请求编号；“重试发送”不会创建第二条排队请求。`);
+      showComposerRetry({ label: failedSubmission.new_request_required ? "刷新后重发" : "重试发送", hint: failedSubmission.new_request_required ? "先核对最新检查点，再将保留的草稿作为新请求发送。" : "复用原请求身份与原消息；不会新建第二条排队请求。", kind: "message", action: async () => {
         const failed = state.messageSubmission;
         if (!failed || failed.status !== "failed" || failed.task_id !== state.selectedTaskId || failed.request_id !== failedSubmission.request_id) { clearComposerRetry("message"); showNotice("原发送请求已经变化，已停止重试。请刷新任务后确认当前状态。", "error"); return; }
         if (ui.messageInput.value.trim() !== failed.text) { showNotice("输入内容已经变化。为避免用旧请求身份发送新内容，请恢复原消息或直接发送为新消息。", "error"); return; }
+        if (failed.new_request_required) await refreshSelected({ force: true });
+        if (state.selectedTaskId !== failed.task_id) return;
         await submitMessage(failed.text);
       } });
     } else { clearComposerRetry("message"); showNotice(`${error.message}。任务事实不会被伪造；请先刷新任务确认服务端是否已创建记录。`); }
@@ -3455,7 +3560,7 @@ ui.messageInput.addEventListener("keydown", (event) => { if (event.key === "Ente
 ui.composerRetryButton.addEventListener("click", invokeComposerRetry);
 ui.retryAttachmentButton.addEventListener("click", retryComposerAttachment);
 ui.removeAttachmentButton.addEventListener("click", () => clearComposerAttachment());
-ui.newTaskButton.addEventListener("click", openNewTask); ui.refreshButton.addEventListener("click", () => state.selectedTaskId ? refreshSelected({ force: true }) : loadTasks());
+ui.newTaskButton.addEventListener("click", openNewTask); ui.refreshButton.addEventListener("click", () => state.selectedTaskId ? refreshSelected({ force: true }) : refreshHomeAvailability());
 ui.menuButton.addEventListener("click", openSidebar); ui.sidebarScrim.addEventListener("click", closeSidebar);
 ui.datasetButton.addEventListener("click", () => {
   if (state.task?.control?.next_action?.id === "stage_recipe_samples") { ui.recipeSampleInput.click(); return; }
@@ -3514,6 +3619,6 @@ async function boot() {
   const tasksFailure = results[4].status === "rejected" ? results[4].reason : null;
   if (!state.selectedTaskId) enterHomeState({ focusComposer: false });
   resizeComposer();
-  if (tasksFailure) showNotice(`任务列表暂时无法读取：${tasksFailure.message}。你仍可编辑草稿，连接恢复后再发送。`, "error");
+  if (!state.selectedTaskId) reconcileHomeAvailability(tasksFailure);
 }
 boot().catch((error) => showNotice(`页面初始化失败：${error.message}`));

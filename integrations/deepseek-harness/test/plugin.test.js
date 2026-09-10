@@ -432,9 +432,9 @@ test("plugin registers the complete conversation-first model-training toolchain"
   assert.match(mounted.sections[0].text, /do not call model_harness_get_task, create a checkpoint, delegate a specialist/);
   assert.match(mounted.sections[0].text, /Only for current-task work, read task\.control/);
   assert.match(mounted.sections[0].text, /separate the user's desired outcome from the implementation method/);
-  assert.match(mounted.sections[0].text, /first run an existing open model locally \(recommended\)/);
+  assert.match(mounted.sections[0].text, /do not recommend immediate pretrained inference or adaptation training as an available button/);
   assert.match(mounted.sections[0].text, /Use a human conversation contract, not an operator log/);
-  assert.match(mounted.sections[0].text, /Every decision question must contain two or three plain-language/);
+  assert.match(mounted.sections[0].text, /Task binding must not change conversation into a form wizard/);
   assert.match(mounted.sections[0].text, /do not end with a technical inventory dump/);
   assert.match(mounted.sections[0].text, /Universal BYOM/);
   assert.match(mounted.sections[0].text, /BlockerEvidence/);
@@ -806,7 +806,7 @@ test("coordinator prompt keeps vague forecasting and data collection human-nativ
   assert.match(prompt, /The product file picker performs the upload/);
   assert.match(prompt, /submit the data_upload answer only after model_harness_import_dataset has actually succeeded/);
   assert.match(prompt, /Other checkpoints use stable ids such as target_column/);
-  assert.match(prompt, /never stop the turn with only a prose request/);
+  assert.match(prompt, /first address that message in natural language/);
 });
 
 
@@ -1578,7 +1578,7 @@ test("root persona is an evidence-bound Training Orchestrator", () => {
   assert.match(rootPersona, /Never fabricate progress, results, files, metrics/);
   assert.match(rootPersona, /Never approve on the user's behalf/);
   assert.match(rootPersona, /distinguish the[\s\S]*desired outcome from the implementation method/);
-  assert.match(rootPersona, /run an[\s\S]*existing open model first \(recommended\)/);
+  assert.match(rootPersona, /do not promise pretrained inference or adaptation training without a verified Recipe/);
   assert.match(rootPersona, /Speak like a thoughtful model-training partner, not an operator log/);
   assert.match(rootPersona, /A vague “time-series model”, “numeric prediction” or “regression” is not enough/);
   assert.match(rootPersona, /Select time_series_forecasting[\s\S]*tabular_regression only/);
@@ -1635,6 +1635,8 @@ test("task-spec update exposes every canonical specialist family", () => {
     (tool) => tool.name === "model_harness_update_task_spec",
   );
   assert.ok(updateTool);
+  assert.equal(updateTool.parameters.properties.name.type, "string");
+  assert.equal(updateTool.parameters.required.includes("name"), false);
   assert.deepEqual(
     updateTool.parameters.properties.selected_family.enum,
     [...TASK_FAMILIES],
@@ -1812,6 +1814,19 @@ test("mutating training tools use the native DSH approval seam", async () => {
 });
 
 
+test("data inspection cannot re-import data, including from a legacy continuable profile", async () => {
+  const listener = mountPlugin().listeners.get("tools/pre-execute");
+  assert.equal(ROLE_TOOL_ALLOWLISTS.data_experiment.includes("model_harness_import_dataset"), false);
+  for (const allow of [ROLE_TOOL_ALLOWLISTS.data_experiment, [...ROLE_TOOL_ALLOWLISTS.data_experiment, "model_harness_import_dataset"]]) {
+    const agent = specialistAgent("data_experiment", { allow });
+    const read = await listener({ name: "model_harness_get_task", agent }, async () => ({ kind: "allow" }));
+    assert.equal(read.kind, "allow");
+    const imported = await listener({ name: "model_harness_import_dataset", agent }, async () => ({ kind: "allow" }));
+    assert.equal(imported.kind, "deny");
+    assert.match(imported.reason, /不在该 profile allowlist/);
+  }
+});
+
 test("root Training Orchestrator must delegate domain work to the owning specialist", async () => {
   const listener = mountPlugin().listeners.get("tools/pre-execute");
   const cases = [
@@ -1870,7 +1885,7 @@ test("root orchestrator keeps clarification, canonical reads and human checkpoin
       async () => ({ kind: "allow" }),
     );
     assert.equal(checkpointDecision.kind, "ask", `${checkpointTool} stays on the root approval seam`);
-    assert.match(checkpointDecision.reason, /changes local task/);
+    assert.match(checkpointDecision.reason, checkpointTool === "model_harness_bind_model_source" ? /静态分析.*不下载权重.*不启动训练/ : /changes local task/);
   }
 
   const downloadDecision = await listener(

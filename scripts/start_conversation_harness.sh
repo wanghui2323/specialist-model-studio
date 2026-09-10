@@ -15,7 +15,7 @@ LOCKED_DSH_BIN="${LOCKED_DSH_RUNTIME}/node_modules/.bin/dsh"
 EXPECTED_DSH_VERSION="0.1.0-rc.6"
 CURRENT_DSH_PLUGIN="specialist-model-studio-dsh-plugin"
 LEGACY_DSH_PLUGIN="ai-pm-model-harness-dsh-plugin"
-EXPECTED_PROJECTOR_REVISION="3.2"
+EXPECTED_PROJECTOR_REVISION="3.3"
 EXPECTED_SYNTHESIS_VERDICT_VERSION="1.0"
 EXPECTED_ACTION_SCHEMA_VERSION="1.0"
 EXPECTED_CONVERSATION_SCHEMA="${MODEL_HARNESS_CONVERSATION_SCHEMA_VERSION:-2.0}"
@@ -28,6 +28,7 @@ AGENT_BRIDGE_TOKEN="${MODEL_HARNESS_AGENT_BRIDGE_TOKEN:-}"
 PUBLIC_START="${SPECIALIST_MODEL_STUDIO_PUBLIC_START:-0}"
 L6_ACCEPTANCE="${SPECIALIST_MODEL_STUDIO_L6_ACCEPTANCE:-0}"
 BACKEND_START_ATTEMPTS="${MODEL_HARNESS_BACKEND_START_ATTEMPTS:-180}"
+PREFLIGHT_TIMEOUT_SECONDS="${MODEL_HARNESS_PREFLIGHT_TIMEOUT_SECONDS:-60}"
 REQUIRE_PROVIDER_READY=0
 if [[ "${PUBLIC_START}" == "1" || "${L6_ACCEPTANCE}" == "1" ]]; then
   REQUIRE_PROVIDER_READY=1
@@ -60,6 +61,53 @@ if ! [[ "${BACKEND_START_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "MODEL_HARNESS_BACKEND_START_ATTEMPTS must be a positive integer." >&2
   exit 1
 fi
+
+if ! [[ "${PREFLIGHT_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "MODEL_HARNESS_PREFLIGHT_TIMEOUT_SECONDS must be a positive integer." >&2
+  exit 1
+fi
+
+# Local dependency files can be cloud placeholders or damaged. Bound each
+# preflight subprocess, including its children, without logging partial config
+# output (which may contain provider settings). This is not a model-code worker.
+run_preflight() {
+  "${HARNESS_PYTHON}" - "${PREFLIGHT_TIMEOUT_SECONDS}" "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+def stop(process):
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.communicate(timeout=2)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+
+try:
+    process = subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+except OSError:
+    print("Runtime preflight command could not start.", file=sys.stderr)
+    sys.exit(127)
+try:
+    output, errors = process.communicate(timeout=int(sys.argv[1]))
+except subprocess.TimeoutExpired:
+    stop(process)
+    print("Runtime preflight timed out; check locally available dependencies and reinstall from the lockfile.", file=sys.stderr)
+    sys.exit(124)
+except KeyboardInterrupt:
+    stop(process)
+    sys.exit(130)
+sys.stdout.buffer.write(output)
+sys.stderr.buffer.write(errors)
+sys.exit(process.returncode)
+PY
+}
 
 RUNS_DIR="$("${HARNESS_PYTHON}" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "${RUNS_DIR_INPUT}")"
 WORKSPACE_DIR="${RUNS_DIR}/_workspace"
@@ -102,7 +150,7 @@ else
   exit 1
 fi
 
-if ! OBSERVED_DSH_VERSION="$("${DSH_BIN}" --version 2>&1)"; then
+if ! OBSERVED_DSH_VERSION="$(run_preflight "${DSH_BIN}" --version 2>&1)"; then
   echo "Could not read the DeepSeek Harness CLI version from ${DSH_BIN}." >&2
   echo "${OBSERVED_DSH_VERSION}" >&2
   exit 1
@@ -115,27 +163,33 @@ if [[ "${OBSERVED_DSH_VERSION}" != "${EXPECTED_DSH_VERSION}" ]]; then
 fi
 
 if [[ "${PUBLIC_START}" == "1" ]]; then
-  "${HARNESS_ROOT}/scripts/install_dsh_preset.sh" >/dev/null
+  run_preflight "${HARNESS_ROOT}/scripts/install_dsh_preset.sh" >/dev/null
 else
-  "${HARNESS_ROOT}/scripts/install_dsh_preset.sh"
+  run_preflight "${HARNESS_ROOT}/scripts/install_dsh_preset.sh"
 fi
 
 status "Synchronizing the current Specialist Model Studio plugin..."
 if [[ -f "${DSH_WEB_PACKAGE}" ]] && grep -Fq "\"${LEGACY_DSH_PLUGIN}\"" "${DSH_WEB_PACKAGE}"; then
   if [[ "${PUBLIC_START}" == "1" ]]; then
-    "${DSH_BIN}" plugin --profile web remove "${LEGACY_DSH_PLUGIN}" >/dev/null
+    run_preflight "${DSH_BIN}" plugin --profile web remove "${LEGACY_DSH_PLUGIN}" >/dev/null
   else
-    "${DSH_BIN}" plugin --profile web remove "${LEGACY_DSH_PLUGIN}"
+    run_preflight "${DSH_BIN}" plugin --profile web remove "${LEGACY_DSH_PLUGIN}"
   fi
 fi
 if [[ "${PUBLIC_START}" == "1" ]]; then
-  "${DSH_BIN}" plugin --profile web add "${HARNESS_ROOT}/integrations/deepseek-harness" >/dev/null
+  run_preflight "${DSH_BIN}" plugin --profile web add "${HARNESS_ROOT}/integrations/deepseek-harness" >/dev/null
 else
-  "${DSH_BIN}" plugin --profile web add "${HARNESS_ROOT}/integrations/deepseek-harness"
+  run_preflight "${DSH_BIN}" plugin --profile web add "${HARNESS_ROOT}/integrations/deepseek-harness"
 fi
 
 status "Inspecting the DSH web profile..."
-if ! DSH_CONFIG="$("${DSH_BIN}" --profile web --dump-config 2>&1)"; then
+if DSH_CONFIG="$(run_preflight "${DSH_BIN}" --profile web --dump-config 2>&1)"; then
+  :
+else
+  PREFLIGHT_EXIT="$?"
+  if [[ "${PREFLIGHT_EXIT}" == "124" ]]; then
+    echo "Runtime configuration preflight timed out after ${PREFLIGHT_TIMEOUT_SECONDS}s. Reinstall locked dependencies with npm ci; no services were started." >&2
+  fi
   echo "Could not inspect the DSH web profile. Provider diagnostics are withheld here so the selected credential-store path is not written to launcher output." >&2
   exit 1
 fi

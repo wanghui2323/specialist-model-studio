@@ -1,5 +1,7 @@
 # Specialist Model Studio v1.0 本地发布验收
 
+> 历史证据：下述结论仅绑定 `e88ef7a...`，不自动适用于之后的对话重构。当前 PC 收尾状态见 [2026-09-10 最终候选账本](FINAL-PC-RELEASE-20260910.md)。
+
 验收日期：2026-08-30
 
 验收分支：`codex/v1.0-conversation-native`

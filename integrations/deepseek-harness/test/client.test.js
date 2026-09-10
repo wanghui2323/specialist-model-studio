@@ -110,6 +110,15 @@ test("task lifecycle methods preserve canonical task routes and confirmations", 
     user_note: "confirmed by user",
   });
 
+  await client.updateTaskSpec("real-task-123", {
+    baseRevision: 2, selectedFamily: "tabular_regression",
+    businessGoal: "估算月租金", name: "月租金估算",
+  });
+  assert.deepEqual(JSON.parse(requests.at(-1).body), {
+    base_revision: 2, selected_family: "tabular_regression", confirm: true,
+    business_goal: "估算月租金", name: "月租金估算",
+  });
+
   await client.configureContract("real-task-123", {
     accuracyMin: 0.82,
     macroF1Min: 0.78,

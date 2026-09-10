@@ -384,7 +384,7 @@ class ConversationActionTests(unittest.TestCase):
         self.assertEqual(bad_ref.error.code, "cross_task_object_ref")  # type: ignore[union-attr]
         self.assertEqual(bad_ref.object_refs, ())
 
-    def test_user_rejected_native_approval_is_not_classified_as_system_fault(self) -> None:
+    def test_rejection_requires_exact_human_receipt_not_runtime_prose(self) -> None:
         rejected_result = tool_result(
             tool_name="model_harness_authorize_task_run_start",
             is_error=True,
@@ -396,12 +396,26 @@ class ConversationActionTests(unittest.TestCase):
                 "text": 'Error: the user rejected tool "model_harness_authorize_task_run_start"',
             }
         ]
-        action = self.classify(
-            [
-                tool_call(tool_name="model_harness_authorize_task_run_start"),
-                rejected_result,
-            ]
-        )[0]
+        call = tool_call(tool_name="model_harness_authorize_task_run_start")
+        receipt = {
+            **call, "source": "dsh_pending", "type": "approval",
+            "event_type": "approval", "event_id": "human-rejection",
+            "payload": {"phase": "resolved", "outcome": "denied"},
+        }
+        events = [call, rejected_result]
+        unproven = self.classify(events)[0]
+        self.assertEqual(unproven.error.code, "authorization_not_granted")
+        self.assertEqual(unproven.status, "failed")
+        for key in ("task_id", "agent_run_id", "session_id", "turn_id", "call_id", "projector_revision", "source"):
+            with self.subTest(mismatched_identity=key):
+                mismatched = {**receipt, key: "another-identity"}
+                action = self.classify([*events, mismatched])[0]
+                self.assertEqual(action.error.code, "authorization_not_granted")
+        for outcome in ("allowed-once", "cancelled", "invalidated_by_turn_terminal"):
+            with self.subTest(outcome=outcome):
+                other = {**receipt, "payload": {"phase": "resolved", "outcome": outcome}}
+                self.assertEqual(self.classify([*events, other])[0].error.code, "authorization_not_granted")
+        action = self.classify([*events, receipt])[0]
 
         self.assertEqual(action.status, "failed")
         self.assertEqual(action.truth_type, "observed_result")

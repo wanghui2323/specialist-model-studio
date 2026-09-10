@@ -5,6 +5,13 @@ import { test } from "node:test";
 const require = createRequire(import.meta.url);
 const ConversationView = require("../../../model_harness/web/conversation-view.js");
 
+test("conversation view preserves only the backend owner identity for sidebar state", () => {
+  const remoteConversation = { schema_version: "2", session_id: "session", task_id: "task-1", items: [] };
+  assert.equal(ConversationView.buildConversationView({ remoteConversation }).task_id, "task-1");
+  const { task_id, ...withoutIdentity } = remoteConversation;
+  assert.equal(ConversationView.buildConversationView({ remoteConversation: withoutIdentity }).task_id, null);
+});
+
 function event(eventType, values = {}) {
   return {
     event_id: values.event_id || `${eventType}-${values.seq || 1}`,

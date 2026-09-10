@@ -57,6 +57,7 @@ from .multi_agent import (
     ComposerRequestTerminalError,
     ComposerSubmissionError,
     HumanCheckpointAnswerError,
+    HumanCheckpointConflictError,
     build_dsh_multi_agent_runtime,
 )
 from .data_adapters import DataAdapterRegistry
@@ -1433,9 +1434,13 @@ def create_app(
                 composer_mode=composer_mode,
                 request_id=request_id,
                 actor="user",
+                **({"checkpoint_rpc_id": body["checkpoint_rpc_id"]}
+                   if "checkpoint_rpc_id" in body else {}),
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except HumanCheckpointConflictError as exc:
+            raise HTTPException(status_code=409, detail={"code": "checkpoint_changed", "message": str(exc)}) from exc
         except ComposerModeUnsupportedError as exc:
             raise HTTPException(
                 status_code=409,
@@ -1738,9 +1743,13 @@ def create_app(
                 composer_mode=composer_mode,
                 request_id=request_id,
                 actor="user",
+                **({"checkpoint_rpc_id": body["checkpoint_rpc_id"]}
+                   if "checkpoint_rpc_id" in body else {}),
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except HumanCheckpointConflictError as exc:
+            raise HTTPException(status_code=409, detail={"code": "checkpoint_changed", "message": str(exc)}) from exc
         except ComposerModeUnsupportedError as exc:
             raise HTTPException(
                 status_code=409,

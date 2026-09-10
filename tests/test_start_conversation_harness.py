@@ -128,6 +128,10 @@ case " $* " in
     printf '%s\\n' "${{{version_environment}:-{EXPECTED_DSH_VERSION}}}"
     ;;
   *" --dump-config "*)
+    if [[ "${{FAKE_CONFIG_HANG:-0}}" == "1" ]]; then
+      printf '%s\\n' 'secret-partial-provider-config'
+      sleep 20
+    fi
     printf '%s\n' 'plugins: [specialist-model-studio-dsh-plugin]'
     ;;
   *" plugin "*)
@@ -153,7 +157,7 @@ esac
             "real_agent": True,
             "implementation": "dsh_native_subagents",
             "conversation_schema_version": "2.0",
-            "conversation_projector_revision": "3.2",
+            "conversation_projector_revision": "3.3",
             "synthesis_verdict_version": "1.0",
             "conversation_action_schema_version": "1.0",
             "task_truth_source": "TrainingTask",
@@ -220,6 +224,20 @@ esac
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("Reusing the existing DSH runtime.", completed.stdout)
+
+    def test_configuration_preflight_timeout_is_bounded_and_redacts_partial_output(self) -> None:
+        completed = self._run(self._runtime(), {
+            "MODEL_HARNESS_PREFLIGHT_TIMEOUT_SECONDS": "3", "FAKE_CONFIG_HANG": "1",
+        })
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("configuration preflight timed out", completed.stderr)
+        self.assertNotIn("secret-partial-provider-config", completed.stdout + completed.stderr)
+        self.assertNotIn("Specialist Model Studio:", completed.stdout)
+
+    def test_preflight_timeout_must_be_positive(self) -> None:
+        completed = self._run(self._runtime(), {"MODEL_HARNESS_PREFLIGHT_TIMEOUT_SECONDS": "0"})
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("must be a positive integer", completed.stderr)
 
     def test_repository_locks_the_exact_dsh_cli_release(self) -> None:
         package = json.loads(

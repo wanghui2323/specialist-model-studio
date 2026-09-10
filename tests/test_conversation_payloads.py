@@ -38,6 +38,27 @@ def result_event(result: object) -> dict[str, object]:
 
 
 class ConversationPayloadCompactionTests(unittest.TestCase):
+    def test_old_failure_stays_auditable_without_blocking_a_new_unrelated_turn(self) -> None:
+        def project(status="failed", scope="agent-old"):
+            return project_conversation_objects(
+                task_id="task-1",
+                agent_runs=[
+                    {"run_id": "agent-old", "agent_turn_id": "turn-old", "status": "idle_without_final"},
+                    {"run_id": "agent-new", "agent_turn_id": "turn-new", "status": "idle_without_final"},
+                ],
+                actions=[{"action_id": "old-import", "agent_run_id": scope,
+                    "status": status, "tool_name": "model_harness_import_dataset", "tool_class": "domain"}],
+                background_actions=[], pending=[], agent_response_running=False,
+            )
+        result = project()
+        self.assertEqual(result["interaction_projection"]["phase"], "idle")
+        self.assertTrue(result["risks"][0]["active"])
+        self.assertIsNone(result["risks"][0]["resolution"])
+        self.assertIsNone(result["primary_attention"])
+        for status, scope in [("identity_error", "agent-old"), ("failed", None), ("failed", "agent-new")]:
+            with self.subTest(status=status, scope=scope):
+                self.assertEqual(project(status, scope)["interaction_projection"]["phase"], "blocked")
+
     def test_actions_and_checkpoints_bind_to_canonical_agent_turn(self) -> None:
         projection = project_conversation_objects(
             task_id="task-identity",

@@ -425,7 +425,10 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
         self.assertIn(self.task_id, instruction)
         self.assertIn(f'EXACT_TASK_ID_JSON: "{self.task_id}"', instruction)
         self.assertIn("不得截断、改写，也不得根据任务标题自行构造", instruction)
-        self.assertIn("结构化 question checkpoint", instruction)
+        self.assertIn("任务绑定前后保持同一种自然对话", instruction)
+        self.assertIn("普通澄清、方法解释和目标讨论直接用自然语言交流", instruction)
+        self.assertIn("只有需要实际文件、精确选项或不可变人工决策", instruction)
+        self.assertNotIn("禁止只用自然语言提出请求后结束回合", instruction)
         self.assertIn("稳定 question id", instruction)
         self.assertIn("model_harness_authorize_task_run_start", instruction)
         self.assertIn("run_authorization_id", instruction)
@@ -1251,7 +1254,7 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
         )
         event_ref = action["event_result_ref"]
         self.assertEqual(event_ref["task_id"], self.task_id)
-        self.assertEqual(event_ref["projector_revision"], "3.2")
+        self.assertEqual(event_ref["projector_revision"], "3.3")
         viewed = self.runtime.conversation_event_result(
             self.task_id,
             event_ref["id"],
@@ -1374,7 +1377,7 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
             for item in conversation["items"]
             if item["event_type"] == "turn_error"
         )
-        self.assertEqual(turn_error["projector_revision"], "3.2")
+        self.assertEqual(turn_error["projector_revision"], "3.3")
         self.assertEqual(turn_error["status"], "failed")
         self.assertEqual(
             turn_error["payload"]["error"],
@@ -1787,10 +1790,10 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
         ]
         self.assertTrue(pending_audit)
         self.assertTrue(
-            all(item["projector_revision"] == "3.2" for item in pending_audit)
+            all(item["projector_revision"] == "3.3" for item in pending_audit)
         )
         self.assertTrue(
-            all(item["source_key"].startswith("dsh-pending:3.2:") for item in pending_audit)
+            all(item["source_key"].startswith("dsh-pending:3.3:") for item in pending_audit)
         )
 
     def test_pending_question_keeps_originating_agent_turn_and_tool_call(self) -> None:
@@ -1986,6 +1989,43 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
         self.assertEqual(resolved["agent_turn_id"], agent_turn_id)
         self.assertEqual(resolved["turn_id"], f"{session_id}:turn:1")
         self.assertEqual(resolved["call_id"], "question-call-lag")
+
+    def test_binding_approval_scope_comes_from_exact_observed_call(self) -> None:
+        self.assertEqual(self.runtime.conversation(self.task_id)["task_id"], self.task_id)
+        session_id = self.runtime.prompt(self.task_id, "绑定", "确认来源")
+        run_id = self._latest_agent_run_id()
+        self.client.sessions[session_id]["events"] = [
+            dsh_event(1, "user/message", {"source": {"kind": "user"}, "content": [{"type": "text", "text": f"AGENT_RUN_ID: {run_id}\nUSER_MESSAGE:\n确认来源"}]}),
+            dsh_event(2, "tool/call", {"callId": "binding-call", "name": "model_harness_bind_model_source", "input": {"expected_resolved_commit": "a" * 40}}),
+        ]
+        self.events.pending[session_id] = [{"kind": "approval", "rpc_id": "rpc-bind", "call_id": "binding-call", "tool_name": "model_harness_bind_model_source"}]
+        conversation = self.runtime.conversation(self.task_id)
+        self.assertEqual(conversation["task_id"], self.task_id)
+        pending = conversation["pending"][0]
+        self.assertIn("a" * 40, pending["approval_scope"])
+        self.events.pending[session_id][0]["call_id"] = "different-call"
+        self.assertNotIn("approval_scope", self.runtime.conversation(self.task_id)["pending"][0])
+
+    def test_checkpoint_upgrade_replays_exact_root_receipts_without_changing_original(self) -> None:
+        session_id = self.runtime.prompt(self.task_id, "升级", "恢复记录")
+        identity = {"session_id": session_id, "agent_run_id": self._latest_agent_run_id(), "turn_id": f"{session_id}:turn:1", "call_id": "approval-call"}
+        self.runtime.store.append_event(task_id=self.task_id, event={**identity,
+            "source": "dsh", "projector_revision": "3.3", "source_key": "current-call", "type": "tool_call", "payload": {"tool_name": "model_harness_confirm_contract"}})
+        for label, overrides in [("exact", {}), ("wrong-run", {"agent_run_id": "other"}), ("child", {"session_id": "child"})]:
+            for phase in ("requested", "resolved"):
+                self.runtime.store.append_event(task_id=self.task_id, event={**identity, **overrides,
+                    "source": "dsh_pending", "projector_revision": "3.2", "source_key": f"old-{label}-{phase}", "type": "approval",
+                    "payload": {"rpc_id": f"rpc-{label}", "phase": phase, "outcome": "approved" if phase == "resolved" else None}})
+        before = self.runtime.store.list_events(self.task_id)
+        self.runtime.store.reproject_root_checkpoint_audit(self.task_id)
+        self.runtime.store.reproject_root_checkpoint_audit(self.task_id)
+        after = self.runtime.store.list_events(self.task_id)
+        replayed = [event for event in after if event.get("payload", {}).get("replayed_from_event_id")]
+        self.assertEqual(len(replayed), 2)
+        self.assertEqual({event["payload"]["rpc_id"] for event in replayed}, {"rpc-exact"})
+        self.assertTrue(all(event["projector_revision"] == "3.3" for event in replayed))
+        self.assertEqual(after[:len(before)], before)
+        self.assertEqual(self.events.pending, {})
 
     def test_only_current_projector_revision_drives_canonical_team_and_run(self) -> None:
         session_id = self.runtime.prompt(self.task_id, "ASR", "检查旧投影隔离")
@@ -2470,6 +2510,29 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
             len([call for call in prompt_client.calls if call[0] == "session.prompt"]),
             prompt_call_count,
         )
+
+    def test_delayed_running_observation_and_native_cancel_do_not_stay_idle(self) -> None:
+        session_id = self.runtime.prompt(self.task_id, "ASR", "先说明")
+        run_id = self._latest_agent_run_id()
+        self.runtime.store.update_run(task_id=self.task_id, run_id=run_id, status="idle_without_final")
+        active = self.runtime.conversation(self.task_id)
+        self.assertEqual(active["runs"][-1]["status"], "running")
+        self.runtime.store.update_run(task_id=self.task_id, run_id=run_id, status="idle_without_final")
+        self.runtime.cancel(self.task_id, reason="验证停止")
+        team = self.runtime.store.load_team(self.task_id)
+        self.assertEqual(team["runs"][-1]["status"], "cancel_requested")
+        self.assertEqual(team["runs"][-1]["cancel_request"]["reason"], "验证停止")
+        self.client.sessions[session_id]["running"] = False
+        self.client.sessions[session_id]["events"] = [
+            dsh_event(1, "user/message", {"source": {"kind": "user"}, "content": [{"type": "text", "text": f"AGENT_RUN_ID: {run_id}\nUSER_MESSAGE:\n先说明"}]}),
+            dsh_event(2, "turn/end", {"reason": {"kind": "aborted"}}),
+        ]
+        # Reproduce a prior-version idle write; the native terminal still wins.
+        self.runtime.store.update_run(task_id=self.task_id, run_id=run_id, status="idle_without_final")
+        stopped = self.runtime.conversation(self.task_id)
+        self.assertFalse(stopped["running"])
+        self.assertEqual(stopped["runs"][-1]["status"], "cancelled")
+        self.assertEqual(self.runtime.conversation(self.task_id)["runs"][-1]["status"], "cancelled")
 
     def test_cancel_and_lifecycle_interfaces_delegate_to_dsh(self) -> None:
         task_before = (self.task_dir / "task.json").read_bytes()

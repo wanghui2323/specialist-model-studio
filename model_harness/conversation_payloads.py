@@ -69,6 +69,7 @@ def project_conversation_objects(
                     agent_response_running and index == len(agent_runs) - 1
                 ),
                 "cancel": deepcopy(run.get("cancel_request")),
+                "discussion_handoff": deepcopy(run.get("discussion_handoff")),
                 "error": run.get("error"),
             }
         )
@@ -210,6 +211,8 @@ def project_conversation_objects(
     for turn in agent_turns:
         if turn.get("status") not in {"failed", "cancelled", "interrupted"}:
             continue
+        handoff = turn.get("discussion_handoff") or {}
+        suspended = turn.get("status") == "cancelled" and handoff.get("outcome") == "superseded_for_discussion"
         risks.append(
             {
                 "risk_id": f"risk:{turn['agent_turn_id']}",
@@ -217,9 +220,9 @@ def project_conversation_objects(
                 "source_id": turn["agent_turn_id"],
                 "status": turn.get("status"),
                 "error": deepcopy(turn.get("error")),
-                "active": True,
-                "lifecycle_status": "active",
-                "resolution": None,
+                "active": not suspended,
+                "lifecycle_status": "superseded" if suspended else "active",
+                "resolution": {"kind": "checkpoint_discussion", "rpc_id": handoff["rpc_id"]} if suspended else None,
             }
         )
 
@@ -298,6 +301,19 @@ def project_conversation_objects(
         or background_stopping
     )
     active_risks = [risk for risk in risks if risk.get("active") is True]
+    current_source_ids = {action["action_id"] for action in latest_run_actions}
+    if isinstance(latest_turn, Mapping):
+        current_source_ids.add(latest_turn["agent_turn_id"])
+    # Historical failures remain visible and unresolved. They do not become
+    # the foreground state of an unrelated new turn. Unknown lineage and
+    # identity errors still fail closed across the conversation.
+    scoped_source_ids = {action["action_id"] for action in projected_actions
+        if action.get("agent_run_id")}
+    scoped_source_ids.update(turn["agent_turn_id"] for turn in agent_turns)
+    current_risks = [risk for risk in active_risks
+        if risk["source_id"] in current_source_ids
+        or risk["source_id"] not in scoped_source_ids
+        or risk.get("status") == "identity_error"]
     terminal_outcome = None
     if isinstance(latest_turn, Mapping):
         terminal_outcome = {
@@ -378,9 +394,9 @@ def project_conversation_objects(
             "agent_turn_id": latest_turn["agent_turn_id"],
             "agent_run_id": latest_turn.get("agent_run_id"),
         }
-    elif active_risks:
+    elif current_risks:
         phase = "blocked"
-        risk = active_risks[-1]
+        risk = current_risks[-1]
         subject = {
             "object_type": "Risk",
             "object_id": risk["risk_id"],

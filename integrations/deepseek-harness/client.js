@@ -245,7 +245,7 @@ export class ModelHarnessClient {
     );
   }
 
-  updateTaskSpec(taskId, { baseRevision, selectedFamily, businessGoal, userNote }, signal) {
+  updateTaskSpec(taskId, { baseRevision, selectedFamily, businessGoal, name, userNote }, signal) {
     return this.request(`/tasks/${encodeURIComponent(taskId)}/spec`, {
       method: "PATCH",
       signal,
@@ -253,6 +253,7 @@ export class ModelHarnessClient {
         base_revision: baseRevision,
         selected_family: selectedFamily,
         confirm: true,
+        ...(name ? { name } : {}),
         ...(businessGoal ? { business_goal: businessGoal } : {}),
         ...(userNote ? { user_note: userNote } : {}),
       },

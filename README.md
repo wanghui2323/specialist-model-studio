@@ -9,7 +9,7 @@ Specialist Model Studio 面向希望训练专业小模型、但不具备完整�
 > 当前版本：`1.0.0rc1`（API：`1.0.0-rc.1`，功能轨道：`v1.0-conversation-native`，发布状态：`unreleased_rc`）。这是可供代码审核和本地体验的源码 RC，不表示生产就绪，也不自动代表 CI、Tag 或 GitHub Prerelease 已发布。
 
 - 项目地址：<https://github.com/wanghui2323/specialist-model-studio>
-- 本地 RC 验收：[v1.0 本地发布验收](plans/v1.0-conversation-native/LOCAL-RELEASE-ACCEPTANCE.md)
+- 最新 PC 验收：[2026-09-10 收尾记录](plans/v1.0-conversation-native/FINAL-PC-RELEASE-20260910.md)
 - 源码候选说明：[v1.0 源码 RC 指南](docs/v1.0-source-release-candidate.md)
 - 产品边界决策：[v1.0 发布统一方案](plans/v1.0-conversation-native/PRODUCT-RELEASE-UNIFICATION.md)
 
@@ -17,10 +17,8 @@ Specialist Model Studio 面向希望训练专业小模型、但不具备完整�
 | --- | --- |
 | Version | `1.0.0rc1` |
 | Source branch | `codex/v1.0-conversation-native` |
-| 本地 L0–L5 | 已通过 |
-| GitHub 源码分支 | 已发布 `codex/v1.0-conversation-native` |
-| GitHub L6 冷克隆 | 完整双旅程复验待执行 |
-| Tag / GitHub Prerelease | 未创建 |
+| 本地回归 | Python 639 / Node 176；真实双旅程与三种 PC 视口已复验 |
+| 远端、冷克隆、Tag / Prerelease | 独立发布门；以精确提交的验收附件及 GitHub Release 为准，不由本地通过推定 |
 | 生产就绪 | 否 |
 
 ## 它如何工作
@@ -82,7 +80,7 @@ Model Harness（Task、Data、Run、Evaluation、Bundle 真值）
 
 当前可直接承接用户数据的基础闭环是**两个内置的用户数据 Recipe**：图片目录分类与表格回归；音频关键词分类（动态注册）必须先经过 Recipe Factory 构建、验证和人工批准，不能与内置能力混为一谈。
 
-房价回归验收使用 120 行 CSV 闭环完成了 Dataset、合同、Run、评测、新样本推理、Bundle 与下载；Ridge 测试集 R² 为 `0.999405`，评测结论为 `release_ready`。无效 CSV 返回 HTTP 422 且没有创建 Dataset / Run；ASR 返回 `recipe_unavailable` 且没有伪造训练。本次对话/任务分离迭代后的自动化回归为 Python `615 passed`、Node `156 passed`；此前记录的 1440px / 390px 浏览器验收均无横向溢出、控制台 0 错误，新的 conversation → task 晋升旅程仍需以本次部署证据为准。完整对象 ID、哈希、指标和历史截图见 [本地 RC 验收报告](plans/v1.0-conversation-native/LOCAL-RELEASE-ACCEPTANCE.md)。
+2026-09-10 的独立工作区使用 120 行公开合成 CSV，从真实浏览器对话完成 Dataset、合同、Run、评测、新样本推理、Bundle 与下载；运行完整性 14/14、指标门 5/5，24 条独立测试样本，评测允许进入发布审阅，但不等于已经发布。新样本预测只证明推理链路可执行，不代替准确率验收。无效替换 CSV 返回 HTTP 422，原数据、合同和当前 Run 保持不变。ASR 来源固定到不可变 commit，返回 `recipe_unavailable` 和静态分析 `blocked_security`，没有创建训练 Run。PC 1280×800、1440×900、1920×1080 已检查，手机不在本次范围。完整对象身份、摘要、取消/恢复和证据边界见[最新 PC 收尾记录](plans/v1.0-conversation-native/FINAL-PC-RELEASE-20260910.md)。
 
 ## “通用训练”意味着什么
 
@@ -197,7 +195,7 @@ DeepSeek Harness 对 Model Harness 后端和 CLI 是可选适配层，但对完�
 - 当真实 Agent 判断业务结果、主要输入和期望输出已经明确时，只能调用 `model_harness_promote_conversation`，再由 `POST /conversations/{conversation_id}/promote` 幂等创建 `TrainingTask`。后端不使用关键词或正则伪装意图判断；晋升沿用同一 ID、DSH session、AgentTurn 和事件血缘。
 - 未绑定阶段使用 `/conversations/{id}/...` 的消息、快照、SSE、取消和问题回答接口；晋升后切换到 `/tasks/{same-id}/conversation/...`。两类 SSE 都输出 `snapshot / delta / state / error / heartbeat`，断线后依据 cursor 对账，版本变化或 gap 会返回全量 snapshot。
 - 已有任务的对话入口仍是 `POST /tasks/{task_id}/conversation/messages`。旧的无会话任务显示“任务已保存，尚未发送”及恢复入口；连接检查有超时和自动重连，草稿保留。旧 `POST /chat` 固定返回 HTTP 410 和 canonical endpoint，不再运行关键词流程。
-- 当前合同是 conversation schema `2.0`、projector revision `3.2`、action schema `1.0`、synthesis verdict `1.0`。`3.1` 为已验证的子智能体工具动作补齐 `agent_run_id / delegation_id / parent_delegation_id`；`3.2` 进一步把人工确认绑定到其来源 AI 回合与工具调用，旧投影不会被当成新证据。
+- 当前合同是 conversation schema `2.0`、projector revision `3.3`、action schema `1.0`、synthesis verdict `1.0`。`3.3` 以完整分页历史、父调用回执和子会话接收记录确定续跑区间，避免将历史动作归给新调用；旧检查点仅能在精确五元身份匹配时重投影为只读审计，不会重新授权。
 - 前端只把真实 tool call/result 配对为 Action；执行过程挂在产生它的 AI 回合下。健康会话不显示常驻“当前由某智能体处理”横幅，内部角色仅在真实动作或委派中出现；协调器文字说明不是完成证据，失败、受控阻断和观察降级不使用成功语义。
 - DSH provider 的非成功 `turn/end` 会投影为类型化失败并结束当前 Agent run，但不会改写 `TrainingTask`；已经被终止轮次遗留的 question/approval 会持久化为失效审计记录，不再显示成可反复提交的人工检查点。
 - 人工问题不预选答案；用户必须显式选择后才能提交。完成的真实训练、未检查资源、需要调整计划和环境阻断是四种不同状态。

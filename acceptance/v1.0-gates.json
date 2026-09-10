@@ -53,7 +53,7 @@
       "level_id": "L5",
       "gate_id": "V10-L5-AI-HUMAN-BROWSER",
       "required": true,
-      "description": "AI turn ownership, one authoritative state, stop/recovery, evidence opening, refresh and task re-entry pass on desktop and mobile."
+      "description": "AI turn ownership, one authoritative state, stop/recovery, evidence opening, refresh and task re-entry pass on PC at 1280x800, 1440x900 and 1920x1080. PC-only scope explicitly confirmed by the product owner on 2026-09-10."
     },
     {
       "level_id": "L6",

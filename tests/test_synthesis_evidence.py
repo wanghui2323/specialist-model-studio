@@ -434,6 +434,37 @@ class SynthesisEvidenceTests(unittest.TestCase):
             "candidate-latest",
         )
 
+    def test_continuable_child_evidence_is_partitioned_by_exact_invocation_window(self) -> None:
+        events = []
+        bindings = []
+        second_id = "agent-run-2"
+        for run_id, root_seq, child_seq, label, floor, ceiling in [
+            (RUN_ID, 1, 11, "old", None, 19),
+            (second_id, 11, 21, "new", 19, None),
+        ]:
+            call = tool_call(root_seq, f"delegate-{label}", "send_message")
+            result = tool_result(root_seq + 1, f"delegate-{label}", "send_message")
+            result["payload"]["dsh_session_id"] = "reused-child"
+            child_call = tool_call(child_seq, f"search-{label}", "model_harness_search_model_sources", session_id="reused-child")
+            child_result = tool_result(child_seq + 1, f"search-{label}", "model_harness_search_model_sources", session_id="reused-child", refs=[valid_ref(ref_id=f"search-{label}")])
+            final = candidate(root_seq + 2, label)
+            for item in [call, result, child_call, child_result, final]:
+                item["agent_run_id"] = run_id
+                events.append(item)
+            bindings.append(VerifiedChildBinding(run_id=run_id,
+                delegation_call_id=f"delegate-{label}", parent_turn_id=f"root:{label}",
+                parent_session_id=ROOT_SESSION_ID, child_session_id="reused-child",
+                created_in_run=label == "old", source_seq_floor=floor, source_seq_ceiling=ceiling))
+        boundaries = (run_boundary(), RunBoundary(run_id=second_id,
+            queued_at_utc="2026-08-25T00:01:00+00:00", queue_event_seq=20,
+            source_seq_floor_by_session=((ROOT_SESSION_ID, 10), ("reused-child", 19))))
+        verdicts = self.evaluate(events, boundaries=boundaries, children=tuple(bindings))
+        for label in ("old", "new"):
+            with self.subTest(label=label):
+                verdict = verdicts.event(f"candidate-{label}")
+                self.assertTrue(verdict.accepted, verdict.reason_codes)
+                self.assertEqual([ref.id for ref in verdict.evidence_object_refs], [f"search-{label}"])
+
     def test_unpaired_root_call_blocks_candidate_despite_other_valid_evidence(self) -> None:
         events = [
             tool_call(1, "search", "model_harness_search_model_sources"),

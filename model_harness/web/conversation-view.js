@@ -59,6 +59,7 @@
     model_harness_match_capability: "匹配训练能力",
     model_harness_list_tasks: "检查现有训练任务",
     model_harness_create_task: "创建训练任务",
+    model_harness_promote_conversation: "建立模型任务",
     model_harness_get_task: "了解当前任务",
     model_harness_update_task_spec: "确认任务理解",
     model_harness_clarify_task_spec: "补充任务理解",
@@ -119,7 +120,7 @@
     "pending_human_checkpoint",
   ]);
   const ACTION_TOOL_CLASSES = new Set(["domain", "control", "delegation", "unknown"]);
-  const ACTION_STATUSES = new Set(["running", "completed", "failed", "identity_error"]);
+  const ACTION_STATUSES = new Set(["running", "completed", "failed", "cancelled", "identity_error"]);
 
   function eventType(item) {
     const raw = item?.event_type || item?.type || (KNOWN_EVENT_TYPES.has(item?.kind) ? item.kind : null);
@@ -612,6 +613,7 @@
     const projectionHealth = deriveProjectionHealth(remote, normalized, liveV2);
     return {
       schema_version: liveV2 ? SCHEMA_VERSION : "legacy",
+      task_id: typeof remote.task_id === "string" ? remote.task_id : null,
       event_payload_mode: liveV2 ? (remote.event_payload_mode || null) : null,
       live_v2: liveV2,
       items,

@@ -334,9 +334,9 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(app, /const taskOwnedConversation = conversation\?\.task_id === task\?\.task_id \? conversation : null/);
   assert.match(app, /return taskOwnedConversation \? interactionPresentation\(task, taskOwnedConversation\) : workflowStatus\(task, null\)/);
   assert.match(app, /const taskConversation = task\.task_id === state\.selectedTaskId \? state\.conversation : null; const workflow = taskListStatus\(task, taskConversation\)/);
-  assert.match(app, /function syncSelectedTaskListStatus\(conversation = state\.conversation\)/);
+  assert.match(app, /function syncSelectedTaskListStatus\(conversation = state\.conversation, projection = null\)/);
   assert.match(app, /if \(state\.task\) syncTaskHeader\(state\.task, conversation, projection\)/);
-  assert.match(app, /if \(state\.task && !draftConversation\) \{ syncTaskSpecCheckpointOwnership\(conversation\); syncLegacyConfirmationControls\(state\.task, conversation\); syncSelectedTaskListStatus\(conversation\); \}/);
+  assert.match(app, /if \(state\.task && !draftConversation\) \{ syncTaskSpecCheckpointOwnership\(conversation\); syncLegacyConfirmationControls\(state\.task, conversation\); syncSelectedTaskListStatus\(conversation, projection\); \}/);
   assert.match(app, /stage === "environment_lock"\) return \{ label: blocked \? "训练环境阻断"/);
   assert.match(app, /label: "固定模型来源记录"/);
   assert.match(app, /time\.textContent = formatRelativeTime\(task\.updated_at_utc\)/);
@@ -382,11 +382,11 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(css, /\.inspector\[data-open="true"\]\{[^}]*visibility:visible[^}]*pointer-events:auto[^}]*transform:translateX\(0\)/);
   assert.match(css, /@media\(max-width:720px\)[\s\S]*?\.inspector\{width:100%;z-index:42\}/);
   assert.match(css, /@media\(max-width:720px\)[\s\S]*body\[data-workspace="open"\] \.mobile-view-nav\{display:none\}/);
-  for (const asset of ["conversation-view.js", "interaction-shell.js"]) {
+  for (const asset of ["interaction-shell.js"]) {
     assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.2-one-product`));
   }
-  for (const asset of ["styles.css", "visual-system.css", "app.js"]) {
-    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.4\\.1-conversation-intake`));
+  for (const asset of ["styles.css", "visual-system.css", "app.js", "conversation-view.js"]) {
+    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.4\\.5-pc-rc`));
   }
   assert.match(app, /function renderAgentSurfaceState\(conversation, projection\)/);
   assert.doesNotMatch(app, /开始 Agent 会话/);
@@ -458,10 +458,10 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(app, /function actionTimelineGlance\(actions, waitingForHuman, working, recoveredFailures = new Set\(\)\)/);
   assert.match(app, /function isWaitingForAnswerAction\(action, waitingForHuman = false\)/);
   assert.match(app, /action\.tool_name === "ask_user_question"/);
-  assert.match(app, /if \(displayStatus === "waiting"\) return "等待回答"/);
+  assert.match(app, /checkpoint.call_id === action.call_id/);
   assert.match(app, /result\.dataset\.state = displayStatus/);
-  assert.match(app, /waitingForAnswer \? "等待回答" : formatActionDuration\(action\)/);
-  assert.match(app, /stateLabel\.textContent = hasFailure \? "需要处理" : running \? "执行中" : waitingForAnswer \? "等待回答" : hasDeclined \? "你选择暂不执行" : "已结束"/);
+  assert.match(app, /waitingForAnswer \|\| displayStatus === "suspended" \? actionStatusLabel\(action, \{ waitingForHuman \}\)/);
+  assert.match(app, /waitingForAnswer \? "等待你的决定" : hasDeclined/);
   assert.match(app, /function isUserDeclinedAction\(action\)/);
   assert.match(app, /action\?\.error\?\.code === "user_rejected"/);
   assert.match(app, /displayStatus === "declined"/);
@@ -480,8 +480,8 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(app, /\["blocker", "warning", "observation_degraded", "failed"\]/);
   assert.match(app, /if \(item\.kind === "coordinator_note"\) return renderCoordinatorNote\(item, target\)/);
   assert.match(app, /function renderCoordinatorNote\(item, target = ui\.messageList\)/);
-  assert.match(app, /truth\.textContent = "过程说明"/);
-  assert.match(app, /最终结果以任务证据为准/);
+  assert.doesNotMatch(app, /truth\.textContent = "过程说明"/);
+  assert.match(app, /Answer visibility is independent from evidence-backed training completion/);
   assert.match(app, /function showTransientNotice\(message, tone = "ok", durationMs = 6_000\)/);
   assert.match(app, /state\.noticeDismissTimer = window\.setTimeout/);
   assert.match(app, /showTransientNotice\(created\.created === false \? "对话已恢复，AI 正在继续处理。" : "对话已开始，AI 正在理解你的需求。"/);
@@ -512,7 +512,7 @@ test("runtime failure stops conversation instead of impersonating an Agent with 
   assert.match(app, /state\.runtimeReady = transportCompatible && providerReady/);
   assert.match(app, /state\.runtimeIssue = "provider"/);
   assert.match(app, /agent\.real_agent === true && agent\.implementation === "dsh_native_subagents"/);
-  assert.match(app, /agent\.conversation_projector_revision === "3\.2" && agent\.synthesis_verdict_version === "1\.0" && agent\.conversation_action_schema_version === "1\.0" && agent\.task_truth_source === "TrainingTask"/);
+  assert.match(app, /agent\.conversation_projector_revision === "3\.3" && agent\.synthesis_verdict_version === "1\.0" && agent\.conversation_action_schema_version === "1\.0" && agent\.task_truth_source === "TrainingTask"/);
   assert.match(app, /\["working", "waiting_for_human", "cancelling", "idle", "terminal"\]/);
   assert.match(app, /AI 服务版本不兼容/);
   assert.match(app, /AI 服务未连接/);
@@ -795,7 +795,7 @@ test("Agent questions require an explicit human choice", async () => {
   assert.match(app, /actions\.classList\.add\("human-choice-list"\)/);
   assert.match(app, /button\.className = "human-choice"/);
   assert.match(app, /postQuestionAnswers\(item, \[\{ id: question\.id, selected: \[option\.label\] \}\]\)/);
-  assert.match(app, /custom\.textContent = "都不符合，我想补充说明"/);
+  assert.match(app, /custom\.textContent = "填写其他答案"/);
   assert.doesNotMatch(app, /answer\.textContent = "回答问题"/);
   assert.match(css, /\.decision-actions\.human-choice-list\{display:grid/);
   assert.match(css, /\.human-choice\{[^}]*min-height:70px/);
@@ -809,11 +809,11 @@ test("AI-human mode keeps one decision foregrounded and accepts natural-language
   assert.match(app, /checkpoint\?\.kind === "approval"\) return \{ label: "等待你的批准"/);
   assert.match(app, /workflowStatus\(task, conversation = null\)/);
   assert.match(app, /syncTaskHeader\(state\.task, conversation, projection\)/);
-  assert.match(app, /selected: \[\], custom: text/);
-  assert.match(app, /checkpoint\?\.kind === "question"\) ui\.messageInput\.placeholder = "直接回答当前问题…"/);
-  assert.match(app, /checkpoint\.questions\?\.length !== 1\) \{ openQuestionDialog\(checkpoint\)/);
-  assert.match(app, /这组问题需要分别回答，已为你打开结构化回答面板/);
-  assert.match(app, /聊天文字不会被当作授权/);
+  assert.match(app, /checkpoint_rpc_id: submission\.checkpoint_rpc_id/);
+  assert.match(app, /继续提问或补充想法；发送后暂缓当前问题/);
+  assert.match(app, /answer\.addEventListener\("click", \(\) => openQuestionDialog\(item\)\)/);
+  assert.match(app, /不会批准执行或代填答案/);
+  assert.match(app, /发送不会批准执行/);
   assert.match(app, /conversation\?\.interaction_state === "waiting_for_human"/);
   assert.match(app, /conversationHasActiveWork\(conversation\)/);
   assert.match(app, /function syncTaskSpecCheckpointOwnership\(conversation = state\.conversation\)/);
@@ -866,10 +866,11 @@ test("CSV data checkpoints upload first and resume the same Agent question witho
   const datasetRenderer = app.slice(app.indexOf("function renderDataset"), app.indexOf("function gateEntries"));
   assert.match(app, /function dataUploadQuestionCheckpoint\(item\)/);
   assert.match(uploadRecognition, /new Set\(\["data_upload", "dataset_upload", "csv_upload", "data_path", "dataset_id"\]\)/);
-  assert.match(uploadRecognition, /\[\.\.\.DATA_UPLOAD_QUESTION_IDS, "target_column"\]\.some\(\(id\) => ids\.has\(id\)\)/);
+  assert.match(uploadRecognition, /\[\.\.\.DATA_UPLOAD_QUESTION_IDS\]\.some\(\(id\) => ids\.has\(id\)\)/);
+  assert.doesNotMatch(uploadRecognition, /\[\.\.\.DATA_UPLOAD_QUESTION_IDS, "target_column"\]/);
   assert.doesNotMatch(uploadRecognition, /question\?\.(?:question|header|summary)|item\.(?:title|summary)|includes\([^)]*(?:upload|上传)/);
   assert.match(checkpointRenderer, /选择数据文件，系统会先识别字段/);
-  assert.match(checkpointRenderer, /choose\.textContent = "选择 CSV 文件"/);
+  assert.match(checkpointRenderer, /"选择 CSV 文件" : "选择 CSV 或 ZIP 文件"/);
   assert.match(checkpointRenderer, /ui\.datasetInput\.value = ""; ui\.datasetInput\.click\(\)/);
   assert.match(checkpointRenderer, /协调器只会收到导入后的数据集编号和你选择的预测列/);
   assert.doesNotMatch(checkpointRenderer, /绝对路径|相对于工作区|\/Users\//);
@@ -907,7 +908,7 @@ test("CSV data checkpoints upload first and resume the same Agent question witho
   assert.match(legacyConfirmationPolicy, /ui\.confirmContractButton\.hidden = true; ui\.confirmContractButton\.disabled = true/);
   assert.match(legacyConfirmationPolicy, /ui\.approveRunProposalButton\.hidden = true; ui\.approveRunProposalButton\.disabled = true/);
   assert.match(legacyConfirmationPolicy, /const hasCanonicalCheckpoint = Boolean\(checkpoint\?\.rpc_id && isPendingHumanCheckpoint\(checkpoint\)\)/);
-  assert.match(app, /checkpoint\.questions\?\.length !== 1\) \{ openQuestionDialog\(checkpoint\)/);
+  assert.match(app, /answer\.addEventListener\("click", \(\) => openQuestionDialog\(item\)\)/);
   assert.match(css, /\.data-upload-actions\{display:grid/);
   assert.match(css, /\.data-upload-actions \.checkpoint-upload-button\{/);
   assert.match(app, /function parseDelimitedHeader\(line, delimiter\)/);
@@ -923,10 +924,8 @@ test("CSV data checkpoints upload first and resume the same Agent question witho
   assert.match(css, /\.csv-schema-overview/);
   assert.match(css, /\.csv-column-choices/);
   assert.match(app, /function humanizeCoordinatorText\(/);
-  assert.match(app, /function appendCoordinatorNextAction\(/);
-  assert.match(app, /state\.task\?\.status !== "awaiting_data"/);
-  assert.match(app, /button\.textContent = state\.task\?\.recipe_id === "tabular-regression" \? "选择 CSV 文件" : "选择数据文件"/);
-  assert.match(css, /\.message-next-action\{display:grid/);
+  assert.doesNotMatch(app, /function appendCoordinatorNextAction\(/);
+  assert.match(app, /choose\.textContent = state\.task\?\.recipe_id === "tabular-regression" \? "选择 CSV 文件" : "选择 CSV 或 ZIP 文件"/);
 });
 
 test("conversation progress uses task-owned SSE with visible five-second fallback", async () => {
@@ -1157,15 +1156,15 @@ test("composer queues stable idempotent messages and cancellation stays explicit
   assert.match(app, /previous\?\.task_id === taskId && previous\.text === text && previous\.status === "failed"/);
   assert.match(app, /return previous/);
   assert.match(app, /request_id: createConversationRequestId\(\), status: "sending"/);
-  assert.match(app, /json: \{ message: text, mode: DEFAULT_CONVERSATION_MESSAGE_MODE, request_id: submission\.request_id \}/);
+  assert.match(app, /mode: DEFAULT_CONVERSATION_MESSAGE_MODE, request_id: submission\.request_id/);
   assert.match(app, /response\?\.accepted !== true \|\| \["failed", "cancelled", "canceled", "rejected", "interrupted"\]\.includes\(status\)/);
   assert.match(app, /structuredErrorMessage\(response, "后端没有接受这条消息"\)/);
   assert.match(app, /state\.messageSubmission\?\.request_id === submission\.request_id\) state\.messageSubmission = null/);
-  assert.match(app, /state\.messageSubmission\?\.request_id === submission\.request_id\) state\.messageSubmission\.status = "failed"/);
+  assert.match(app, /state\.messageSubmission\.status = "failed"/);
   assert.match(app, /再次发送同一条消息会复用请求编号/);
 
   assert.match(app, /checkpoint\?\.kind === "approval"[\s\S]*聊天文字不会被当作授权/);
-  assert.match(app, /postQuestionAnswers\(checkpoint, \[\{ id: question\.id, selected: \[\], custom: text \}\]\)/);
+  assert.doesNotMatch(app, /postQuestionAnswers\(checkpoint, \[\{ id: question\.id, selected: \[\], custom: text \}\]\)/);
   assert.match(app, /conversationTransportPath\(taskId, "questions", item\.rpc_id\)/);
 
   assert.match(app, /function openCancelAgentDialog\(\)/);
@@ -1209,7 +1208,7 @@ test("composer attachment chip exposes honest states and retries the same reques
   assert.match(app, /retry_stage: "continuation"/);
   assert.match(app, /failed\.request_id !== continuation\.request_id/);
   assert.match(app, /重试只会续接原问题，不会重复上传/);
-  assert.match(app, /showComposerRetry\(\{ label: "重试发送"/);
+  assert.match(app, /showComposerRetry\(\{ label: failedSubmission.new_request_required \? "刷新后重发" : "重试发送"/);
   assert.match(app, /failed\.request_id !== failedSubmission\.request_id/);
   assert.match(app, /await submitMessage\(failed\.text\)/);
   assert.match(app, /importedDatasetId \? "文件条目已从输入框移除；已经导入当前任务的数据仍然保留。" : "文件已从输入框移除。"/);

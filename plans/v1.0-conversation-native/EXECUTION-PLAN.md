@@ -1,6 +1,6 @@
 # v1.0 对话原生 · 证据动作流执行计划
 
-状态：L0–L6 本地 RC Gate 已通过；等待用户体验验收，未推送或发布
+状态：历史本地实现记录；当前提交的发布门须重新验收，不能继承 L0–L6 全通过结论。当前状态见 `FINAL-PC-RELEASE-20260910.md`。
 范围：本地可审核 RC；GitHub push、CI、cold clone、Tag 与 Release 是独立发布门
 主对象：`TrainingTask`
 训练引擎：`model_harness`

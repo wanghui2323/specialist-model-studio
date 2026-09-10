@@ -6,8 +6,8 @@
     <meta name="description" content="Specialist Model Studio：从需求与证据到可验收的专业模型" />
     <title>Specialist Model Studio · 专业模型智能工作台</title>
     <link rel="icon" href="/app/static/model-harness-mark.svg?v=2.2-one-product" type="image/svg+xml" />
-    <link rel="stylesheet" href="/app/static/styles.css?v=2.4.1-conversation-intake" />
-    <link rel="stylesheet" href="/app/static/visual-system.css?v=2.4.1-conversation-intake" />
+    <link rel="stylesheet" href="/app/static/styles.css?v=2.4.5-pc-rc" />
+    <link rel="stylesheet" href="/app/static/visual-system.css?v=2.4.5-pc-rc" />
   </head>
   <body data-view="home">
     <a class="skip-link" href="#conversationMain">跳到对话区</a>
@@ -166,8 +166,9 @@
             <b id="objectViewerState">读取中</b>
           </header>
           <p id="objectViewerSummary">这里只读取被点击的 task-owned 对象，不会用当前版本替代历史证据。</p>
-          <dl id="objectViewerIdentity"></dl>
-          <pre id="objectViewerJson" tabindex="0"></pre>
+          <div class="object-viewer-overview" id="objectViewerOverview" hidden></div>
+          <details class="object-viewer-details"><summary>对象身份与校验摘要</summary><dl id="objectViewerIdentity"></dl></details>
+          <details class="object-viewer-details"><summary>原始证据（只读）</summary><pre id="objectViewerJson" tabindex="0"></pre></details>
         </section>
         <div id="inspectorContent" hidden>
           <div class="inspector-header"><span>训练详情</span><b class="task-status" id="taskStatus" hidden aria-hidden="true">草稿</b></div>
@@ -439,8 +440,8 @@
       </form>
     </dialog>
     <script src="/app/static/draft-store.js?v=1.0-agent-native-2" defer></script>
-    <script src="/app/static/conversation-view.js?v=2.2-one-product" defer></script>
+    <script src="/app/static/conversation-view.js?v=2.4.5-pc-rc" defer></script>
     <script src="/app/static/interaction-shell.js?v=2.2-one-product" defer></script>
-    <script src="/app/static/app.js?v=2.4.1-conversation-intake" defer></script>
+    <script src="/app/static/app.js?v=2.4.5-pc-rc" defer></script>
   </body>
 </html>

@@ -38,6 +38,13 @@ class VerifiedChildBinding:
     child_session_id: str
     created_in_run: bool
     lineage_verified: bool = True
+    source_seq_floor: int | None = None
+    source_seq_ceiling: int | None = None
+
+    def contains(self, source_seq: int | None) -> bool:
+        return source_seq is not None and (
+            self.source_seq_floor is None or source_seq > self.source_seq_floor
+        ) and (self.source_seq_ceiling is None or source_seq <= self.source_seq_ceiling)
 
 
 @dataclass(frozen=True)
@@ -469,7 +476,7 @@ def evaluate_synthesis_evidence(
         if run_id is not None:
             root_run_by_event[event_id] = run_id
 
-    valid_delegations: dict[tuple[str, str], tuple[VerifiedChildBinding, int]] = {}
+    valid_delegations: dict[tuple[str, str, str], tuple[VerifiedChildBinding, int]] = {}
     for binding in verified_children:
         if (
             binding.run_id not in run_ids
@@ -510,7 +517,7 @@ def evaluate_synthesis_evidence(
         if len(matching_results) == 1:
             gate_seq = _source_seq(matching_results[0])
             if gate_seq is not None:
-                valid_delegations[(binding.run_id, binding.child_session_id)] = (
+                valid_delegations[(binding.run_id, binding.child_session_id, binding.delegation_call_id)] = (
                     binding,
                     gate_seq,
                 )
@@ -533,8 +540,8 @@ def evaluate_synthesis_evidence(
             continue
         child_matches = [
             (run_id, details)
-            for (run_id, child_session_id), details in valid_delegations.items()
-            if child_session_id == session_id
+            for (run_id, child_session_id, _), details in valid_delegations.items()
+            if child_session_id == session_id and details[0].contains(event_source_seq)
         ]
         if len(child_matches) != 1:
             continue
@@ -600,8 +607,8 @@ def evaluate_synthesis_evidence(
         root_run_id = root_run_by_event.get(event_id)
         child_matches = [
             (run_id, details)
-            for (run_id, child_session_id), details in valid_delegations.items()
-            if child_session_id == session_id
+            for (run_id, child_session_id, _), details in valid_delegations.items()
+            if child_session_id == session_id and details[0].contains(result_source_seq)
         ]
         if root_run_id is not None:
             run_id = root_run_id
@@ -635,6 +642,8 @@ def evaluate_synthesis_evidence(
             for call in calls:
                 call_source_seq = _source_seq(call)
                 if call_source_seq is None:
+                    continue
+                if not child_binding.contains(call_source_seq):
                     continue
                 if (
                     not child_binding.created_in_run
