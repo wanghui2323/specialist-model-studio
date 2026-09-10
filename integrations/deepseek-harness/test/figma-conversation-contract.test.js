@@ -327,7 +327,7 @@ test("compact coordinator plans and the selected task obey canonical interaction
     ["waiting_question", "needs_confirmation", "计划步骤已处理 · 等待你的回答"],
     ["waiting_approval", "needs_confirmation", "计划步骤已处理 · 等待你的批准"],
     ["agent_working", "running", "计划仍在推进 · AI 正在处理"],
-    ["background_working", "running", "计划仍在推进 · 后台训练/评测进行中"],
+    ["background_working", "running", "计划仍在推进 · 后台操作进行中"],
     ["blocked", "failed", "计划已暂停 · 当前受阻"],
     ["failed", "failed", "计划已停止 · 运行异常"],
     ["stopped", "cancelled", "本轮已停止"],

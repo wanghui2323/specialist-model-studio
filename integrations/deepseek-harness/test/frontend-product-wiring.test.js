@@ -326,8 +326,8 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(app, /function conversationAgentResponseRunning\(conversation\)/);
   assert.match(app, /function conversationHasBackgroundTraining\(conversation\)/);
   assert.match(app, /if \(conversationAgentResponseRunning\(conversation\)\) return \{ label: "AI 正在处理"/);
-  assert.match(app, /if \(conversationHasBackgroundTraining\(conversation\)\) return \{ label: "后台训练\/评测进行中"/);
-  assert.match(app, /RUNNING_STATUSES\.has\(task\.current_result\?\.status\)\) return \{ label: "后台训练\/评测进行中"/);
+  assert.match(app, /if \(conversationHasBackgroundTraining\(conversation\)\) return \{ label: "后台操作进行中"/);
+  assert.match(app, /RUNNING_STATUSES\.has\(task\.current_result\?\.status\)\) return \{ label: "后台操作进行中"/);
   assert.match(app, /\(conversation && state\.conversationStreamDegraded\) \|\| conversation\?\.projection_health/);
   assert.match(app, /function syncTaskHeader\(task, conversation = state\.conversation, projection = null\)/);
   assert.match(app, /function taskListStatus\(task, conversation = null\)/);
@@ -386,7 +386,7 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
     assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.2-one-product`));
   }
   for (const asset of ["styles.css", "visual-system.css", "app.js", "conversation-view.js"]) {
-    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.4\\.5-pc-rc`));
+    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.4\\.6-pc-rc`));
   }
   assert.match(app, /function renderAgentSurfaceState\(conversation, projection\)/);
   assert.doesNotMatch(app, /开始 Agent 会话/);
@@ -1147,7 +1147,9 @@ test("composer queues stable idempotent messages and cancellation stays explicit
   assert.match(app, /const agentQueued = Boolean\(state\.runtimeReady && state\.selectedTaskId && !checkpoint && conversationAgentResponseRunning\(conversation\)\)/);
   assert.match(app, /const backgroundRunning = Boolean\(state\.runtimeReady && state\.selectedTaskId && !checkpoint && !agentQueued && conversationHasBackgroundTraining\(conversation\)\)/);
   assert.match(app, /ui\.composerDeliveryLabel\.textContent = "将在本轮结束后继续"/);
-  assert.match(app, /ui\.composerDeliveryLabel\.textContent = "后台训练正在运行，可继续对话"/);
+  assert.match(app, /ui\.composerDeliveryLabel\.textContent = "后台操作正在进行，可继续对话"/);
+  // Static binding and resource checks also use background actions; never imply a training Run.
+  assert.doesNotMatch(app, /后台训练/);
   assert.match(app, /实时干预/);
   assert.match(app, /停止并替换/);
   assert.doesNotMatch(app, /mode:\s*"intervene_current"/);

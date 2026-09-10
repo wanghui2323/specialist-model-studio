@@ -459,8 +459,8 @@ function syncComposerDelivery(conversation = state.conversation) {
   ui.composerWrap.dataset.delivery = agentQueued ? DEFAULT_CONVERSATION_MESSAGE_MODE : backgroundRunning ? "background-training" : "immediate-when-idle";
   if (!agentQueued && !backgroundRunning) return;
   if (backgroundRunning) {
-    ui.composerDeliveryLabel.textContent = "后台训练正在运行，可继续对话";
-    ui.composerDeliveryDetail.textContent = "你仍可继续和 AI 交流；新消息会开启新的对话回合，不会被描述为排队到当前训练之后。";
+    ui.composerDeliveryLabel.textContent = "后台操作正在进行，可继续对话";
+    ui.composerDeliveryDetail.textContent = "你仍可继续和 AI 交流；新消息会开启新的对话回合，不会排队等待后台操作结束。具体操作以本轮执行记录为准。";
     return;
   }
   const supported = advertisedConversationModes(conversation);
@@ -549,10 +549,10 @@ function workflowStatus(task, conversation = null) {
   if (checkpoint?.kind === "question") return { label: "等待你的回答", tone: "needs_confirmation" };
   if (checkpoint?.kind === "approval") return { label: "等待你的批准", tone: "needs_confirmation" };
   if (conversationAgentResponseRunning(conversation)) return { label: "AI 正在处理", tone: "running" };
-  if (conversationHasBackgroundTraining(conversation)) return { label: "后台训练/评测进行中", tone: "running" };
+  if (conversationHasBackgroundTraining(conversation)) return { label: "后台操作进行中", tone: "running" };
   if (conversation?.interaction_state === "waiting_for_human") return { label: "等待你的决定", tone: "needs_confirmation" };
   if (isConversationDraft(state.conversationRecord, task)) return { label: "等待你的消息", tone: "idle" };
-  if (RUNNING_STATUSES.has(task.current_result?.status)) return { label: "后台训练/评测进行中", tone: "running" };
+  if (RUNNING_STATUSES.has(task.current_result?.status)) return { label: "后台操作进行中", tone: "running" };
   if (["running", "completed", "failed", "cancelled", "interrupted"].includes(task.status)) return { label: STATUS_LABELS[task.status] || task.status, tone: task.status };
   const stage = task.control?.current_stage; const blocked = task.control?.blocked_by?.[0]; const analysisStatus = task.repository_analysis?.status; const planStatus = task.training_plan?.effective_status;
   if (stage === "task_understanding") return { label: task.capability_decision?.status === "needs_confirmation" ? "等待确认" : "等待澄清", tone: "needs_clarification" };
@@ -579,7 +579,7 @@ function canonicalInteractionPresentation(conversation = state.conversation) {
     waiting_question: { label: "等待你的回答", tone: "needs_confirmation" },
     waiting_approval: { label: "等待你的批准", tone: "needs_confirmation" },
     agent_working: { label: "AI 正在处理", tone: "running" },
-    background_working: { label: "后台训练/评测进行中", tone: "running" },
+    background_working: { label: "后台操作进行中", tone: "running" },
     completed: { label: "本轮结果已就绪", tone: "completed" },
     failed: { label: "运行异常", tone: "failed" },
     stopped: { label: "本轮已停止", tone: "cancelled" },
@@ -604,7 +604,7 @@ function interactionPresentation(task, conversation = state.conversation, projec
   const projectionStatus = projection ? ({
     clarifying: { label: "等待你的回答", tone: "needs_confirmation" },
     awaiting_approval: { label: "等待你的批准", tone: "needs_confirmation" },
-    executing: { label: backgroundCancellationPending(conversation) ? "正在停止" : conversationAgentResponseRunning(conversation) ? "AI 正在处理" : conversationHasBackgroundTraining(conversation) ? "后台训练/评测进行中" : projection.background?.coordinator_reply_complete ? "后台训练/评测进行中" : "AI 正在处理", tone: backgroundCancellationPending(conversation) ? "cancelling" : "running" },
+    executing: { label: backgroundCancellationPending(conversation) ? "正在停止" : conversationAgentResponseRunning(conversation) ? "AI 正在处理" : conversationHasBackgroundTraining(conversation) ? "后台操作进行中" : projection.background?.coordinator_reply_complete ? "后台操作进行中" : "AI 正在处理", tone: backgroundCancellationPending(conversation) ? "cancelling" : "running" },
     result_ready: { label: "本轮结果已就绪", tone: "completed" },
     blocked: { label: "任务当前受阻", tone: "failed" },
     failed: { label: projection.reason_code === "observation_degraded" ? "需要重新连接" : "运行异常", tone: "failed" },
@@ -1200,7 +1200,7 @@ function syncConversationComposerPlaceholder(conversation = state.conversation, 
   else if (checkpoint?.kind === "question") ui.messageInput.placeholder = "继续提问或补充想法；发送后暂缓当前问题…";
   else if (checkpoint?.kind === "approval") ui.messageInput.placeholder = "有疑问可以先讨论；发送不会批准执行…";
   else if (conversationAgentResponseRunning(conversation)) ui.messageInput.placeholder = "补充下一步要求；消息将在本轮结束后处理…";
-  else if (conversationHasBackgroundTraining(conversation)) ui.messageInput.placeholder = "继续和 AI 交流；后台训练不会阻塞新消息…";
+  else if (conversationHasBackgroundTraining(conversation)) ui.messageInput.placeholder = "继续和 AI 交流；后台操作不会阻塞新消息…";
   else if (isConversationDraft(state.conversationRecord, task)) ui.messageInput.placeholder = "继续补充你的目标、场景或限制…";
   else if (state.taskSpecDescriptionMode && stageKey(task) === "task_understanding") ui.messageInput.placeholder = "直接告诉 AI：模型接收什么、应该输出什么…";
   else ui.messageInput.placeholder = "继续提问、补充信息或调整目标…";
@@ -2382,7 +2382,7 @@ function renderConversation(force = false) {
   ui.agentWorking.hidden = !fallbackWorkingSurface;
   ui.cancelAgentButton.hidden = Boolean(currentAiTurn) || (conversation.can_cancel_agent !== true && !backgroundRun);
   if (optimistic && !agentResponseRunning && !backgroundTrainingRunning) ui.agentWorkingLabel.textContent = "正在发送";
-  else if (backgroundTrainingRunning) ui.agentWorkingLabel.textContent = `后台训练 ${shortId(backgroundRun?.training_run_id || backgroundRun?.run_id || backgroundRun?.action_id)} 正在运行；你可以继续对话`;
+  else if (backgroundTrainingRunning) ui.agentWorkingLabel.textContent = `后台操作 ${shortId(backgroundRun?.training_run_id || backgroundRun?.run_id || backgroundRun?.action_id)} 正在进行；你可以继续对话`;
   else if (agentResponseRunning && !conversation.active_event) ui.agentWorkingLabel.textContent = "AI 正在处理";
   else ui.agentWorkingLabel.textContent = agentActivityLabel(conversation.active_event);
   syncCancelRequestUi(conversation);
@@ -2936,7 +2936,7 @@ function coordinatorProgressPresentation(item, canonical = null) {
     waiting_question: { label: "本轮计划", hint: "计划步骤已处理 · 等待你的回答", action: "查看" },
     waiting_approval: { label: "本轮计划", hint: "计划步骤已处理 · 等待你的批准", action: "查看" },
     agent_working: { label: "当前计划", hint: "计划仍在推进 · AI 正在处理", action: "展开" },
-    background_working: { label: "当前计划", hint: "计划仍在推进 · 后台训练/评测进行中", action: "展开" },
+    background_working: { label: "当前计划", hint: "计划仍在推进 · 后台操作进行中", action: "展开" },
     blocked: { label: "本轮计划", hint: "计划已暂停 · 当前受阻", action: "查看" },
     failed: { label: "本轮计划", hint: "计划已停止 · 运行异常", action: "查看" },
     stopped: { label: "本轮计划", hint: "本轮已停止", action: "查看" },
