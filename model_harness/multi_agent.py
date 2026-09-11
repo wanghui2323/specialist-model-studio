@@ -3408,6 +3408,7 @@ class DshMultiAgentRuntime:
         """
 
         terminal_by_session: dict[str, tuple[float, Mapping[str, Any]]] = {}
+        terminal_by_turn: dict[tuple[str, str, str], Mapping[str, Any]] = {}
         for event in self.store.current_projection_events(task_id):
             if event.get("event_type") not in {"turn_error", "turn_cancelled"}:
                 continue
@@ -3415,6 +3416,8 @@ class DshMultiAgentRuntime:
             timestamp = self._timestamp_seconds(event.get("timestamp_utc"))
             if not isinstance(session_id, str) or not session_id or timestamp is None:
                 continue
+            if event.get("agent_run_id") and event.get("turn_id"):
+                terminal_by_turn[(session_id, event["agent_run_id"], event["turn_id"])] = event
             current = terminal_by_session.get(session_id)
             if current is None or timestamp >= current[0]:
                 terminal_by_session[session_id] = (timestamp, event)
@@ -3429,11 +3432,19 @@ class DshMultiAgentRuntime:
                 if isinstance(session_id, str)
                 else None
             )
-            if (
-                terminal is None
-                or received_at is None
-                or terminal[0] < received_at
-            ):
+            # Interrupted history can timestamp its synthetic turn/end at the
+            # last source event, before websocket receipt of the checkpoint.
+            # Exact turn ownership is authoritative; receipt-time proximity is
+            # only a legacy fallback when that ownership was never observed.
+            identity = (session_id, item.get("agent_run_id"), item.get("turn_id"))
+            exact_terminal = terminal_by_turn.get(identity) if all(identity) else None
+            if all(identity):
+                terminal_event = exact_terminal
+            else:
+                terminal_event = (terminal[1] if terminal is not None
+                                  and received_at is not None
+                                  and terminal[0] >= received_at else None)
+            if terminal_event is None:
                 active.append(item)
                 continue
             self._persist_pending_resolved(
@@ -3442,7 +3453,7 @@ class DshMultiAgentRuntime:
                 session_id=str(session_id),
                 item=item,
                 outcome="invalidated_by_turn_terminal",
-                terminal_event=terminal[1],
+                terminal_event=terminal_event,
             )
             self.events.resolve_local(str(session_id), str(item.get("rpc_id") or ""))
         return active
@@ -3771,6 +3782,8 @@ class DshMultiAgentRuntime:
         questions = item.get("questions")
 
         for event in reversed(events):
+            if event.get("source") == "dsh_pending":
+                continue
             if event.get("event_type") != kind or event.get("status") != "pending":
                 continue
             payload = event.get("payload")
@@ -3816,6 +3829,28 @@ class DshMultiAgentRuntime:
                 "agent_id": event.get("agent_id"),
                 "agent_label": event.get("agent_label"),
             }
+
+        # A resumed DSH history may omit an interrupted approval and include
+        # its aborted tool result. Recover only the exact previously observed
+        # RPC identity, never the newest invocation of this root/child session.
+        requested = [event for event in events
+                     if event.get("source") == "dsh_pending"
+                     and event.get("event_type") == kind
+                     and event.get("payload", {}).get("phase") == "requested"
+                     and event.get("payload", {}).get("rpc_id") == item.get("rpc_id")
+                     and item.get("rpc_id")
+                     and event.get("agent_run_id") and event.get("turn_id")
+                     and event.get("call_id")
+                     and (not direct_call_id or event.get("call_id") == direct_call_id)
+                     and (not approval_id or event.get("payload", {}).get("approval_id") == approval_id)]
+        identities = {(event["agent_run_id"], event["turn_id"], event["call_id"])
+                      for event in requested}
+        if len(identities) == 1:
+            event = requested[-1]
+            return {field: event.get(field) for field in
+                    ("event_id", "turn_id", "call_id", "agent_run_id", "agent_id", "agent_label")}
+        if len(identities) > 1:
+            return {}
 
         expected_tool = (
             "ask_user_question" if kind == "question" else str(item.get("tool_name") or "")

@@ -17,7 +17,7 @@ Specialist Model Studio 面向希望训练专业小模型、但不具备完整�
 | --- | --- |
 | Version | `1.0.0rc1` |
 | Source branch | `codex/v1.0-conversation-native` |
-| 本地回归 | Python 642 / Node 180；真实双旅程与三种 PC 视口已复验 |
+| 本地回归 | Python 646 / Node 180；真实双旅程与三种 PC 视口已复验 |
 | 远端、冷克隆、Tag / Prerelease | 独立发布门；以精确提交的验收附件及 GitHub Release 为准，不由本地通过推定 |
 | 生产就绪 | 否 |
 
