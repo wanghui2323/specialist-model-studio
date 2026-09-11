@@ -1850,6 +1850,19 @@ test("root Training Orchestrator must delegate domain work to the owning special
 });
 
 
+test("source binding approvals return to the root instead of a never-approval child", async () => {
+  const listener = mountPlugin().listeners.get("tools/pre-execute");
+  for (const name of ["model_harness_select_model_source_candidate", "model_harness_bind_model_source", "model_harness_hf_attach"]) {
+    const child = await listener({ name, agent: specialistAgent("research_source") }, async () => ({ kind: "allow" }));
+    assert.equal(child.kind, "deny");
+    assert.match(child.reason, /根训练协调器直接发起原生审批/);
+    assert.match(child.reason, /不要在子会话重试/);
+    const root = await listener({ name, agent: rootAgent() }, async () => ({ kind: "allow" }));
+    assert.equal(root.kind, "ask");
+  }
+  assert.deepEqual(await listener({ name: "model_harness_resolve_model_source", agent: specialistAgent("research_source") }, async () => ({ kind: "allow" })), { kind: "allow" });
+});
+
 test("root orchestrator keeps clarification, canonical reads and human checkpoint control", async () => {
   const listener = mountPlugin().listeners.get("tools/pre-execute");
   for (const toolName of [
