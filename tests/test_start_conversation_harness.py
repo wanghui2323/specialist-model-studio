@@ -19,6 +19,15 @@ EXPECTED_DSH_VERSION = "0.1.0-rc.6"
 
 
 class ConversationHarnessStartupTest(unittest.TestCase):
+    def test_every_runtime_launch_disables_dsh_browser_handoff(self) -> None:
+        # Both the public and developer start must run the internal RPC/event
+        # service without launching a second, unrelated product UI.
+        invocations = [line.strip() for line in START_SCRIPT.read_text().splitlines()
+                       if '"${DSH_BIN}" web ' in line]
+        self.assertEqual(len(invocations), 2)
+        for invocation in invocations:
+            self.assertIn('web --no-open --host "${AGENT_HOST}" --port "${AGENT_PORT}"', invocation)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name) / "checkout"

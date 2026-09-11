@@ -506,11 +506,11 @@ fi
 if [[ "${PUBLIC_START}" == "1" ]]; then
   MODEL_HARNESS_URL="${BACKEND_URL}" \
     MODEL_HARNESS_AGENT_BRIDGE_TOKEN="${AGENT_BRIDGE_TOKEN}" \
-    "${DSH_BIN}" web --host "${AGENT_HOST}" --port "${AGENT_PORT}" >"${AGENT_LOG}" 2>&1 &
+    "${DSH_BIN}" web --no-open --host "${AGENT_HOST}" --port "${AGENT_PORT}" >"${AGENT_LOG}" 2>&1 &
 else
   MODEL_HARNESS_URL="${BACKEND_URL}" \
     MODEL_HARNESS_AGENT_BRIDGE_TOKEN="${AGENT_BRIDGE_TOKEN}" \
-    "${DSH_BIN}" web --host "${AGENT_HOST}" --port "${AGENT_PORT}" &
+    "${DSH_BIN}" web --no-open --host "${AGENT_HOST}" --port "${AGENT_PORT}" &
 fi
 AGENT_PID="$!"
 STARTED_AGENT=1

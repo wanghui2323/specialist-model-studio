@@ -17,7 +17,7 @@ Specialist Model Studio 面向希望训练专业小模型、但不具备完整�
 | --- | --- |
 | Version | `1.0.0rc1` |
 | Source branch | `codex/v1.0-conversation-native` |
-| 本地回归 | Python 649 / Node 182；真实双旅程与三种 PC 视口已复验 |
+| 本地回归 | Python 650 / Node 182；真实双旅程与三种 PC 视口已复验 |
 | 远端、冷克隆、Tag / Prerelease | 独立发布门；以精确提交的验收附件及 GitHub Release 为准，不由本地通过推定 |
 | 生产就绪 | 否 |
 
@@ -134,7 +134,7 @@ uv run specialist-model-studio start \
 ```
 
 - Specialist Model Studio：<http://127.0.0.1:8765/app>
-- 命令只展示产品工作台地址；DeepSeek Harness 端口属于内部运行时，不作为第二个产品入口。
+- 命令只展示产品工作台地址，并通过 `--no-open` 禁止 DSH 自动打开浏览器；DeepSeek Harness 端口属于内部运行时，不作为第二个产品入口。Studio 使用其会话、模型调用、子 Agent 和审批服务，不依赖打开 DSH 页面；自研训练工具以插件注册到该运行时。
 - DeepSeek Harness CLI 由 `acceptance/dsh-runtime/package-lock.json` 精确锁定为 `0.1.0-rc.6`；启动器只使用仓库内 `acceptance/dsh-runtime/node_modules/.bin/dsh`，不依赖机器上碰巧安装的全局版本。
 - DSH 的 session、settings、preset 与运行状态默认隔离在所选运行目录的 `runs/.dsh`；凭据 store 是唯一独立连接的 provider 状态。需要多套完全隔离的验收环境时，可把 `MODEL_HARNESS_DSH_CREDENTIALS_FILE` 指向该环境自己的凭据文件，并显式设置 `MODEL_HARNESS_RUNS_DIR` 或 `DSH_HOME`。
 - 启动器会校验当前 checkout、runs 工作区、Agent 合同与 DSH 连接；端口被其他实例占用或身份不一致时会拒绝复用，不会终止未知进程。
