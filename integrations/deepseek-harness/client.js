@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
-import { readFile, stat, writeFile } from "node:fs/promises";
-import { basename, extname, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { link, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { basename, extname, isAbsolute, resolve } from "node:path";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:8765";
 const MAX_DATASET_BYTES = 200 * 1024 * 1024;
@@ -15,9 +15,17 @@ const PUBLIC_SENSITIVE_KEYS = new Set([
   "dataset_dir", "artifact_dir",
 ]);
 const PUBLIC_ROUTE_ROOTS = [
-  "/agent", "/app", "/capabilities", "/chat", "/data-adapters", "/health",
-  "/model-assets", "/recipes", "/runs", "/runtime", "/tasks",
+  "/agent", "/app", "/capabilities", "/chat", "/conversations", "/data-adapters", "/health",
+  "/model-assets", "/model-sources", "/recipes", "/runs", "/runtime", "/tasks",
 ];
+const CONTRACT_REVISION_IDENTITY_FIELDS = Object.freeze([
+  "contract_revision_id",
+  "contract_sha256",
+  "task_id",
+  "spec_revision_id",
+  "dataset_id",
+  "dataset_fingerprint_sha256",
+]);
 
 function isPublicRoute(value) {
   return PUBLIC_ROUTE_ROOTS.some((root) => (
@@ -63,8 +71,25 @@ export function publicProjection(value) {
 }
 
 export class ModelHarnessClient {
-  constructor(baseUrl = process.env.MODEL_HARNESS_URL || DEFAULT_BASE_URL) {
+  constructor(
+    baseUrl = process.env.MODEL_HARNESS_URL || DEFAULT_BASE_URL,
+    agentBridgeToken = process.env.MODEL_HARNESS_AGENT_BRIDGE_TOKEN || "",
+    artifactExportDir = process.env.MODEL_HARNESS_ARTIFACT_EXPORT_DIR || "",
+  ) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
+    this.agentBridgeToken = String(agentBridgeToken || "").trim();
+    const selectedExportDir = String(artifactExportDir || "").trim();
+    if (selectedExportDir && !isAbsolute(selectedExportDir)) {
+      throw new Error("Artifact Bundle export directory must be absolute");
+    }
+    this.artifactExportDir = selectedExportDir ? resolve(selectedExportDir) : null;
+  }
+
+  agentBridgeApprovalHeaders() {
+    if (!this.agentBridgeToken) {
+      throw new Error("The verified agent-bridge approval channel is unavailable");
+    }
+    return { "X-Model-Harness-Agent-Token": this.agentBridgeToken };
   }
 
   async request(path, { method = "GET", body, rawBody, headers = {}, signal } = {}) {
@@ -97,7 +122,7 @@ export class ModelHarnessClient {
       const detail = typeof projected === "object"
         ? projected.detail || JSON.stringify(projected)
         : projected;
-      throw new Error(`Model Harness ${response.status}: ${detail}`);
+      throw new Error(`Specialist Model Studio ${response.status}: ${detail}`);
     }
     return publicProjection(value);
   }
@@ -128,6 +153,42 @@ export class ModelHarnessClient {
       signal,
       body: { name, business_goal: businessGoal },
     });
+  }
+
+  promoteConversation(
+    conversationId,
+    {
+      requestId,
+      name,
+      businessGoal,
+      capabilityRequest,
+      recipeId,
+    },
+    signal,
+  ) {
+    const selectedConversationId = String(conversationId || "").trim();
+    const selectedRequestId = String(requestId || "").trim();
+    const selectedName = String(name || "").trim();
+    const selectedGoal = String(businessGoal || "").trim();
+    if (!selectedConversationId) throw new Error("Conversation id is required");
+    if (!selectedRequestId) throw new Error("Conversation promotion requires a stable request id");
+    if (!selectedName || !selectedGoal) {
+      throw new Error("Conversation promotion requires a concrete task name and business goal");
+    }
+    return this.request(
+      `/conversations/${encodeURIComponent(selectedConversationId)}/promote`,
+      {
+        method: "POST",
+        signal,
+        body: {
+          request_id: selectedRequestId,
+          name: selectedName,
+          business_goal: selectedGoal,
+          ...(capabilityRequest ? { capability_request: capabilityRequest } : {}),
+          ...(recipeId ? { recipe_id: recipeId } : {}),
+        },
+      },
+    );
   }
 
   getTask(taskId, signal) {
@@ -184,7 +245,7 @@ export class ModelHarnessClient {
     );
   }
 
-  updateTaskSpec(taskId, { baseRevision, selectedFamily, businessGoal, userNote }, signal) {
+  updateTaskSpec(taskId, { baseRevision, selectedFamily, businessGoal, name, userNote }, signal) {
     return this.request(`/tasks/${encodeURIComponent(taskId)}/spec`, {
       method: "PATCH",
       signal,
@@ -192,10 +253,256 @@ export class ModelHarnessClient {
         base_revision: baseRevision,
         selected_family: selectedFamily,
         confirm: true,
+        ...(name ? { name } : {}),
         ...(businessGoal ? { business_goal: businessGoal } : {}),
         ...(userNote ? { user_note: userNote } : {}),
       },
     });
+  }
+
+  clarifyTaskSpec(taskId, { baseRevision, businessGoal, userNote }, signal) {
+    const selectedGoal = String(businessGoal || "").trim();
+    if (!selectedGoal) {
+      throw new Error("A clarified business goal is required");
+    }
+    return this.request(`/tasks/${encodeURIComponent(taskId)}/spec`, {
+      method: "PATCH",
+      signal,
+      body: {
+        base_revision: baseRevision,
+        business_goal: selectedGoal,
+        ...(userNote ? { user_note: userNote } : {}),
+      },
+    });
+  }
+
+  modelSourceProviders(signal) {
+    return this.request("/model-sources/providers", { signal });
+  }
+
+  listModelSourceSearches(taskId, signal) {
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/model-source-searches`,
+      { signal },
+    );
+  }
+
+  searchModelSources(taskId, {
+    query,
+    providers,
+    limitPerProvider = 4,
+    baseSpecRevision,
+  } = {}, signal) {
+    if (!Number.isInteger(limitPerProvider) || limitPerProvider < 1 || limitPerProvider > 10) {
+      throw new Error("Model-source search limit must be an integer from 1 to 10");
+    }
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/model-source-searches`,
+      {
+        method: "POST",
+        signal,
+        body: {
+          ...(query ? { query } : {}),
+          ...(Array.isArray(providers) && providers.length ? { providers } : {}),
+          limit_per_provider: limitPerProvider,
+          base_spec_revision: baseSpecRevision,
+        },
+      },
+    );
+  }
+
+  selectModelSourceCandidate(taskId, {
+    searchId,
+    candidateId,
+    baseSpecRevision,
+    approvalConfirmed,
+  }, signal) {
+    if (approvalConfirmed !== true) {
+      throw new Error("Explicit user approval is required before selecting a model source");
+    }
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/model-source-selections`,
+      {
+        method: "POST",
+        signal,
+        body: {
+          search_id: searchId,
+          candidate_id: candidateId,
+          base_spec_revision: baseSpecRevision,
+          approval_confirmed: true,
+        },
+      },
+    );
+  }
+
+  resolveModelSource(taskId, {
+    sourceReference,
+    provider,
+    requestedRevision,
+    baseSpecRevision,
+  }, signal) {
+    const selectedReference = String(sourceReference || "").trim();
+    if (!selectedReference) throw new Error("A public model-source reference is required");
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/model-source-resolutions`,
+      {
+        method: "POST",
+        signal,
+        body: {
+          source_reference: selectedReference,
+          ...(provider ? { provider } : {}),
+          ...(requestedRevision ? { requested_revision: requestedRevision } : {}),
+          base_spec_revision: baseSpecRevision,
+        },
+      },
+    );
+  }
+
+  listModelSourceResolutions(taskId, signal) {
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/model-source-resolutions`,
+      { signal },
+    );
+  }
+
+  bindModelSource(taskId, resolutionId, {
+    expectedResolvedCommit,
+    baseSpecRevision,
+    approvalConfirmed,
+  }, signal) {
+    if (approvalConfirmed !== true) {
+      throw new Error("Explicit user approval is required before binding a fixed model source");
+    }
+    const commit = String(expectedResolvedCommit || "").trim();
+    if (!commit) throw new Error("The expected resolved commit is required");
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/model-source-resolutions/${encodeURIComponent(resolutionId)}/bind`,
+      {
+        method: "POST",
+        signal,
+        body: {
+          expected_resolved_commit: commit,
+          base_spec_revision: baseSpecRevision,
+          approval_confirmed: true,
+        },
+      },
+    );
+  }
+
+  listModelBindings(taskId, signal) {
+    return this.request(`/tasks/${encodeURIComponent(taskId)}/model-bindings`, {
+      signal,
+    });
+  }
+
+  repositoryAnalysis(taskId, analysisId, signal) {
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/repository-analyses/${encodeURIComponent(analysisId)}`,
+      { signal },
+    );
+  }
+
+  createTrainingPlan(taskId, {
+    baseSpecRevision,
+    entrypointPath,
+    hyperparameters,
+    resourceBudget,
+  } = {}, signal) {
+    return this.request(`/tasks/${encodeURIComponent(taskId)}/training-plans`, {
+      method: "POST",
+      signal,
+      body: {
+        base_spec_revision: baseSpecRevision,
+        ...(entrypointPath ? { entrypoint_path: entrypointPath } : {}),
+        ...(hyperparameters ? { hyperparameters } : {}),
+        ...(resourceBudget ? { resource_budget: resourceBudget } : {}),
+      },
+    });
+  }
+
+  currentTrainingPlan(taskId, signal) {
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/training-plans/current`,
+      { signal },
+    );
+  }
+
+  reviseTrainingPlan(taskId, revisionId, {
+    expectedParentSha256,
+    baseSpecRevision,
+    entrypointPath,
+    hyperparameters,
+    resourceBudget,
+  }, signal) {
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/training-plans/${encodeURIComponent(revisionId)}/revisions`,
+      {
+        method: "POST",
+        signal,
+        body: {
+          expected_parent_sha256: expectedParentSha256,
+          base_spec_revision: baseSpecRevision,
+          ...(entrypointPath ? { entrypoint_path: entrypointPath } : {}),
+          ...(hyperparameters ? { hyperparameters } : {}),
+          ...(resourceBudget ? { resource_budget: resourceBudget } : {}),
+        },
+      },
+    );
+  }
+
+  decideTrainingPlan(taskId, revisionId, {
+    expectedPlanSha256,
+    decision,
+    reason,
+    approvalConfirmed,
+  }, signal) {
+    const selectedDecision = String(decision || "").trim().toLowerCase();
+    if (!["approve", "reject", "cancel"].includes(selectedDecision)) {
+      throw new Error("Training-plan decision must be approve, reject, or cancel");
+    }
+    if (approvalConfirmed !== true) {
+      throw new Error("Explicit user approval is required before deciding a training plan");
+    }
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/training-plans/${encodeURIComponent(revisionId)}/decisions`,
+      {
+        method: "POST",
+        signal,
+        body: {
+          expected_plan_sha256: expectedPlanSha256,
+          decision: selectedDecision,
+          reason: String(reason || "").trim(),
+        },
+      },
+    );
+  }
+
+  currentResourceFeasibility(taskId, signal) {
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/resource-feasibility`,
+      { signal },
+    );
+  }
+
+  checkResourceFeasibility(taskId, {
+    trainingPlanRevisionId,
+    expectedPlanSha256,
+    baseImageDigest,
+    packages,
+  }, signal) {
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/resource-feasibility-checks`,
+      {
+        method: "POST",
+        signal,
+        body: {
+          training_plan_revision_id: trainingPlanRevisionId,
+          expected_plan_sha256: expectedPlanSha256,
+          ...(baseImageDigest ? { base_image_digest: baseImageDigest } : {}),
+          ...(packages ? { packages } : {}),
+        },
+      },
+    );
   }
 
   scaffoldRecipe(taskId, signal) {
@@ -247,14 +554,22 @@ export class ModelHarnessClient {
     if (approval?.approvalConfirmed !== true) {
       throw new Error("Explicit user approval is required before Recipe registration");
     }
+    const approvalCheckpointId = String(approval?.approvalCheckpointId || "").trim();
+    if (!approvalCheckpointId) {
+      throw new Error("Recipe registration requires an explicit approval_checkpoint_id");
+    }
     return this.request(
       `/tasks/${encodeURIComponent(taskId)}/recipe-builds/${encodeURIComponent(attemptId)}/register`,
       {
         method: "POST",
         signal,
+        headers: this.agentBridgeApprovalHeaders(),
         body: {
           decision: "approved",
-          actor: approval.actor,
+          approval: {
+            actor: "user",
+            checkpoint_id: approvalCheckpointId,
+          },
           reason: approval.reason || "reviewed declarative candidate and validation report",
           candidate_digest: approval.candidateDigest,
           validation_digest: approval.validationDigest,
@@ -320,22 +635,116 @@ export class ModelHarnessClient {
     });
   }
 
-  confirmContract(taskId, confirmations, signal) {
+  async confirmContract(
+    taskId,
+    confirmations,
+    expectedContractRevision,
+    approval,
+    signal,
+  ) {
     const required = ["data_authorized", "labels_reviewed", "gates_reviewed"];
     if (required.some((name) => confirmations?.[name] !== true)) {
       throw new Error("All three human confirmations must be explicitly true");
     }
-    return this.request(`/tasks/${encodeURIComponent(taskId)}/confirm`, {
+    const selectedTaskId = String(taskId || "").trim();
+    if (!selectedTaskId) throw new Error("Contract confirmation requires an exact task id");
+    if (!expectedContractRevision || typeof expectedContractRevision !== "object") {
+      throw new Error("Contract confirmation requires the exact expected contract revision");
+    }
+    const expected = Object.fromEntries(CONTRACT_REVISION_IDENTITY_FIELDS.map((field) => [
+      field,
+      String(expectedContractRevision[field] || "").trim(),
+    ]));
+    const missingIdentity = CONTRACT_REVISION_IDENTITY_FIELDS.filter(
+      (field) => !expected[field],
+    );
+    if (missingIdentity.length) {
+      throw new Error(`Contract confirmation identity is incomplete: ${missingIdentity.join(", ")}`);
+    }
+    if (expected.task_id !== selectedTaskId) {
+      throw new Error("Contract confirmation task id does not match the expected contract revision");
+    }
+    if (!/^[0-9a-f]{64}$/i.test(expected.contract_sha256)) {
+      throw new Error("Contract confirmation requires an exact contract SHA-256");
+    }
+    if (!/^[0-9a-f]{64}$/i.test(expected.dataset_fingerprint_sha256)) {
+      throw new Error("Contract confirmation requires an exact dataset fingerprint SHA-256");
+    }
+    const actor = String(approval?.actor || "").trim();
+    const checkpointId = String(approval?.checkpoint_id || "").trim();
+    if (actor !== "user" || !checkpointId) {
+      throw new Error("Contract confirmation requires a user ApprovalDecision bound to a DSH checkpoint id");
+    }
+
+    const taskResponse = await this.getTask(selectedTaskId, signal);
+    const task = taskResponse?.task && typeof taskResponse.task === "object"
+      ? taskResponse.task
+      : taskResponse;
+    const revision = task?.contract_revision;
+    if (!task || typeof task !== "object" || task.task_id !== selectedTaskId) {
+      throw new Error("Contract confirmation could not verify the canonical TrainingTask");
+    }
+    if (task.contract_stale === true || !revision || typeof revision !== "object") {
+      throw new Error("Contract confirmation requires a current canonical contract revision");
+    }
+    const mismatches = CONTRACT_REVISION_IDENTITY_FIELDS.filter(
+      (field) => String(revision[field] || "").trim() !== expected[field],
+    );
+    const canonicalContext = {
+      contract_revision_id: task.current_contract_revision_id,
+      task_id: task.task_id,
+      spec_revision_id: task.task_spec?.revision_id,
+      dataset_id: task.dataset_id,
+      dataset_fingerprint_sha256: task.dataset_report?.fingerprint_sha256,
+    };
+    mismatches.push(...Object.entries(canonicalContext).flatMap(([field, value]) => (
+      String(value || "").trim() === String(revision[field] || "").trim()
+        ? []
+        : [field]
+    )));
+    if (mismatches.length) {
+      throw new Error(
+        `Canonical contract revision changed; refresh before confirming (${[...new Set(mismatches)].sort().join(", ")})`,
+      );
+    }
+    return this.request(`/tasks/${encodeURIComponent(selectedTaskId)}/confirm`, {
       method: "POST",
       signal,
-      body: Object.fromEntries(required.map((name) => [name, true])),
+      body: {
+        ...Object.fromEntries(required.map((name) => [name, true])),
+        expected_contract_revision: expected,
+        approval: { actor: "user", checkpoint_id: checkpointId },
+      },
     });
   }
 
-  startTaskRun(taskId, signal) {
+  authorizeTaskRunStart(taskId, options = {}, signal) {
+    return this.request(`/tasks/${encodeURIComponent(taskId)}/run-authorizations`, {
+      method: "POST",
+      signal,
+      headers: this.agentBridgeApprovalHeaders(),
+      body: {
+        contract_sha256: options.contractSha256,
+        dataset_id: options.datasetId,
+        dataset_fingerprint_sha256: options.datasetFingerprintSha256,
+        spec_revision: options.specRevision,
+        approval: {
+          actor: "user",
+          checkpoint_id: options.approvalCheckpointId,
+        },
+      },
+    });
+  }
+
+  startTaskRun(taskId, options = {}, signal) {
     return this.request(`/tasks/${encodeURIComponent(taskId)}/runs`, {
       method: "POST",
       signal,
+      body: {
+        run_authorization_id: options.authorizationId,
+        authorization_token: options.authorizationToken,
+        run_request_sha256: options.runRequestSha256,
+      },
     });
   }
 
@@ -346,46 +755,42 @@ export class ModelHarnessClient {
     );
   }
 
-  async runSampleInference(taskId, runId, samplePath, sampleType, signal) {
-    const resolved = resolve(samplePath);
-    let details;
-    let payload;
-    try {
-      details = await stat(resolved);
-      if (!details.isFile()) throw new Error("not a file");
-      if (details.size > MAX_SAMPLE_BYTES) {
-        throw new Error("sample exceeds the 25MB inference limit");
-      }
-      payload = await readFile(resolved);
-    } catch (error) {
-      throw new Error(`Sample input is unavailable: ${publicText(error.message || String(error))}`);
-    }
-    const normalizedType = String(sampleType || "").trim().toLowerCase();
-    if (!["image", "audio", "tabular"].includes(normalizedType)) {
-      throw new Error("sample_type must be image, audio, or tabular");
-    }
-    const extension = extname(resolved).toLowerCase();
-    const contentType = extension === ".json"
-      ? "application/json"
-      : extension === ".csv"
-        ? "text/csv"
-        : extension === ".wav"
-          ? "audio/wav"
-          : extension === ".png"
-            ? "image/png"
-            : extension === ".jpg" || extension === ".jpeg"
-              ? "image/jpeg"
-              : "application/octet-stream";
+  getInferenceInput(taskId, runId, inferenceInputId, signal) {
     return this.request(
-      `/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}/sample-inferences`,
+      `/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}/inference-inputs/${encodeURIComponent(inferenceInputId)}`,
+      { signal },
+    );
+  }
+
+  authorizeSampleInference(taskId, runId, options = {}, signal) {
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}/sample-inference-authorizations`,
       {
         method: "POST",
         signal,
-        rawBody: payload,
-        headers: {
-          "Content-Type": contentType,
-          "X-Filename": encodeURIComponent(basename(resolved)),
-          "X-Sample-Type": normalizedType,
+        headers: this.agentBridgeApprovalHeaders(),
+        body: {
+          inference_input_id: options.inferenceInputId,
+          inference_input_sha256: options.inferenceInputSha256,
+          approval: {
+            actor: "user",
+            checkpoint_id: options.approvalCheckpointId,
+          },
+        },
+      },
+    );
+  }
+
+  runSampleInference(taskId, runId, options = {}, signal) {
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}/inference-inputs/${encodeURIComponent(options.inferenceInputId)}/execute`,
+      {
+        method: "POST",
+        signal,
+        body: {
+          sample_inference_authorization_id: options.authorizationId,
+          authorization_token: options.authorizationToken,
+          sample_inference_request_sha256: options.requestSha256,
         },
       },
     );
@@ -405,8 +810,39 @@ export class ModelHarnessClient {
     );
   }
 
+  authorizeArtifactBundleBuild(taskId, runId, options = {}, signal) {
+    const body = {
+      evaluation_report_id: options.evaluationReportId,
+      evaluation_report_sha256: options.evaluationReportSha256,
+      approval: {
+        actor: "user",
+        checkpoint_id: options.approvalCheckpointId,
+      },
+    };
+    if (options.sampleInferenceCheckId) {
+      body.sample_inference_check_id = options.sampleInferenceCheckId;
+    }
+    if (options.inferenceCheckId) body.inference_check_id = options.inferenceCheckId;
+    if (body.sample_inference_check_id && body.inference_check_id) {
+      throw new Error("Choose either sample_inference_check_id or inference_check_id");
+    }
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}/artifact-bundle-authorizations`,
+      {
+        method: "POST",
+        signal,
+        headers: this.agentBridgeApprovalHeaders(),
+        body,
+      },
+    );
+  }
+
   buildArtifactBundle(taskId, runId, options = {}, signal) {
-    const body = {};
+    const body = {
+      artifact_bundle_authorization_id: options.authorizationId,
+      authorization_token: options.authorizationToken,
+      bundle_request_sha256: options.bundleRequestSha256,
+    };
     if (options.sampleInferenceCheckId) {
       body.sample_inference_check_id = options.sampleInferenceCheckId;
     }
@@ -434,25 +870,91 @@ export class ModelHarnessClient {
     );
   }
 
-  async downloadArtifactBundle(taskId, runId, bundleId, destinationPath, signal) {
-    const resolved = resolve(destinationPath);
+  authorizeArtifactBundleDownload(taskId, runId, bundleId, options = {}, signal) {
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}/artifact-bundles/${encodeURIComponent(bundleId)}/download-authorizations`,
+      {
+        method: "POST",
+        signal,
+        headers: this.agentBridgeApprovalHeaders(),
+        body: {
+          manifest_sha256: options.manifestSha256,
+          archive_sha256: options.archiveSha256,
+          approval: {
+            actor: "user",
+            checkpoint_id: options.approvalCheckpointId,
+          },
+        },
+      },
+    );
+  }
+
+  async downloadArtifactBundle(
+    taskId,
+    runId,
+    bundleId,
+    destinationPath,
+    options = {},
+    signal,
+  ) {
+    const selectedDestination = String(destinationPath || "").trim();
+    if (!selectedDestination) {
+      throw new Error("Artifact Bundle destination is required");
+    }
+    const userSelectedAbsolutePath = isAbsolute(selectedDestination);
+    if (!userSelectedAbsolutePath && /[\\/]/.test(selectedDestination)) {
+      throw new Error("Workspace export destinations must use a filename only");
+    }
+    if (!userSelectedAbsolutePath && !this.artifactExportDir) {
+      throw new Error("Runtime workspace export directory is unavailable");
+    }
+    const resolved = userSelectedAbsolutePath
+      ? resolve(selectedDestination)
+      : resolve(this.artifactExportDir, selectedDestination);
     if (extname(resolved).toLowerCase() !== ".zip") {
       throw new Error("Artifact Bundle destination must use a .zip filename");
     }
+    if (!userSelectedAbsolutePath) {
+      await mkdir(this.artifactExportDir, { recursive: true });
+    }
     const detail = await this.getArtifactBundle(taskId, runId, bundleId, signal);
     const expectedSha256 = detail?.artifact_bundle?.archive?.sha256;
+    const expectedManifestSha256 = detail?.artifact_bundle?.manifest_sha256;
     if (!/^[0-9a-f]{64}$/.test(String(expectedSha256 || ""))) {
       throw new Error("Artifact Bundle metadata has no trusted SHA-256");
+    }
+    if (
+      expectedSha256 !== options.archiveSha256
+      || expectedManifestSha256 !== options.manifestSha256
+    ) {
+      throw new Error("Artifact Bundle download scope no longer matches canonical metadata");
     }
     const response = await fetch(
       `${this.baseUrl}/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}/artifact-bundles/${encodeURIComponent(bundleId)}/download`,
       {
+        method: "POST",
         signal,
-        headers: { "X-Model-Harness-Projection": "agent-v1" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Model-Harness-Projection": "agent-v1",
+        },
+        body: JSON.stringify({
+          artifact_bundle_download_authorization_id: options.authorizationId,
+          authorization_token: options.authorizationToken,
+          download_request_sha256: options.downloadRequestSha256,
+        }),
       },
     );
     if (!response.ok) {
-      throw new Error(`Model Harness ${response.status}: Artifact Bundle download failed`);
+      throw new Error(`Specialist Model Studio ${response.status}: Artifact Bundle download failed`);
+    }
+    const responseAuthorizationId = response.headers.get("x-delivery-authorization-id");
+    const responseRequestSha256 = response.headers.get("x-delivery-request-sha256");
+    if (
+      responseAuthorizationId !== options.authorizationId
+      || responseRequestSha256 !== options.downloadRequestSha256
+    ) {
+      throw new Error("Artifact Bundle download response does not match the approved request");
     }
     const declaredSize = Number(response.headers.get("content-length") || 0);
     if (declaredSize > MAX_ARTIFACT_BUNDLE_BYTES) {
@@ -466,32 +968,32 @@ export class ModelHarnessClient {
     if (sha256 !== expectedSha256) {
       throw new Error("Artifact Bundle download failed SHA-256 verification");
     }
+    const temporaryPath = `${resolved}.part-${randomUUID()}`;
+    let linked = false;
     try {
-      await writeFile(resolved, payload, { flag: "wx" });
+      await writeFile(temporaryPath, payload, { flag: "wx" });
+      await link(temporaryPath, resolved);
+      linked = true;
     } catch (error) {
       throw new Error(`Artifact Bundle destination is unavailable: ${publicText(error.message || String(error))}`);
+    } finally {
+      await unlink(temporaryPath).catch(() => {});
     }
+    if (!linked) throw new Error("Artifact Bundle destination was not created");
     return {
       task_id: taskId,
       run_id: runId,
       bundle_id: bundleId,
       status: "downloaded",
       filename: basename(resolved),
+      destination_scope: userSelectedAbsolutePath
+        ? "user_selected_path"
+        : "workspace_exports",
       size_bytes: payload.length,
       sha256,
+      artifact_bundle_download_authorization_id: options.authorizationId,
+      download_request_sha256: options.downloadRequestSha256,
     };
-  }
-
-  async startRun({ recipe = "digit-classification", businessGoal, taskId, runId, signal } = {}) {
-    const template = await this.request(`/recipes/${encodeURIComponent(recipe)}/template`, { signal });
-    const contract = template.contract;
-    if (businessGoal) contract.business_goal = businessGoal;
-    if (taskId) contract.task_id = taskId;
-    return this.request("/runs", {
-      method: "POST",
-      signal,
-      body: { contract, run_id: runId },
-    });
   }
 
   status(runId, signal) {
@@ -507,20 +1009,6 @@ export class ModelHarnessClient {
 
   strategies(runId, signal) {
     return this.request(`/runs/${encodeURIComponent(runId)}/strategies`, { signal });
-  }
-
-  applyStrategy(runId, strategyId, approvalConfirmed, signal) {
-    if (approvalConfirmed !== true) {
-      throw new Error("Explicit user approval is required before applying a strategy");
-    }
-    return this.request(
-      `/runs/${encodeURIComponent(runId)}/strategies/${encodeURIComponent(strategyId)}/apply`,
-      {
-        method: "POST",
-        signal,
-        body: { approval_confirmed: true },
-      },
-    );
   }
 
   applyTaskStrategy(taskId, runId, strategyId, approvalConfirmed, signal) {

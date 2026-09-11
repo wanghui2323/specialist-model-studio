@@ -14,6 +14,8 @@ import csv
 import hashlib
 import io
 import json
+import os
+import secrets
 import sys
 import wave
 import zipfile
@@ -37,6 +39,33 @@ from scripts.run_hf_real_scenario import DEFAULT_COMMIT, DEFAULT_REPO, _run_once
 
 JOURNEY_SCHEMA_VERSION = "0.1"
 FAMILIES = ("image", "tabular", "audio")
+CONTRACT_REVISION_IDENTITY_FIELDS = (
+    "contract_revision_id",
+    "contract_sha256",
+    "task_id",
+    "spec_revision_id",
+    "dataset_id",
+    "dataset_fingerprint_sha256",
+)
+_ACCEPTANCE_AGENT_BRIDGE_TOKEN = secrets.token_urlsafe(32)
+_AGENT_BRIDGE_TOKEN_ENV = "MODEL_HARNESS_AGENT_BRIDGE_TOKEN"
+
+
+def _create_acceptance_app(runtime_dir: str | Path) -> Any:
+    """Create the local API with a process-private approval bridge token."""
+    prior = os.environ.get(_AGENT_BRIDGE_TOKEN_ENV)
+    os.environ[_AGENT_BRIDGE_TOKEN_ENV] = _ACCEPTANCE_AGENT_BRIDGE_TOKEN
+    try:
+        return create_app(runtime_dir)
+    finally:
+        if prior is None:
+            os.environ.pop(_AGENT_BRIDGE_TOKEN_ENV, None)
+        else:
+            os.environ[_AGENT_BRIDGE_TOKEN_ENV] = prior
+
+
+def _agent_bridge_headers() -> dict[str, str]:
+    return {"X-Model-Harness-Agent-Token": _ACCEPTANCE_AGENT_BRIDGE_TOKEN}
 
 
 def _now() -> str:
@@ -52,6 +81,48 @@ def _require(response: Any, status: int, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError(f"{label} returned a non-object response")
     return value
+
+
+def _contract_confirmation_payload(
+    client: TestClient,
+    task_id: str,
+    *,
+    user_approval_checkpoint_id: str,
+) -> dict[str, Any]:
+    """Bind an acceptance confirmation to the exact persisted contract revision."""
+    task = _require(
+        client.get(f"/tasks/{task_id}"),
+        200,
+        "refresh contract revision before confirmation",
+    ).get("task")
+    if not isinstance(task, dict):
+        raise RuntimeError("task response is missing the task object")
+    revision = task.get("contract_revision")
+    if not isinstance(revision, dict):
+        raise RuntimeError("task response is missing contract_revision")
+    missing = [
+        field
+        for field in CONTRACT_REVISION_IDENTITY_FIELDS
+        if not isinstance(revision.get(field), str) or not revision[field]
+    ]
+    if missing:
+        raise RuntimeError(
+            "contract revision is missing immutable identity fields: "
+            + ", ".join(missing)
+        )
+    expected = {
+        field: revision[field] for field in CONTRACT_REVISION_IDENTITY_FIELDS
+    }
+    return {
+        "data_authorized": True,
+        "labels_reviewed": True,
+        "gates_reviewed": True,
+        "expected_contract_revision": expected,
+        "approval": {
+            "actor": "user",
+            "checkpoint_id": user_approval_checkpoint_id,
+        },
+    }
 
 
 def _prepare_empty_runtime(runtime_dir: str | Path) -> Path:
@@ -203,6 +274,7 @@ def _complete_l4_chain(
     *,
     task_id: str,
     run_id: str,
+    user_approval_checkpoint_id: str,
     sample: bytes,
     filename: str,
     sample_type: str,
@@ -216,9 +288,9 @@ def _complete_l4_chain(
         "evaluation report",
     )["evaluation_report"]
     evaluation_status = _evaluation_status(evaluation)
-    inference = _require(
+    staged = _require(
         client.post(
-            f"/tasks/{task_id}/runs/{run_id}/sample-inferences",
+            f"/tasks/{task_id}/runs/{run_id}/inference-inputs",
             content=sample,
             headers={
                 "X-Filename": filename,
@@ -226,14 +298,99 @@ def _complete_l4_chain(
             },
         ),
         201,
+        "stage new inference input",
+    )["inference_input"]
+    inference_input_id = staged.get("inference_input_id")
+    inference_input_sha256 = staged.get("sha256")
+    if not isinstance(inference_input_id, str) or not isinstance(
+        inference_input_sha256, str
+    ):
+        raise RuntimeError("staged inference input is missing identity evidence")
+    inference_authorization = _require(
+        client.post(
+            f"/tasks/{task_id}/runs/{run_id}/sample-inference-authorizations",
+            headers=_agent_bridge_headers(),
+            json={
+                "inference_input_id": inference_input_id,
+                "inference_input_sha256": inference_input_sha256,
+                "approval": {
+                    "actor": "user",
+                    "checkpoint_id": (
+                        f"{user_approval_checkpoint_id}:sample-inference"
+                    ),
+                },
+            },
+        ),
+        201,
+        "authorize new sample inference",
+    )
+    inference_authorization_record = inference_authorization.get(
+        "sample_inference_authorization"
+    )
+    inference_authorization_token = inference_authorization.get(
+        "authorization_token"
+    )
+    if (
+        not isinstance(inference_authorization_record, dict)
+        or not isinstance(inference_authorization_token, str)
+        or not inference_authorization_token
+    ):
+        raise RuntimeError("sample inference authorization response is incomplete")
+    inference = _require(
+        client.post(
+            f"/tasks/{task_id}/runs/{run_id}/inference-inputs/"
+            f"{inference_input_id}/execute",
+            json={
+                "sample_inference_authorization_id": (
+                    inference_authorization_record["authorization_id"]
+                ),
+                "authorization_token": inference_authorization_token,
+                "sample_inference_request_sha256": (
+                    inference_authorization_record["scope_sha256"]
+                ),
+            },
+        ),
+        201,
         "new sample inference",
     )["sample_inference"]
     if inference.get("status") != "passed":
         raise RuntimeError(f"new sample inference did not pass: {inference}")
+    bundle_authorization = _require(
+        client.post(
+            f"/tasks/{task_id}/runs/{run_id}/artifact-bundle-authorizations",
+            json={
+                "evaluation_report_id": evaluation.get("report_id"),
+                "evaluation_report_sha256": evaluation.get("report_sha256"),
+                "sample_inference_check_id": inference.get("check_id"),
+                "approval": {
+                    "actor": "user",
+                    "checkpoint_id": user_approval_checkpoint_id,
+                },
+            },
+            headers=_agent_bridge_headers(),
+        ),
+        201,
+        "authorize artifact bundle",
+    )
+    bundle_record = bundle_authorization.get("artifact_bundle_authorization")
+    bundle_token = bundle_authorization.get("authorization_token")
+    if (
+        not isinstance(bundle_record, dict)
+        or not isinstance(bundle_token, str)
+        or not bundle_token
+    ):
+        raise RuntimeError("artifact bundle authorization response is incomplete")
     bundle = _require(
         client.post(
             f"/tasks/{task_id}/runs/{run_id}/artifact-bundles",
-            json={"sample_inference_check_id": inference["check_id"]},
+            json={
+                "artifact_bundle_authorization_id": bundle_record.get(
+                    "authorization_id"
+                ),
+                "authorization_token": bundle_token,
+                "bundle_request_sha256": bundle_record.get("scope_sha256"),
+                "sample_inference_check_id": inference["check_id"],
+            },
         ),
         201,
         "artifact bundle",
@@ -248,13 +405,48 @@ def _complete_l4_chain(
         "absolute_paths_in_manifest": False,
     }:
         raise RuntimeError(f"artifact bundle privacy boundary failed: {privacy}")
-    downloaded = client.get(
+    download_authorization = _require(
+        client.post(
+            f"/tasks/{task_id}/runs/{run_id}/artifact-bundles/"
+            f"{bundle['bundle_id']}/download-authorizations",
+            json={
+                "manifest_sha256": bundle.get("manifest_sha256"),
+                "archive_sha256": bundle.get("archive", {}).get("sha256"),
+                "approval": {
+                    "actor": "user",
+                    "checkpoint_id": user_approval_checkpoint_id,
+                },
+            },
+            headers=_agent_bridge_headers(),
+        ),
+        201,
+        "authorize artifact bundle download",
+    )
+    download_record = download_authorization.get(
+        "artifact_bundle_download_authorization"
+    )
+    download_token = download_authorization.get("authorization_token")
+    if (
+        not isinstance(download_record, dict)
+        or not isinstance(download_token, str)
+        or not download_token
+    ):
+        raise RuntimeError("artifact bundle download authorization is incomplete")
+    downloaded = client.post(
         f"/tasks/{task_id}/runs/{run_id}/artifact-bundles/"
-        f"{bundle['bundle_id']}/download"
+        f"{bundle['bundle_id']}/download",
+        json={
+            "artifact_bundle_download_authorization_id": download_record.get(
+                "authorization_id"
+            ),
+            "authorization_token": download_token,
+            "download_request_sha256": download_record.get("scope_sha256"),
+        },
     )
     if downloaded.status_code != 200:
         raise RuntimeError(
-            f"artifact bundle download failed: HTTP {downloaded.status_code}"
+            "artifact bundle download failed: "
+            f"HTTP {downloaded.status_code}: {downloaded.text[:1000]}"
         )
     download_sha256 = hashlib.sha256(downloaded.content).hexdigest()
     if download_sha256 != bundle["archive"]["sha256"]:
@@ -286,10 +478,52 @@ def _start_and_wait(
     app: Any,
     task_id: str,
     *,
+    user_approval_checkpoint_id: str,
     timeout: float = 60,
 ) -> str:
+    task = _require(
+        client.get(f"/tasks/{task_id}"),
+        200,
+        "refresh task before run authorization",
+    ).get("task")
+    if not isinstance(task, dict):
+        raise RuntimeError("task response is missing the task object")
+    dataset_report = task.get("dataset_report")
+    if not isinstance(dataset_report, dict):
+        raise RuntimeError("task response is missing dataset_report")
+    authorization = _require(
+        client.post(
+            f"/tasks/{task_id}/run-authorizations",
+            json={
+                "contract_sha256": task.get("confirmed_contract_sha256"),
+                "dataset_id": task.get("dataset_id"),
+                "dataset_fingerprint_sha256": dataset_report.get(
+                    "fingerprint_sha256"
+                ),
+                "spec_revision": task.get("current_spec_revision"),
+                "approval": {
+                    "actor": "user",
+                    "checkpoint_id": user_approval_checkpoint_id,
+                },
+            },
+            headers=_agent_bridge_headers(),
+        ),
+        201,
+        "authorize run start",
+    )
+    record = authorization.get("run_authorization")
+    token = authorization.get("authorization_token")
+    if not isinstance(record, dict) or not isinstance(token, str) or not token:
+        raise RuntimeError("run authorization response is incomplete")
     started = _require(
-        client.post(f"/tasks/{task_id}/runs"),
+        client.post(
+            f"/tasks/{task_id}/runs",
+            json={
+                "run_authorization_id": record.get("authorization_id"),
+                "authorization_token": token,
+                "run_request_sha256": record.get("scope_sha256"),
+            },
+        ),
         202,
         "start run",
     )["task"]
@@ -298,7 +532,12 @@ def _start_and_wait(
     return run_id
 
 
-def _prepare_local_image(client: TestClient, app: Any) -> dict[str, Any]:
+def _prepare_local_image(
+    client: TestClient,
+    app: Any,
+    *,
+    user_approval_checkpoint_id: str,
+) -> dict[str, Any]:
     task = _require(
         client.post(
             "/tasks",
@@ -324,20 +563,26 @@ def _prepare_local_image(client: TestClient, app: Any) -> dict[str, Any]:
     _require(
         client.post(
             f"/tasks/{task_id}/confirm",
-            json={
-                "data_authorized": True,
-                "labels_reviewed": True,
-                "gates_reviewed": True,
-            },
+            json=_contract_confirmation_payload(
+                client,
+                task_id,
+                user_approval_checkpoint_id=user_approval_checkpoint_id,
+            ),
         ),
         200,
         "confirm image contract",
     )
-    run_id = _start_and_wait(client, app, task_id)
+    run_id = _start_and_wait(
+        client,
+        app,
+        task_id,
+        user_approval_checkpoint_id=user_approval_checkpoint_id,
+    )
     journey = _complete_l4_chain(
         client,
         task_id=task_id,
         run_id=run_id,
+        user_approval_checkpoint_id=user_approval_checkpoint_id,
         sample=_new_image(),
         filename="new-warm-part.png",
         sample_type="image",
@@ -351,7 +596,12 @@ def _prepare_local_image(client: TestClient, app: Any) -> dict[str, Any]:
     return journey
 
 
-def _prepare_tabular(client: TestClient, app: Any) -> dict[str, Any]:
+def _prepare_tabular(
+    client: TestClient,
+    app: Any,
+    *,
+    user_approval_checkpoint_id: str,
+) -> dict[str, Any]:
     task = _require(
         client.post(
             "/tasks",
@@ -387,16 +637,21 @@ def _prepare_tabular(client: TestClient, app: Any) -> dict[str, Any]:
     _require(
         client.post(
             f"/tasks/{task_id}/confirm",
-            json={
-                "data_authorized": True,
-                "labels_reviewed": True,
-                "gates_reviewed": True,
-            },
+            json=_contract_confirmation_payload(
+                client,
+                task_id,
+                user_approval_checkpoint_id=user_approval_checkpoint_id,
+            ),
         ),
         200,
         "confirm tabular contract",
     )
-    run_id = _start_and_wait(client, app, task_id)
+    run_id = _start_and_wait(
+        client,
+        app,
+        task_id,
+        user_approval_checkpoint_id=user_approval_checkpoint_id,
+    )
     sample = json.dumps(
         {
             "temperature": 27.1,
@@ -410,13 +665,19 @@ def _prepare_tabular(client: TestClient, app: Any) -> dict[str, Any]:
         client,
         task_id=task_id,
         run_id=run_id,
+        user_approval_checkpoint_id=user_approval_checkpoint_id,
         sample=sample,
         filename="new-device-row.json",
         sample_type="tabular",
     )
 
 
-def _prepare_audio(client: TestClient, app: Any) -> dict[str, Any]:
+def _prepare_audio(
+    client: TestClient,
+    app: Any,
+    *,
+    user_approval_checkpoint_id: str,
+) -> dict[str, Any]:
     payload = _audio_dataset_zip()
     task = _require(
         client.post(
@@ -456,11 +717,19 @@ def _prepare_audio(client: TestClient, app: Any) -> dict[str, Any]:
             f"/tasks/{task_id}/recipe-builds/{attempt_id}/register",
             json={
                 "decision": "approved",
-                "actor": "v0.7-acceptance-preparer",
-                "reason": "validated trusted declarative audio Recipe digests",
+                "approval": {
+                    "actor": "user",
+                    "checkpoint_id": user_approval_checkpoint_id,
+                },
+                "reason": (
+                    "acceptance preparation was explicitly requested at "
+                    f"checkpoint {user_approval_checkpoint_id}; validated "
+                    "trusted declarative audio Recipe digests"
+                ),
                 "candidate_digest": attempt["candidate_digest"],
                 "validation_digest": attempt["validation_digest"],
             },
+            headers=_agent_bridge_headers(),
         ),
         200,
         "register declarative audio Recipe",
@@ -479,20 +748,26 @@ def _prepare_audio(client: TestClient, app: Any) -> dict[str, Any]:
     _require(
         client.post(
             f"/tasks/{task_id}/confirm",
-            json={
-                "data_authorized": True,
-                "labels_reviewed": True,
-                "gates_reviewed": True,
-            },
+            json=_contract_confirmation_payload(
+                client,
+                task_id,
+                user_approval_checkpoint_id=user_approval_checkpoint_id,
+            ),
         ),
         200,
         "confirm audio contract",
     )
-    run_id = _start_and_wait(client, app, task_id)
+    run_id = _start_and_wait(
+        client,
+        app,
+        task_id,
+        user_approval_checkpoint_id=user_approval_checkpoint_id,
+    )
     journey = _complete_l4_chain(
         client,
         task_id=task_id,
         run_id=run_id,
+        user_approval_checkpoint_id=user_approval_checkpoint_id,
         sample=_wav_bytes(360.0, speaker_index=999),
         filename="new-yes.wav",
         sample_type="audio",
@@ -539,7 +814,7 @@ def _verify_restart(
     runtime_dir: Path,
     journeys: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    app = create_app(runtime_dir)
+    app = _create_acceptance_app(runtime_dir)
     verified: dict[str, Any] = {}
     with TestClient(app) as client:
         for family in FAMILIES:
@@ -628,6 +903,7 @@ def prepare_acceptance_runtime(
     skip_hf: bool = False,
     repo_id: str = DEFAULT_REPO,
     commit: str = DEFAULT_COMMIT,
+    user_approval_checkpoint_id: str | None = None,
 ) -> dict[str, Any]:
     selected_runtime = _prepare_empty_runtime(runtime_dir)
     normalized_commit = str(commit).strip().lower()
@@ -636,25 +912,51 @@ def prepare_acceptance_runtime(
         or any(character not in "0123456789abcdef" for character in normalized_commit)
     ):
         raise ValueError("Hugging Face commit must be an immutable 40-character SHA")
+    selected_checkpoint_id = str(user_approval_checkpoint_id or "").strip()
+    if not selected_checkpoint_id:
+        raise ValueError(
+            "user_approval_checkpoint_id is required; acceptance preparation "
+            "cannot approve training or artifact delivery on the user's behalf"
+        )
 
     journeys: dict[str, dict[str, Any]] = {}
     started_at = _now()
     if skip_hf:
-        app = create_app(selected_runtime)
+        app = _create_acceptance_app(selected_runtime)
         with TestClient(app) as client:
-            journeys["image"] = _prepare_local_image(client, app)
-            journeys["tabular"] = _prepare_tabular(client, app)
-            journeys["audio"] = _prepare_audio(client, app)
+            journeys["image"] = _prepare_local_image(
+                client,
+                app,
+                user_approval_checkpoint_id=selected_checkpoint_id,
+            )
+            journeys["tabular"] = _prepare_tabular(
+                client,
+                app,
+                user_approval_checkpoint_id=selected_checkpoint_id,
+            )
+            journeys["audio"] = _prepare_audio(
+                client,
+                app,
+                user_approval_checkpoint_id=selected_checkpoint_id,
+            )
     else:
         journeys["image"] = _hf_journey(
             selected_runtime,
             repo_id,
             normalized_commit,
         )
-        app = create_app(selected_runtime)
+        app = _create_acceptance_app(selected_runtime)
         with TestClient(app) as client:
-            journeys["tabular"] = _prepare_tabular(client, app)
-            journeys["audio"] = _prepare_audio(client, app)
+            journeys["tabular"] = _prepare_tabular(
+                client,
+                app,
+                user_approval_checkpoint_id=selected_checkpoint_id,
+            )
+            journeys["audio"] = _prepare_audio(
+                client,
+                app,
+                user_approval_checkpoint_id=selected_checkpoint_id,
+            )
 
     if tuple(journeys) != FAMILIES:
         raise RuntimeError(f"journey family order or membership drifted: {journeys}")
@@ -696,6 +998,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--repo-id", default=DEFAULT_REPO)
     parser.add_argument("--commit", default=DEFAULT_COMMIT)
+    parser.add_argument(
+        "--user-approval-checkpoint-id",
+        required=True,
+        help=(
+            "Identifier of the explicit user approval checkpoint authorizing "
+            "this acceptance run and its artifact delivery actions."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -706,6 +1016,7 @@ def main() -> int:
         skip_hf=arguments.skip_hf,
         repo_id=arguments.repo_id,
         commit=arguments.commit,
+        user_approval_checkpoint_id=arguments.user_approval_checkpoint_id,
     )
     print(
         json.dumps(

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -9,27 +11,37 @@ from typing import Any
 from . import __version__
 from .errors import ContractError, HarnessError, PluginError
 from .io_utils import read_json
-from .plugins import default_registry
-from .runner import initialize_workspace, run_task, verify_run
-from .service import RunService
+from .source_identity import (
+    STUDIO_SOURCE_ROOT_ENV,
+    resolve_studio_source_root,
+)
 
 
 def _print_json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
-def build_parser() -> argparse.ArgumentParser:
-    registry = default_registry()
+def build_parser(*, prog: str = "specialist-model-studio") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="small-model-harness",
-        description="Run auditable specialist-model training recipes.",
+        prog=prog,
+        description="Run the auditable specialist-model training engine used by Specialist Model Studio.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("list-recipes", help="List discovered recipe plugins.")
 
     init = sub.add_parser("init", help="Create a task contract from a recipe template.")
-    init.add_argument("--recipe", required=True, choices=registry.recipe_ids())
+    init.add_argument(
+        "--recipe",
+        required=True,
+        metavar="PLUGIN_ID",
+        help="Recipe plugin id; run list-recipes to inspect discovered plugins.",
+    )
     init.add_argument("--output", required=True)
     init.add_argument("--force", action="store_true")
 
@@ -73,7 +85,20 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("run_dir")
     verify.add_argument("--deep", action="store_true")
 
-    serve = sub.add_parser("serve", help="Start the optional local HTTP/SSE API.")
+    start = sub.add_parser(
+        "start",
+        help="Start the complete local Studio with its real multi-agent runtime.",
+    )
+    start.add_argument("--runs-dir")
+    start.add_argument("--host")
+    start.add_argument("--port", type=int)
+    start.add_argument("--agent-host")
+    start.add_argument("--agent-port", type=int)
+
+    serve = sub.add_parser(
+        "serve",
+        help="Advanced: start only the local backend HTTP/SSE API.",
+    )
     serve.add_argument("--runs-dir", default="runs")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
@@ -91,11 +116,61 @@ def _read_events(path: Path, after_seq: int) -> list[dict[str, Any]]:
     return records
 
 
+def _resolve_studio_source_root() -> Path:
+    """Resolve the audited checkout without depending on the caller's cwd.
+
+    A wheel cannot embed the repository-managed DSH runtime and launcher inputs.
+    Production callers can therefore bind it to an explicit checkout.  A virtual
+    environment stored directly inside a checkout is also deterministic: its
+    ``sys.prefix`` parent is that checkout, including non-editable wheel installs.
+    """
+
+    return resolve_studio_source_root(
+        module_file=Path(__file__),
+        prefix=Path(sys.prefix),
+    )
+
+
+def _start_studio(args: argparse.Namespace) -> int:
+    """Run the audited source-checkout launcher without weakening its gates."""
+
+    repository_root = _resolve_studio_source_root()
+    launcher = repository_root / "scripts" / "start_conversation_harness.sh"
+
+    environment = dict(os.environ)
+    environment[STUDIO_SOURCE_ROOT_ENV] = str(repository_root)
+    environment["SPECIALIST_MODEL_STUDIO_PUBLIC_START"] = "1"
+    environment["MODEL_HARNESS_PYTHON"] = sys.executable
+    for argument, variable in (
+        (args.runs_dir, "MODEL_HARNESS_RUNS_DIR"),
+        (args.host, "MODEL_HARNESS_HOST"),
+        (args.port, "MODEL_HARNESS_PORT"),
+        (args.agent_host, "MODEL_HARNESS_AGENT_HOST"),
+        (args.agent_port, "MODEL_HARNESS_AGENT_PORT"),
+    ):
+        if argument is not None:
+            environment[variable] = str(argument)
+
+    try:
+        completed = subprocess.run(
+            ["bash", str(launcher)],
+            cwd=repository_root,
+            env=environment,
+            check=False,
+        )
+    except KeyboardInterrupt:
+        return 130
+    return int(completed.returncode)
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    registry = default_registry()
+    invoked_as = Path(sys.argv[0]).name if argv is None else "specialist-model-studio"
+    args = build_parser(prog=invoked_as).parse_args(argv)
     try:
         if args.command == "list-recipes":
+            from .plugins import default_registry
+
+            registry = default_registry()
             _print_json(
                 {
                     "version": __version__,
@@ -104,6 +179,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if args.command == "init":
+            from .plugins import default_registry
+            from .runner import initialize_workspace
+
+            registry = default_registry()
             contract = initialize_workspace(
                 args.recipe,
                 args.output,
@@ -113,6 +192,10 @@ def main(argv: list[str] | None = None) -> int:
             _print_json({"ok": True, "contract": str(contract)})
             return 0
         if args.command == "run":
+            from .plugins import default_registry
+            from .runner import run_task
+
+            registry = default_registry()
             run_dir = run_task(
                 args.contract,
                 args.runs_dir,
@@ -156,6 +239,10 @@ def main(argv: list[str] | None = None) -> int:
             _print_json(read_json(path))
             return 0
         if args.command in {"apply-strategy", "resume"}:
+            from .plugins import default_registry
+            from .service import RunService
+
+            registry = default_registry()
             parent = Path(args.run_dir).resolve()
             with RunService(
                 parent.parent,
@@ -182,9 +269,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0 if state["status"] == "completed" else 1
         if args.command == "verify":
+            from .plugins import default_registry
+            from .runner import verify_run
+
+            registry = default_registry()
             result = verify_run(args.run_dir, args.deep, registry=registry)
             _print_json(result)
             return 0 if result["ok"] else 1
+        if args.command == "start":
+            return _start_studio(args)
         if args.command == "serve":
             from .server import serve
 

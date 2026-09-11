@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 from pathlib import Path
 from typing import Any
-
-import joblib
-import numpy as np
 
 from ..errors import ContractError
 from ..io_utils import read_json
 from ..plugin_api import RecipeManifest, StrategyProposal
-from . import tabular_regression
 
 
 TABULAR_REGRESSION_TEMPLATE: dict[str, Any] = {
@@ -74,6 +71,46 @@ TABULAR_REGRESSION_TEMPLATE: dict[str, Any] = {
 
 
 SUPPORTED_CANDIDATES = {"mean_baseline", "ridge", "random_forest", "extra_trees"}
+REGRESSION_ERROR_GATES = ("clean_test_mae_max", "clean_test_rmse_max")
+DEFAULT_BASELINE_IMPROVEMENT_FRACTION = 0.10
+
+
+def _finite_positive(value: Any, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ContractError(f"{label} must be a positive finite number")
+    selected = float(value)
+    if not math.isfinite(selected) or selected <= 0:
+        raise ContractError(f"{label} must be a positive finite number")
+    return selected
+
+
+def _stable_float(value: float) -> float:
+    return float(f"{value:.12g}")
+
+
+def _target_scale(report: dict[str, Any]) -> tuple[float, float]:
+    summary = report.get("target_summary")
+    if not isinstance(summary, dict):
+        raise ContractError("numeric target summary is required to derive regression gates")
+    if summary.get("value_space", report.get("target_value_space", "raw")) != "raw":
+        raise ContractError("tabular-regression metrics require the raw target value space")
+    if summary.get("target_transform", report.get("target_transform", "none")) != "none":
+        raise ContractError("tabular-regression does not standardize or transform the target")
+    if summary.get("target_standardized") is True:
+        raise ContractError("raw regression targets cannot be marked standardized")
+    return (
+        _finite_positive(summary.get("mean_baseline_mae"), "mean baseline MAE"),
+        _finite_positive(summary.get("mean_baseline_rmse"), "mean baseline RMSE"),
+    )
+
+
+def _threshold_source(overridden: set[str], gate: str) -> str:
+    return "task_contract_override" if gate in overridden else "dataset_scale_default"
+
+
+def _basis_source(thresholds: dict[str, dict[str, Any]]) -> str:
+    sources = {str(value.get("source", "")) for value in thresholds.values()}
+    return sources.pop() if len(sources) == 1 else "mixed"
 
 
 class TabularRegressionPlugin:
@@ -96,6 +133,97 @@ class TabularRegressionPlugin:
 
     def template(self) -> dict[str, Any]:
         return deepcopy(TABULAR_REGRESSION_TEMPLATE)
+
+    def prepare_contract_for_dataset(
+        self,
+        contract: dict[str, Any],
+        report: dict[str, Any],
+        *,
+        overridden_release_gates: set[str] | None = None,
+    ) -> dict[str, Any]:
+        """Bind default error gates to the imported target's raw value scale."""
+
+        if report.get("target_kind") != "numeric":
+            raise ContractError("tabular-regression requires a numeric target")
+        baseline_mae, baseline_rmse = _target_scale(report)
+        updated = deepcopy(contract)
+        gates = updated["release_gates"]
+        overridden = set(overridden_release_gates or set())
+        factor = 1.0 - DEFAULT_BASELINE_IMPROVEMENT_FRACTION
+        defaults = {
+            "clean_test_mae_max": _stable_float(baseline_mae * factor),
+            "clean_test_rmse_max": _stable_float(baseline_rmse * factor),
+        }
+        for gate, value in defaults.items():
+            if gate not in overridden:
+                gates[gate] = value
+        thresholds = {
+            gate: {
+                "value": float(gates[gate]),
+                "source": _threshold_source(overridden, gate),
+            }
+            for gate in REGRESSION_ERROR_GATES
+        }
+        updated["release_gate_basis"] = {
+            "schema_version": "0.1",
+            "source": _basis_source(thresholds),
+            "requires_human_review": True,
+            "target_column": report.get("target_column"),
+            "target_value_space": "raw",
+            "target_transform": "none",
+            "target_unit": report.get("target_unit") or "unspecified",
+            "metric_unit": "same_as_target_column",
+            "dataset_fingerprint_sha256": report.get("fingerprint_sha256"),
+            "method": "constant_mean_baseline_relative_improvement",
+            "required_improvement_fraction": DEFAULT_BASELINE_IMPROVEMENT_FRACTION,
+            "baseline": {
+                "kind": "constant_mean_predictor_on_imported_target",
+                "mae": baseline_mae,
+                "rmse": baseline_rmse,
+            },
+            "thresholds": thresholds,
+        }
+        return updated
+
+    def record_release_gate_overrides(
+        self,
+        contract: dict[str, Any],
+        changed_gates: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Record explicit threshold choices without mislabelling their basis."""
+
+        updated = deepcopy(contract)
+        basis = deepcopy(updated.get("release_gate_basis"))
+        if not isinstance(basis, dict):
+            report = read_json(Path(updated["dataset"]["report_path"]))
+            basis = {
+                "schema_version": "0.1",
+                "source": "mixed",
+                "requires_human_review": True,
+                "target_column": updated["dataset"].get("target_column"),
+                "target_value_space": "raw",
+                "target_transform": "none",
+                "target_unit": report.get("target_unit") or "unspecified",
+                "metric_unit": "same_as_target_column",
+                "dataset_fingerprint_sha256": updated["dataset"].get("fingerprint_sha256"),
+                "method": "explicit_thresholds_without_generated_baseline",
+                "required_improvement_fraction": None,
+                "baseline": None,
+                "thresholds": {},
+            }
+        thresholds = basis.setdefault("thresholds", {})
+        for gate in REGRESSION_ERROR_GATES:
+            previous = thresholds.get(gate)
+            source = previous.get("source") if isinstance(previous, dict) else "legacy_unbound"
+            if gate in changed_gates:
+                source = "explicit_contract_override"
+            thresholds[gate] = {
+                "value": float(updated["release_gates"][gate]),
+                "source": source,
+            }
+        basis["source"] = _basis_source(thresholds)
+        updated["release_gate_basis"] = basis
+        return updated
 
     def validate_contract(self, contract: dict[str, Any]) -> None:
         dataset = contract.get("dataset")
@@ -159,6 +287,46 @@ class TabularRegressionPlugin:
             raise ContractError("release_gates are incomplete")
         if not all(isinstance(gates[key], (int, float)) for key in required_gates):
             raise ContractError("all release gate values must be numeric")
+        _finite_positive(gates["clean_test_mae_max"], "clean_test_mae_max")
+        _finite_positive(gates["clean_test_rmse_max"], "clean_test_rmse_max")
+        basis = contract.get("release_gate_basis")
+        if basis is not None:
+            if not isinstance(basis, dict):
+                raise ContractError("release_gate_basis must be an object")
+            if basis.get("target_column") != dataset.get("target_column"):
+                raise ContractError("release gate basis targets another column")
+            if basis.get("target_value_space") != "raw" or basis.get("target_transform") != "none":
+                raise ContractError("regression error gates must use raw, untransformed target values")
+            if basis.get("metric_unit") != "same_as_target_column":
+                raise ContractError("MAE and RMSE gates must use the target column unit")
+            if basis.get("dataset_fingerprint_sha256") != dataset.get("fingerprint_sha256"):
+                raise ContractError("release gate basis does not match the inspected dataset")
+            thresholds = basis.get("thresholds")
+            if not isinstance(thresholds, dict):
+                raise ContractError("release gate basis thresholds are required")
+            for gate in REGRESSION_ERROR_GATES:
+                threshold = thresholds.get(gate)
+                if not isinstance(threshold, dict):
+                    raise ContractError(f"release gate basis is missing {gate}")
+                if threshold.get("source") == "legacy_unbound":
+                    raise ContractError(
+                        "legacy regression error gates have no unit basis; explicitly review both MAE and RMSE thresholds"
+                    )
+                value = _finite_positive(threshold.get("value"), f"{gate} basis value")
+                if not math.isclose(value, float(gates[gate]), rel_tol=1e-12, abs_tol=1e-12):
+                    raise ContractError(f"release gate basis does not match {gate}")
+        else:
+            summary = report.get("target_summary")
+            if isinstance(summary, dict):
+                minimum = summary.get("min")
+                maximum = summary.get("max")
+                if isinstance(minimum, (int, float)) and isinstance(maximum, (int, float)):
+                    span = float(maximum) - float(minimum)
+                    legacy_defaults = math.isclose(float(gates["clean_test_mae_max"]), 0.80) and math.isclose(float(gates["clean_test_rmse_max"]), 1.10)
+                    if legacy_defaults and span > 0 and max(0.80, 1.10) < span * 0.02:
+                        raise ContractError(
+                            "legacy regression error gates are not bound to the raw target scale; re-import data or explicitly review both MAE and RMSE thresholds"
+                        )
         budget = contract.get("compute_budget")
         if not isinstance(budget, dict) or len(candidates) > int(budget.get("max_candidate_models", 0)):
             raise ContractError("candidate count exceeds compute budget")
@@ -166,12 +334,18 @@ class TabularRegressionPlugin:
             raise ContractError("dataset row count exceeds compute budget")
 
     def train(self, contract: dict[str, Any]) -> Any:
+        from . import tabular_regression
+
         return tabular_regression.train(contract)
 
     def evaluate(self, training: Any, contract: dict[str, Any]) -> Any:
+        from . import tabular_regression
+
         return tabular_regression.evaluate(training, contract)
 
     def package(self, training: Any, evaluation: Any, contract: dict[str, Any], artifact_dir: Path) -> dict[str, Any]:
+        from . import tabular_regression
+
         return tabular_regression.package(training, evaluation, contract, artifact_dir)
 
     def propose_strategies(self, metrics: dict[str, Any], contract: dict[str, Any]) -> list[StrategyProposal]:
@@ -216,9 +390,14 @@ class TabularRegressionPlugin:
         return updated
 
     def learning_report(self, contract: dict[str, Any], metrics: dict[str, Any], strategies: list[StrategyProposal]) -> str:
+        from . import tabular_regression
+
         return tabular_regression.learning_report(contract, metrics, strategies)
 
     def deep_verify(self, artifact_dir: Path) -> list[str]:
+        import joblib
+        import numpy as np
+
         bundle = joblib.load(artifact_dir / "model.joblib")
         reference = joblib.load(artifact_dir / "test_reference.joblib")
         actual = bundle["estimator"].predict(reference["X"])

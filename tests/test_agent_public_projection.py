@@ -85,6 +85,17 @@ class AgentPublicProjectionTests(unittest.TestCase):
         )
         self.assertEqual(source["task"]["dataset_report"]["root"], local_root)
 
+    def test_chinese_slash_prose_is_not_mistaken_for_an_absolute_path(self) -> None:
+        projected = agent_public_projection(
+            {
+                "note": "复核时间/分组泄漏；真实缓存位于 /tmp/private/cache.bin",
+            }
+        )
+
+        self.assertIn("时间/分组泄漏", projected["note"])
+        self.assertNotIn("/tmp/private/cache.bin", projected["note"])
+        self.assertIn("[local-path-redacted]", projected["note"])
+
     def test_agent_header_is_path_safe_while_local_ui_projection_is_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             runs_dir = Path(temporary) / "runs"

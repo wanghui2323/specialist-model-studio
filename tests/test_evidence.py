@@ -137,6 +137,7 @@ class EvaluationReportTests(unittest.TestCase):
             self.assertEqual(report["evidence_status"], "sufficient")
             self.assertEqual(report["conclusion"], "release_ready")
             self.assertTrue(report["release_ready"])
+            self.assertRegex(report["report_sha256"], r"^[0-9a-f]{64}$")
 
             reopened = EvaluationReport(run_dir).get()
             self.assertEqual(reopened, report)
@@ -278,6 +279,12 @@ class ArtifactBundleTests(unittest.TestCase):
 
             self.assertEqual(record["status"], "completed")
             self.assertEqual(sha256_file(archive_path), record["archive"]["sha256"])
+            self.assertEqual(
+                record["manifest_sha256"],
+                record["manifest"]["manifest_sha256"],
+            )
+            self.assertRegex(record["manifest_sha256"], r"^[0-9a-f]{64}$")
+            self.assertEqual(record["task_id"], "task-fixture")
             self.assertEqual(builder.get(record["bundle_id"]), record)
             self.assertEqual(builder.list(), [record])
             self.assertFalse(any(builder.bundles_dir.glob(".*.tmp")))

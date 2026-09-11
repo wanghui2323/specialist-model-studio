@@ -40,7 +40,20 @@ class RunService:
         )
         self._futures: dict[str, Future[Path]] = {}
         self._lock = RLock()
+        self.workspace_root: Path | None = None
         self.recovered_runs = self.recover_stale_runs() if recover else []
+
+    def attach_workspace(self, root: str | Path) -> None:
+        """Bind the task owner used by privileged TrainingWorkspace calls."""
+
+        resolved = Path(root).expanduser().resolve()
+        conventional = self.runs_dir / "_workspace"
+        with self._lock:
+            if self.workspace_root not in {None, resolved}:
+                raise HarnessError("run service is already attached to another workspace")
+            self.workspace_root = resolved
+        if resolved != conventional and not resolved.is_dir():
+            raise HarnessError("workspace root does not exist")
 
     def recover_stale_runs(self) -> list[str]:
         recovered: list[str] = []
@@ -60,6 +73,7 @@ class RunService:
         contract: str | Path | dict[str, Any],
         run_id: str | None = None,
         parent_run_id: str | None = None,
+        workspace_task_id: str | None = None,
     ) -> Path:
         run_dir = prepare_run(
             contract,
@@ -67,19 +81,77 @@ class RunService:
             run_id=run_id,
             registry=self.registry,
             parent_run_id=parent_run_id,
+            workspace_task_id=workspace_task_id,
+            workspace_root=self.workspace_root,
         )
         selected_run_id = run_dir.name
-        future = self._executor.submit(
-            execute_run,
-            run_dir,
-            self.registry,
-        )
+        try:
+            future = self._executor.submit(
+                execute_run,
+                run_dir,
+                self.registry,
+            )
+        except Exception:
+            RunState.load(run_dir).interrupt(
+                "run was persisted but the local service could not schedule execution"
+            )
+            raise
         with self._lock:
             self._futures[selected_run_id] = future
         return run_dir
 
     def status(self, run_id: str) -> dict[str, Any]:
         return read_json(self._run_dir(run_id) / "run_state.json")
+
+    def background_action(
+        self,
+        run_id: str,
+        *,
+        workspace_task_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Expose durable Run state separately from the worker lifecycle."""
+
+        state = self.status(run_id)
+        self._authorize_workspace_run(state, workspace_task_id)
+        with self._lock:
+            future = self._futures.get(run_id)
+        worker_running = bool(future is not None and not future.done())
+        domain_status = str(state.get("status") or "unknown")
+        cancel_requested = bool(state.get("cancel_requested", False))
+        visible_status = (
+            "cancel_requested"
+            if cancel_requested and worker_running
+            else domain_status
+        )
+        return {
+            "action_id": f"training-run:{run_id}",
+            "action_type": "training_run",
+            "task_id": state.get("task_id"),
+            "run_id": run_id,
+            "status": visible_status,
+            "domain_status": domain_status,
+            "running": worker_running or domain_status in ACTIVE_STATUSES,
+            "worker_running": worker_running,
+            "cancel_requested": cancel_requested,
+            "cancel_reason": state.get("cancel_reason"),
+            "cancel": deepcopy(state.get("cancel_request")),
+            "event_seq": state.get("event_seq"),
+            "updated_at_utc": state.get("updated_at_utc"),
+            "last_event": self._last_event_projection(run_id),
+        }
+
+    def _last_event_projection(self, run_id: str) -> dict[str, Any] | None:
+        records = self.events(run_id)
+        if not records:
+            return None
+        event = records[-1]
+        return {
+            "event_id": event.get("event_id"),
+            "seq": event.get("seq"),
+            "type": event.get("type"),
+            "stage": event.get("stage"),
+            "timestamp_utc": event.get("timestamp_utc"),
+        }
 
     def list_runs(self) -> list[dict[str, Any]]:
         states = [
@@ -113,20 +185,47 @@ class RunService:
             return self._run_dir(run_id)
         raise HarnessError(f"run is not owned by this service instance: {run_id}")
 
-    def cancel(self, run_id: str, reason: str = "requested by user") -> bool:
+    def cancel(
+        self,
+        run_id: str,
+        reason: str = "requested by user",
+        *,
+        workspace_task_id: str | None = None,
+        actor: str = "user",
+        cancellation_kind: str = "user_requested",
+        scope: str = "training_run",
+    ) -> bool:
         state = RunState.load(self._run_dir(run_id))
-        if not state.request_cancel(reason):
+        self._authorize_workspace_run(state.data, workspace_task_id)
+        if not state.request_cancel(
+            reason,
+            actor=actor,
+            cancellation_kind=cancellation_kind,
+            scope=scope,
+        ):
             return False
         with self._lock:
             future = self._futures.get(run_id)
         if future is not None and future.cancel():
             latest = RunState.load(self._run_dir(run_id))
-            latest.cancel(reason)
+            latest.cancel(
+                reason,
+                actor=actor,
+                cancellation_kind=cancellation_kind,
+                scope=scope,
+            )
         return True
 
-    def resume(self, run_id: str, child_run_id: str | None = None) -> Path:
+    def resume(
+        self,
+        run_id: str,
+        child_run_id: str | None = None,
+        *,
+        workspace_task_id: str | None = None,
+    ) -> Path:
         source = self._run_dir(run_id)
         state = read_json(source / "run_state.json")
+        self._authorize_workspace_run(state, workspace_task_id)
         if state["status"] not in {"failed", "cancelled", "interrupted"}:
             raise HarnessError(
                 f"only failed, cancelled or interrupted runs can resume; got {state['status']}"
@@ -135,6 +234,7 @@ class RunService:
             read_json(source / "task_contract.json"),
             run_id=child_run_id,
             parent_run_id=run_id,
+            workspace_task_id=workspace_task_id,
         )
 
     def strategies(self, run_id: str) -> dict[str, Any]:
@@ -305,9 +405,11 @@ class RunService:
         run_id: str,
         *,
         inference_check_id: str | None = None,
+        authorization_lineage: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return ArtifactBundleBuilder(self._run_dir(run_id)).build(
-            inference_check_id=inference_check_id
+            inference_check_id=inference_check_id,
+            authorization_lineage=authorization_lineage,
         )
 
     def artifact_bundles(self, run_id: str) -> list[dict[str, Any]]:
@@ -324,9 +426,12 @@ class RunService:
         run_id: str,
         strategy_id: str,
         child_run_id: str | None = None,
+        *,
+        workspace_task_id: str | None = None,
     ) -> Path:
         source = self._run_dir(run_id)
         state = read_json(source / "run_state.json")
+        self._authorize_workspace_run(state, workspace_task_id)
         if state["status"] != "completed":
             raise HarnessError("optimization strategies require a completed parent run")
         strategy_document = self.strategies(run_id)
@@ -351,6 +456,15 @@ class RunService:
             )
         plugin = self.registry.get_recipe(str(contract["recipe"]))
         updated = plugin.apply_strategy(deepcopy(contract), strategy_id)
+        if not isinstance(updated, dict):
+            raise ContractError("strategy plugin must return a contract object")
+        protected_keys = set(contract) - {"recipe_options"}
+        if set(updated) - {"recipe_options"} != protected_keys or any(
+            updated.get(key) != contract.get(key) for key in protected_keys
+        ):
+            raise ContractError(
+                "strategy plugin may only change recipe_options; task, data, model and gates are immutable"
+            )
         proposal_provenance = proposal.get("evidence_provenance")
         if isinstance(proposal_provenance, dict):
             uses_test_evidence = bool(
@@ -419,6 +533,7 @@ class RunService:
             updated,
             run_id=child_run_id,
             parent_run_id=run_id,
+            workspace_task_id=workspace_task_id,
         )
         parent_state = RunState.load(source)
         parent_state.event(
@@ -443,6 +558,23 @@ class RunService:
         if run_dir.parent != self.runs_dir or not run_dir.is_dir():
             raise FileNotFoundError(f"run not found: {run_id}")
         return run_dir
+
+    def _authorize_workspace_run(
+        self,
+        state: dict[str, Any],
+        workspace_task_id: str | None,
+    ) -> None:
+        task_id = str(state.get("task_id") or "")
+        workspace_root = self.workspace_root or (self.runs_dir / "_workspace")
+        task_path = workspace_root / "tasks" / task_id / "task.json"
+        if workspace_task_id is not None and workspace_task_id != task_id:
+            raise ContractError("workspace task authorization does not own this run")
+        if workspace_task_id is not None and not task_path.is_file():
+            raise ContractError("workspace task authorization references an unknown task")
+        if task_path.is_file() and workspace_task_id != task_id:
+            raise ContractError(
+                "workspace-owned runs can only be mutated through TrainingWorkspace"
+            )
 
     def __enter__(self) -> RunService:
         return self

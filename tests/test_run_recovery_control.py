@@ -18,6 +18,8 @@ from model_harness.runner import prepare_run
 from model_harness.server import create_app
 from model_harness.state import RunState
 from model_harness.workspace import TrainingWorkspace
+from tests.contract_confirmation import contract_confirmation_payload
+from tests.run_authorization import start_authorized_task_run
 
 
 def _image_dataset_zip() -> bytes:
@@ -94,18 +96,20 @@ class RunRecoveryApiTests(unittest.TestCase):
                 self.assertEqual(uploaded.status_code, 201, uploaded.text)
                 confirmed = client.post(
                     f"/tasks/{task_id}/confirm",
-                    json={
-                        "data_authorized": True,
-                        "labels_reviewed": True,
-                        "gates_reviewed": True,
-                    },
+                    json=contract_confirmation_payload(client, task_id),
                 )
                 self.assertEqual(confirmed.status_code, 200, confirmed.text)
 
                 workspace = app.state.training_workspace
                 task_path = workspace.tasks_dir / task_id / "task.json"
                 contract = read_json(workspace._contract_path(task_id))  # noqa: SLF001
-                failed_run = prepare_run(contract, runs_dir, run_id="failed-original")
+                failed_run = prepare_run(
+                    contract,
+                    runs_dir,
+                    run_id="failed-original",
+                    workspace_task_id=task_id,
+                    workspace_root=workspace.root,
+                )
                 RunState.load(failed_run).fail("synthetic worker failure for retry contract test")
                 persisted = read_json(task_path)
                 persisted.update(
@@ -124,7 +128,11 @@ class RunRecoveryApiTests(unittest.TestCase):
                     "retry_training_run",
                 )
 
-                retried = client.post(f"/tasks/{task_id}/runs")
+                retried = start_authorized_task_run(
+                    client,
+                    task_id,
+                    checkpoint_id="native-run-retry:failed-original",
+                )
                 self.assertEqual(retried.status_code, 202, retried.text)
                 retry_task = retried.json()["task"]
                 new_run_id = retry_task["current_run_id"]

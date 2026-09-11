@@ -4,12 +4,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-import joblib
-import numpy as np
-
 from ..errors import ContractError
 from ..plugin_api import RecipeManifest, StrategyProposal
-from . import digit_classification
 
 
 DIGIT_CLASSIFICATION_TEMPLATE: dict[str, Any] = {
@@ -173,9 +169,13 @@ class DigitClassificationPlugin:
             raise ContractError("candidate count exceeds compute budget")
 
     def train(self, contract: dict[str, Any]) -> Any:
+        from . import digit_classification
+
         return digit_classification.train(contract)
 
     def evaluate(self, training: Any, contract: dict[str, Any]) -> Any:
+        from . import digit_classification
+
         return digit_classification.evaluate(training, contract)
 
     def package(
@@ -185,6 +185,8 @@ class DigitClassificationPlugin:
         contract: dict[str, Any],
         artifact_dir: Path,
     ) -> dict[str, Any]:
+        from . import digit_classification
+
         return digit_classification.package(training, evaluation, contract, artifact_dir)
 
     def propose_strategies(
@@ -278,9 +280,14 @@ class DigitClassificationPlugin:
         metrics: dict[str, Any],
         strategies: list[StrategyProposal],
     ) -> str:
+        from . import digit_classification
+
         return digit_classification.learning_report(contract, metrics, strategies)
 
     def deep_verify(self, artifact_dir: Path) -> list[str]:
+        import joblib
+        import numpy as np
+
         errors: list[str] = []
         model = joblib.load(artifact_dir / "model.joblib")
         reference = np.load(artifact_dir / "test_reference.npz")

@@ -1,0 +1,10 @@
+{
+  "name": "specialist-model-studio-acceptance-dsh-runtime",
+  "version": "1.0.0-rc.1",
+  "private": true,
+  "description": "Repository-locked DeepSeek Harness CLI for Specialist Model Studio source RC acceptance",
+  "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.1.0-rc.6"
+  }
+}

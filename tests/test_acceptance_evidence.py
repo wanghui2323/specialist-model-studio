@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from scripts.acceptance_evidence import (
     SchemaValidationError,
@@ -21,11 +21,14 @@ ROOT = Path(__file__).resolve().parents[1]
 COMMIT = "a" * 40
 CHALLENGE = "b" * 32
 RUN_ID = "evidence-20260822T000000Z-deadbeef"
+CHECKPOINT_ID = "user-approval:acceptance-20260822"
 REQUIRED_CHECKS = ["python-full-suite", "deepseek-harness-suite"]
 COMMAND = [
     str(ROOT / ".venv" / "bin" / "python"),
     str(ROOT / "scripts" / "collect_v07_external_evidence.py"),
     "--fixture",
+    "--user-approval-checkpoint-id",
+    CHECKPOINT_ID,
 ]
 TEST_TOOL_PATH = str(Path(sys.executable).absolute())
 TEST_TOOLS = {
@@ -116,6 +119,108 @@ def _browser_run(width: int, height: int) -> dict:
     }
 
 
+def _cold_commands() -> list[dict]:
+    clone = "/tmp/model-harness-cold/repo"
+    runtime = "/tmp/model-harness-cold/minimal-runtime"
+    specs = [
+        (
+            "clone",
+            [
+                TEST_TOOLS["git"],
+                "clone",
+                "--no-local",
+                "--no-hardlinks",
+                "--no-checkout",
+                str(ROOT),
+                clone,
+            ],
+        ),
+        (
+            "checkout",
+            [TEST_TOOLS["git"], "-C", clone, "checkout", "--detach", COMMIT],
+        ),
+        (
+            "uv_sync",
+            [TEST_TOOLS["uv"], "sync", "--project", clone, "--frozen"],
+        ),
+        (
+            "python_tests",
+            [
+                TEST_TOOLS["uv"],
+                "run",
+                "--project",
+                clone,
+                "python",
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                "tests",
+                "-v",
+            ],
+        ),
+        (
+            "node_ci",
+            [
+                TEST_TOOLS["npm"],
+                "--prefix",
+                f"{clone}/integrations/deepseek-harness",
+                "ci",
+                "--ignore-scripts",
+            ],
+        ),
+        (
+            "node_tests",
+            [
+                TEST_TOOLS["npm"],
+                "--prefix",
+                f"{clone}/integrations/deepseek-harness",
+                "test",
+            ],
+        ),
+        (
+            "node_check",
+            [
+                TEST_TOOLS["npm"],
+                "--prefix",
+                f"{clone}/integrations/deepseek-harness",
+                "run",
+                "check",
+            ],
+        ),
+        (
+            "browser_ci",
+            [
+                TEST_TOOLS["npm"],
+                "--prefix",
+                f"{clone}/acceptance/browser",
+                "ci",
+                "--ignore-scripts",
+            ],
+        ),
+        (
+            "minimal_loop",
+            [
+                TEST_TOOLS["uv"],
+                "run",
+                "--project",
+                clone,
+                "python",
+                "scripts/prepare_v07_acceptance_runtime.py",
+                "--runtime-dir",
+                runtime,
+                "--skip-hf",
+                "--user-approval-checkpoint-id",
+                CHECKPOINT_ID,
+            ],
+        ),
+    ]
+    return [
+        {"id": command_id, "argv": argv, "exit_code": 0, "duration_seconds": 0.1}
+        for command_id, argv in specs
+    ]
+
+
 def build_evidence(root: Path) -> Path:
     artifacts = root / "artifacts"
     journeys = {
@@ -148,11 +253,7 @@ def build_evidence(root: Path) -> Path:
         "before": {family: _snapshot(family) for family in ("image", "tabular", "audio")},
         "after": {family: _snapshot(family) for family in ("image", "tabular", "audio")},
     }
-    command_ids = ["clone", "checkout", "uv_sync", "python_tests", "node_ci", "node_tests", "node_check", "browser_ci", "minimal_loop"]
-    cold_commands = [
-        {"id": item, "argv": [item], "exit_code": 0, "duration_seconds": 0.1}
-        for item in command_ids
-    ]
+    cold_commands = _cold_commands()
     cold_report = {
         "schema_version": "0.1",
         "source_commit": COMMIT,
@@ -239,6 +340,157 @@ def build_evidence(root: Path) -> Path:
 
 
 class AcceptanceEvidenceTests(unittest.TestCase):
+    def test_collector_requires_explicit_user_approval_checkpoint_cli(self) -> None:
+        argv = [
+            str(producer.__file__),
+            "--output-dir",
+            "/tmp/evidence",
+            "--source-commit",
+            COMMIT,
+            "--verifier-challenge",
+            CHALLENGE,
+            "--hf-report-root",
+            "/tmp/hf-report",
+            "--git",
+            TEST_TOOL_PATH,
+            "--node",
+            TEST_TOOL_PATH,
+            "--npm",
+            TEST_TOOL_PATH,
+            "--uv",
+            TEST_TOOL_PATH,
+            "--chrome",
+            TEST_TOOL_PATH,
+        ]
+        with patch.object(sys, "argv", argv), self.assertRaises(SystemExit):
+            producer.parse_args()
+        with patch.object(
+            sys,
+            "argv",
+            [
+                *argv,
+                "--user-approval-checkpoint-id",
+                CHECKPOINT_ID,
+            ],
+        ):
+            selected = producer.parse_args()
+        self.assertEqual(selected.user_approval_checkpoint_id, CHECKPOINT_ID)
+
+    def test_verifier_requires_explicit_user_approval_checkpoint_cli(self) -> None:
+        with patch.object(sys, "argv", [str(runner.__file__)]), self.assertRaises(
+            SystemExit
+        ):
+            runner.parse_args()
+        with patch.object(
+            sys,
+            "argv",
+            [
+                str(runner.__file__),
+                "--user-approval-checkpoint-id",
+                CHECKPOINT_ID,
+            ],
+        ):
+            selected = runner.parse_args()
+        self.assertEqual(selected.user_approval_checkpoint_id, CHECKPOINT_ID)
+
+    def test_blank_user_approval_checkpoint_fails_before_collection(self) -> None:
+        collector_args = MagicMock()
+        collector_args.source_commit = COMMIT
+        collector_args.verifier_challenge = CHALLENGE
+        collector_args.user_approval_checkpoint_id = "   "
+        with self.assertRaisesRegex(ValueError, "must not be empty"):
+            producer.collect(collector_args)
+        with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(
+            ValueError,
+            "must not be empty",
+        ):
+            runner.execute_acceptance(
+                Path(temporary) / "acceptance.json",
+                user_approval_checkpoint_id="   ",
+            )
+
+    def test_three_family_collector_forwards_one_user_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            report_path = Path(temporary) / "scenario" / "report.json"
+            (report_path.parent / "runtime").mkdir(parents=True)
+            app = object()
+            client = object()
+            context = MagicMock()
+            context.__enter__.return_value = client
+            image = {
+                "repository": "owner/image-model",
+                "resolved_commit": COMMIT,
+            }
+            with patch.object(producer, "create_app", return_value=app), patch.object(
+                producer,
+                "TestClient",
+                return_value=context,
+            ), patch.object(
+                producer,
+                "_image_journey",
+                return_value=image,
+            ), patch.object(
+                producer,
+                "_prepare_tabular",
+                return_value={"task_id": "task-tabular"},
+            ) as prepare_tabular, patch.object(
+                producer,
+                "_prepare_audio",
+                return_value={"task_id": "task-audio"},
+            ) as prepare_audio, patch.object(
+                producer,
+                "_verify_restart",
+                return_value={"status": "passed"},
+            ):
+                producer._prepare_three_family_runtime(
+                    report_path,
+                    {"started_at_utc": "2026-08-22T00:00:00+00:00"},
+                    user_approval_checkpoint_id=CHECKPOINT_ID,
+                )
+
+        prepare_tabular.assert_called_once_with(
+            client,
+            app,
+            user_approval_checkpoint_id=CHECKPOINT_ID,
+        )
+        prepare_audio.assert_called_once_with(
+            client,
+            app,
+            user_approval_checkpoint_id=CHECKPOINT_ID,
+        )
+
+    def test_cold_clone_checkpoint_must_match_producer_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = build_evidence(Path(temporary))
+            loaded, blockers = runner._read_external_evidence(
+                path,
+                source_commit=COMMIT,
+                expected_challenge=CHALLENGE,
+                expected_command=COMMAND,
+                expected_tools=TEST_TOOLS,
+                producer_status="passed",
+            )
+            self.assertEqual(blockers, [])
+            self.assertIsNotNone(loaded)
+            passed = runner.probe_cold_clone_evidence(
+                loaded,
+                blockers,
+                source_commit=COMMIT,
+            )
+            self.assertEqual(passed[0], "passed", passed)
+            loaded.reports["cold_clone"]["commands"][-1]["argv"][-1] = (
+                "different-user-checkpoint"
+            )
+            rejected = runner.probe_cold_clone_evidence(
+                loaded,
+                blockers,
+                source_commit=COMMIT,
+            )
+            self.assertEqual(rejected[0], "failed")
+            self.assertFalse(
+                rejected[1]["assertions"]["command_shapes_trusted"]
+            )
+
     def test_controlled_family_requests_percent_encode_unicode_ids(self) -> None:
         journey = {
             "task_id": "中文任务-1234",

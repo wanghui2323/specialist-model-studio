@@ -18,6 +18,7 @@ from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, recall_s
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from ..data_adapters import verify_training_dataset_integrity
 from ..io_utils import read_json, write_json
 from ..huggingface_assets import TrainingModelAsset
 from ..model_assets import ModelAsset, ModelAssetFile
@@ -264,6 +265,7 @@ def _build_candidates(seed: int, balanced: bool) -> dict[str, Any]:
 
 
 def train(contract: dict[str, Any]) -> TrainingContext:
+    verify_training_dataset_integrity(contract["dataset"])
     dataset = contract["dataset"]
     root = Path(dataset["root"]).expanduser().resolve()
     manifest = read_json(Path(dataset["manifest_path"]))

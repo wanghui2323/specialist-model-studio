@@ -3,9 +3,9 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ai-pm-model-harness"
-version = "0.7.0b1"
-description = "A delegation-first, learning-visible harness for auditable specialist-model training."
+name = "specialist-model-studio"
+version = "1.0.0rc1"
+description = "A conversation-native studio for evidence-backed specialist-model research, training, evaluation, and delivery."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -13,6 +13,7 @@ authors = [
   {name = "Wang Hui"}
 ]
 dependencies = [
+  "certifi>=2024.8.30",
   "huggingface-hub>=0.34,<1.0",
   "onnxruntime>=1.20,<2.0",
   "Pillow>=11.0,<13.0",
@@ -23,18 +24,20 @@ dependencies = [
 [project.optional-dependencies]
 server = [
   "fastapi>=0.115,<1.0",
-  "uvicorn>=0.30,<1.0"
+  "uvicorn>=0.30,<1.0",
+  "websockets>=15,<16"
 ]
 test = [
   "httpx2>=2.0,<3.0"
 ]
 
 [project.urls]
-Homepage = "https://github.com/wanghui2323/ai-pm-model-harness"
-Repository = "https://github.com/wanghui2323/ai-pm-model-harness"
-Issues = "https://github.com/wanghui2323/ai-pm-model-harness/issues"
+Homepage = "https://github.com/wanghui2323/specialist-model-studio"
+Repository = "https://github.com/wanghui2323/specialist-model-studio"
+Issues = "https://github.com/wanghui2323/specialist-model-studio/issues"
 
 [project.scripts]
+specialist-model-studio = "model_harness.cli:main"
 small-model-harness = "model_harness.cli:main"
 
 [tool.setuptools.packages.find]

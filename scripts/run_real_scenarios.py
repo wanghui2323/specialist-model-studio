@@ -115,7 +115,7 @@ def run_task(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run two real public-data Model Harness scenarios.")
+    parser = argparse.ArgumentParser(description="Run two real public-data Specialist Model Studio scenarios.")
     parser.add_argument(
         "--wine-csv",
         type=Path,

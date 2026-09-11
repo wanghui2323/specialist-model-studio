@@ -20,7 +20,13 @@ class PrepareV07AcceptanceRuntimeTests(unittest.TestCase):
                 "scripts.prepare_v07_acceptance_runtime._run_once",
                 side_effect=AssertionError("skip-HF mode must remain offline"),
             ):
-                report = prepare_acceptance_runtime(runtime_dir, skip_hf=True)
+                report = prepare_acceptance_runtime(
+                    runtime_dir,
+                    skip_hf=True,
+                    user_approval_checkpoint_id=(
+                        "test-user-approved:v0.7-acceptance-runtime"
+                    ),
+                )
 
             stored = json.loads(
                 (runtime_dir / "journeys.json").read_text(encoding="utf-8")
@@ -79,6 +85,19 @@ class PrepareV07AcceptanceRuntimeTests(unittest.TestCase):
 
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "user-owned")
             self.assertFalse((runtime_dir / "journeys.json").exists())
+
+    def test_user_approval_checkpoint_is_required(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime_dir = Path(temporary) / "acceptance-runtime"
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "user_approval_checkpoint_id is required",
+            ):
+                prepare_acceptance_runtime(runtime_dir, skip_hf=True)
+
+            self.assertTrue(runtime_dir.is_dir())
+            self.assertFalse(any(runtime_dir.iterdir()))
 
     def test_official_mode_requires_an_immutable_commit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

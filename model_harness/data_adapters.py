@@ -3,7 +3,9 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import math
 import os
+import statistics
 from dataclasses import asdict, dataclass
 from importlib import metadata
 from pathlib import Path
@@ -12,7 +14,7 @@ from typing import Any, Iterable, Protocol, runtime_checkable
 from uuid import uuid4
 
 from .errors import ContractError, PluginError
-from .io_utils import write_json
+from .io_utils import read_json, sha256_file, write_json
 
 
 ENTRY_POINT_GROUP = "ai_pm_model_harness.data_adapters"
@@ -42,6 +44,66 @@ class DataImportResult:
     report: dict[str, Any]
     dataset_dir: Path
     contract_dataset: dict[str, Any]
+
+
+def verify_training_dataset_integrity(dataset: dict[str, Any]) -> None:
+    """Fail closed when live training data differs from the inspected dataset."""
+
+    def fail(reason: str) -> None:
+        raise ContractError(f"数据完整性校验失败：{reason}")
+
+    expected = str(dataset.get("fingerprint_sha256", "")).strip()
+    if not expected:
+        fail("训练合同缺少数据指纹")
+    kind = str(dataset.get("kind", ""))
+    try:
+        if kind == "tabular_csv":
+            if sha256_file(Path(str(dataset["csv_path"]))) != expected:
+                fail("表格文件与导入时的数据指纹不一致")
+            return
+
+        if kind not in {"image_folder", "audio_keyword_class_folder"}:
+            fail(f"不支持的数据类型 {kind or '<empty>'}")
+        root = Path(str(dataset["root"])).expanduser().resolve()
+        manifest = read_json(Path(str(dataset["manifest_path"])))
+        samples = manifest.get("samples")
+        if not isinstance(samples, list) or not samples:
+            fail("数据清单没有可训练样本")
+        fingerprint_rows: list[str] = []
+        for sample in sorted(
+            samples,
+            key=lambda item: (
+                str(item.get("relative_path", "")) if isinstance(item, dict) else ""
+            ),
+        ):
+            if not isinstance(sample, dict):
+                fail("数据清单包含无效样本记录")
+            relative_path = Path(str(sample.get("relative_path", "")))
+            if relative_path.is_absolute() or not relative_path.parts:
+                fail("数据清单包含无效样本路径")
+            sample_path = (root / relative_path).resolve()
+            try:
+                sample_path.relative_to(root)
+            except ValueError:
+                fail("数据清单中的样本路径越出数据目录")
+            actual_digest = sha256_file(sample_path)
+            if actual_digest != str(sample.get("sha256", "")):
+                fail(f"样本 {relative_path.as_posix()} 与导入记录不一致")
+            label = str(sample.get("label", ""))
+            if kind == "image_folder":
+                fingerprint_rows.append(f"{label}:{actual_digest}")
+            else:
+                speaker_id = str(sample.get("speaker_id", ""))
+                fingerprint_rows.append(f"{label}:{speaker_id}:{actual_digest}")
+        actual_fingerprint = hashlib.sha256(
+            "\n".join(fingerprint_rows).encode("utf-8")
+        ).hexdigest()
+        if actual_fingerprint != expected:
+            fail("样本清单与导入时的数据指纹不一致")
+    except ContractError:
+        raise
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        raise ContractError(f"数据完整性校验失败：无法读取训练数据（{exc}）") from exc
 
 
 @runtime_checkable
@@ -105,10 +167,38 @@ def _numeric(values: Iterable[str]) -> bool:
             continue
         seen = True
         try:
-            float(selected)
+            parsed = float(selected)
         except ValueError:
             return False
+        if not math.isfinite(parsed):
+            return False
     return seen
+
+
+def _numeric_target_summary(values: list[float]) -> dict[str, float | str | bool]:
+    """Describe the target in its stored value space without inventing a unit.
+
+    Regression metrics are computed against the raw target values.  Capturing
+    the mean-predictor error here lets a Recipe propose scale-aware gates while
+    keeping the final thresholds subject to the existing human review gate.
+    """
+
+    mean = math.fsum(values) / len(values)
+    mean_baseline_mae = math.fsum(abs(value - mean) for value in values) / len(values)
+    mean_baseline_rmse = math.sqrt(
+        math.fsum((value - mean) ** 2 for value in values) / len(values)
+    )
+    return {
+        "min": min(values),
+        "max": max(values),
+        "mean": mean,
+        "median": float(statistics.median(values)),
+        "mean_baseline_mae": mean_baseline_mae,
+        "mean_baseline_rmse": mean_baseline_rmse,
+        "value_space": "raw",
+        "target_transform": "none",
+        "target_standardized": False,
+    }
 
 
 class TabularCsvAdapter:
@@ -211,6 +301,8 @@ class TabularCsvAdapter:
         if objective == "regression" and not target_is_numeric:
             raise ContractError("回归任务的目标列必须是数值")
         target_values = [row[target_column] for row in rows]
+        if objective == "regression" and len(set(target_values)) < 2:
+            raise ContractError("回归任务的目标列至少需要两个不同数值")
         if objective == "classification" and len(set(target_values)) < 2:
             raise ContractError("分类任务至少需要两个目标类别")
 
@@ -230,6 +322,7 @@ class TabularCsvAdapter:
                 writer.writerows(rows)
             fingerprint = hashlib.sha256(normalized_csv.read_bytes()).hexdigest()
             numeric_targets = [float(value) for value in target_values] if target_is_numeric else []
+            target_unit = str(options.get("target_unit", "")).strip() or "unspecified"
             report = {
                 "schema_version": "0.1",
                 "dataset_id": dataset_id,
@@ -241,18 +334,18 @@ class TabularCsvAdapter:
                 "target_kind": "numeric" if target_is_numeric else "categorical",
                 "target_unique_count": len(set(target_values)),
                 "target_summary": (
-                    {
-                        "min": min(numeric_targets),
-                        "max": max(numeric_targets),
-                        "mean": sum(numeric_targets) / len(numeric_targets),
-                    }
+                    _numeric_target_summary(numeric_targets)
                     if numeric_targets
                     else {"classes": sorted(set(target_values))[:100]}
                 ),
+                "target_unit": target_unit,
+                "target_unit_declared": target_unit != "unspecified",
                 "feature_columns": feature_columns,
                 "numeric_columns": numeric_columns,
                 "categorical_columns": categorical_columns,
                 "ignored_columns": sorted(ignored_columns),
+                "target_value_space": "raw" if target_is_numeric else "categorical",
+                "target_transform": "none",
                 "missing_counts": missing_counts,
                 "rejected_count": len(rejected_rows),
                 "rejected_rows": rejected_rows[:50],
@@ -291,6 +384,9 @@ class TabularCsvAdapter:
                 "numeric_columns": numeric_columns,
                 "categorical_columns": categorical_columns,
                 "ignored_columns": sorted(ignored_columns),
+                "target_value_space": "raw" if target_is_numeric else "categorical",
+                "target_transform": "none",
+                "target_unit": target_unit,
             },
         )
 

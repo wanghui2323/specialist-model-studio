@@ -1,0 +1,415 @@
+{
+  "schema_version": "0.5",
+  "project": "Specialist Model Studio",
+  "iteration": "v0.9 Universal BYOM",
+  "gate": "universal-source-to-qualified-training-loop",
+  "updated_at": "2026-08-24",
+  "execution_mode": "vertical V1-V10 delivery mapped onto independent L0-L5 machine exit gates; GitHub publication is graded separately",
+  "primary_object": "TrainingTask",
+  "status_contract": {
+    "planned": "已进入范围，尚未开始实现",
+    "implementing": "正在建立实现或合同，尚未达到机器退出门",
+    "implemented": "保留状态；完成编码但尚未得到完整证据",
+    "verified": "保留状态；当前冻结 commit 的自动检查和真实运行证据通过",
+    "accepted": "保留状态；用户明确确认当前证据与边界"
+  },
+  "planning_state_rule": "只有当前冻结commit的整层机器退出门通过才可标记verified；V1只实现L1的C01-C04，V2补齐C05后才能关闭L1，V3以C06/C07/C15关闭L2；当前L0证据已失配，L0-L2只能为implemented，L3-L5为planned",
+  "blocking_contract": "blocked_by是独立阻断字段，不覆盖任务生命周期状态；阻断必须有结构化证据和恢复建议",
+  "support_definition": "任何具有可获得训练代码、权重和训练方式的开源模型均可进入同一分析、构建、资格试跑、训练、评测和交付流程；结果可以是qualified、blocked、failed或completed，不承诺所有第三方仓库必然训练成功",
+  "current_status_snapshot": {
+    "audited_at": "2026-08-24",
+    "pre_freeze_base_commit": "ce8130d58250c25ee991ca192104de37bf7b2468",
+    "worktree": "frozen_review_branch; exact clean state and source commit must be read from Git at review time",
+    "current_phase": {
+      "loop_id": "L2",
+      "vertical_version": "V3",
+      "status": "implemented",
+      "basis": "latest implemented vertical slice in the frozen review branch and Draft PR; not a verified or accepted loop"
+    },
+    "vertical_mapping": {
+      "V1": {"loop": "L1", "flows": ["C01", "C02", "C03", "C04"], "closes_loop": false},
+      "V2": {"loop": "L1", "flows": ["C05"], "closes_loop": true},
+      "V3": {"loop": "L2", "flows": ["C06", "C07", "C15"], "closes_loop": true}
+    },
+    "checks": {
+      "targeted_python": "authorization, blocker, resource and workspace focused regression 68/68 passed",
+      "full_python": "388/388 passed against a freshly built wheel in an external virtual environment; repository editable venv remains locally broken for 3 installed-CLI checks because macOS hides the editable .pth, while both production-wheel CLIs remain unaffected outside the repository",
+      "node": "29/29 passed after removing global mutating run tools",
+      "node_syntax": "passed",
+      "live_network": "public Hugging Face and GitHub positives, three safe negatives and snapshot-tamper negative passed on the frozen review candidate; formal L1 remains blocked because the private-repository unauthenticated/authenticated fixture was not provided",
+      "browser_desktop_mobile": "WorkBuddy-style current-ui 1440x900, 1024x768 and 390x844 passed on the frozen review candidate; a real public GitHub V3 journey completed search, explicit selection, immutable commit binding, analysis, plan approval, resource check and reload recovery with zero console, request or HTTP errors",
+      "restart_and_cold_clone": "fresh wheel install, both outside-cwd CLIs, packaged service, authorization negatives and task restart passed; a source archive matching the frozen tree reproduced Python 388/388, Node 29/29, browser contracts 4/4 and both CLIs, but this is not the formal Git-history cold-clone gate",
+      "task_owned_execution": "global create, cancel, resume, strategy and chat mutation surfaces fail closed; task start/resume/strategy reauthorize contract, owner, lineage, analysis, plan, resource fit and active blockers before Run creation",
+      "status_checker": "implemented with evidence-self, committed, staged, unstaged and untracked checks; existing l0 evidence correctly fails owned_paths_missing",
+      "v3_resource_endpoint": "analysis-only: a provisional resource budget creates no ResourceFitReport or Run; it returns a non-in-place-retryable blocker whose handoff action is continue_to_l3_qualification, without claiming qualification or training inside V3"
+    },
+    "review_rc_gate_state": {
+      "status": "not_formally_aggregated",
+      "reason": "review-candidate observations exist, but the five required_for_review_rc gates have not been emitted by one machine aggregator bound to the current exact commit",
+      "observed_evidence": [
+        "version sync and boundary truth tests",
+        "three-viewport conversation browser evidence",
+        "real public GitHub V3 journey evidence",
+        "existing registered Recipe training regressions",
+        "external non-editable wheel and source-tree reproduction"
+      ]
+    },
+    "release_readiness": "V3_implementation_complete_unreleased_review_candidate_not_formal_rc_gate_passed_not_loop_verified_not_release_ready"
+  },
+  "confirmed_decisions": [
+    "首批ModelSource为Hugging Face和GitHub，并固定到不可变commit",
+    "TrainingTask保持唯一主对象，动态能力构建成功后回到原task_id",
+    "不可信仓库代码和Agent生成代码只能在OCI或独立Worker中执行；无隔离运行时只能分析并阻断",
+    "v0.9只负责本机资源探测、降级建议与阻断，不建设云GPU调度",
+    "通用支持按同一闭环和有证据的结论定义，不按内置Recipe数量定义",
+    "代码冻结后才选择第三个未参与开发的模型进行盲测",
+    "本地验证、用户验收、GitHub CI与GitHub Release分别定级",
+    "构建失败只产出证据与建议；修复补丁必须由人工提供并批准，patch_origin只允许human",
+    "v0.9隔离执行为CPU-only；已检测的MPS/CUDA必须标记为不可用并说明原因"
+  ],
+  "release_tiers": {
+    "implementation_complete": "实现事实，不代表验证或用户验收",
+    "local_byom_verified": "当前冻结commit全部本地required gates通过",
+    "user_accepted": "用户明确确认当前证据与边界",
+    "github_ci_verified": "远程同一commit的required checks通过",
+    "github_released": "GitHub API验证merge、精确tag、公开Release及制品哈希"
+  },
+  "loops": [
+    {
+      "loop_id": "L0",
+      "name": "通用能力合同与事实基线",
+      "outcome": "通用支持、主对象、状态机、安全/资源边界和证据口径被机器合同冻结",
+      "status": "implemented",
+      "machine_exit_gate": {
+        "gate_id": "V09-L0-CONTRACT-BASELINE",
+        "required": true,
+        "acceptance": "结构化需求、双来源、对象状态机、当前代码/服务/测试/浏览器事实与发布分级一致；L0机器门通过并有独立证据，L1进入实现，UI和文档不声称v0.9已整体实现",
+        "evidence_refs": [
+          "plans/v0.9-universal-byom/acceptance-contract.md",
+          "plans/v0.9-universal-byom/baseline-evidence.json",
+          "plans/v0.9-universal-byom/l0-evidence.json",
+          "plans/v0.9-universal-byom/loop-tasks.json"
+        ]
+      },
+      "tasks": [
+        {
+          "id": "MH-900",
+          "title": "冻结Universal BYOM定义与唯一主对象",
+          "status": "implemented",
+          "depends_on": [],
+          "acceptance": "TrainingTask贯穿来源、Build、Run、Evaluation与Artifact；通用支持允许有证据的blocked/failed，不按Recipe数量或必然成功定义",
+          "evidence_refs": [
+            "plans/v0.9-universal-byom/acceptance-contract.md#1-通用支持的可检验定义",
+            "plans/v0.9-universal-byom/l0-evidence.json"
+          ],
+          "blocked_by": ["当前l0-evidence缺owned_paths且记录哈希已与当前合同文件漂移，需在冻结commit重新取证"]
+        },
+        {
+          "id": "MH-901",
+          "title": "重取当前实现与运行事实基线",
+          "status": "implemented",
+          "depends_on": [],
+          "acceptance": "Python、Node、服务、注册表、浏览器与真实训练家族数字来自当前分支，不沿用v0.7/v0.8旧结论",
+          "evidence_refs": [
+            "plans/v0.9-universal-byom/baseline-evidence.json",
+            "plans/v0.9-universal-byom/l0-evidence.json"
+          ],
+          "blocked_by": ["完整回归已在新wheel外部环境通过，但尚未在冻结commit重新生成L0基线与证据"]
+        },
+        {
+          "id": "MH-902",
+          "title": "建立L0-L5机器验收与发布分级合同",
+          "status": "implemented",
+          "depends_on": ["MH-900", "MH-901"],
+          "acceptance": "每层有独立required机器退出门；本地、用户、CI、GitHub Release分别输出；纯规划创建时不得预填implemented/verified/accepted，完成编码后才可进入implemented，只有机器证据或用户确认才能进入verified/accepted",
+          "evidence_refs": [
+            "plans/v0.9-universal-byom/acceptance-contract.md#5-l0l5-机器退出门",
+            "plans/v0.9-universal-byom/acceptance-contract.md#8-本地验收与-github-发布分级",
+            "plans/v0.9-universal-byom/l0-evidence.json"
+          ],
+          "blocked_by": ["状态检查器已完成并正确拒绝旧l0-evidence；仍需按新的两阶段冻结commit合同重新取证"]
+        }
+      ]
+    },
+    {
+      "loop_id": "L1",
+      "name": "双来源与仓库分析",
+      "outcome": "HF与GitHub模型均形成不可变、可追溯、可恢复的SourceSnapshot和RepositoryAnalysis",
+      "status": "implemented",
+      "machine_exit_gate": {
+        "gate_id": "V09-L1-DUAL-SOURCE",
+        "required": true,
+        "acceptance": "HF和GitHub各有真实commit解析、许可/文件/哈希证据；漂移、篡改、未知许可、无入口、取消和断网失败关闭；重启后保持同一task_id和snapshot版本",
+        "evidence_refs": ["acceptance/v0.9-gates.json#V09-L1-DUAL-SOURCE"]
+      },
+      "tasks": [
+        {
+          "id": "MH-910",
+          "title": "建立统一ModelSourceProvider与版本化SourceSnapshot",
+          "status": "implemented",
+          "depends_on": ["MH-902"],
+          "acceptance": "HF和GitHub输入都解析到40位commit并生成来源特有Manifest；凭据不进入任务、日志、报告或Git",
+          "evidence_refs": ["plans/v0.9-universal-byom/ITERATION-PLAN.md#v1--粘贴地址就能看到模型来源58h"],
+          "blocked_by": ["冻结候选已有 HF/GitHub 公开联网和真浏览器证据；私有仓库未认证/已认证双态 fixture 缺失，且尚无 C01-C04 完整证据包，不得标记verified"]
+        },
+        {
+          "id": "MH-911",
+          "title": "实现只读RepositoryAnalysis与可训练性判断",
+          "status": "implemented",
+          "depends_on": ["MH-910", "MH-912"],
+          "acceptance": "不import或执行第三方模块即可识别框架、训练入口、数据契约、依赖、许可和未知项",
+          "evidence_refs": ["plans/v0.9-universal-byom/ITERATION-PLAN.md#v2--看懂这个仓库46h"],
+          "blocked_by": ["冻结候选已有真实 GitHub 仓库浏览器、刷新和血缘恢复证据；仍未形成 C05 六点全量证据与完整 l1-evidence"]
+        },
+        {
+          "id": "MH-912",
+          "title": "完成来源解析负向、版本与重启恢复",
+          "status": "implemented",
+          "depends_on": ["MH-910"],
+          "acceptance": "branch/tag漂移只创建新版本；来源404/私库/无效revision/限流/哈希篡改和取消零Recipe零Run；重启保持原task_id",
+          "evidence_refs": ["plans/v0.9-universal-byom/ITERATION-PLAN.md#v1-2--真实负例"],
+          "blocked_by": ["公开来源联网负例与 snapshot 篡改负例已通过；私有仓库双态 fixture 与完整 L1 归档仍缺失"]
+        },
+        {
+          "id": "MH-913",
+          "title": "完成仓库分析负向、映射、取消与恢复",
+          "status": "implemented",
+          "depends_on": ["MH-911"],
+          "acceptance": "许可deny不得complete；无入口进入needs_input并可新建映射revision；损坏快照、分析取消和服务重启均保留同task证据且零Run",
+          "evidence_refs": ["plans/v0.9-universal-byom/ITERATION-PLAN.md#v2-4--关闭-l1-证据"],
+          "blocked_by": ["尚未形成C05 6/6与完整l1-evidence，L1不得verified"]
+        }
+      ]
+    },
+    {
+      "loop_id": "L2",
+      "name": "训练计划、环境锁与资源资格",
+      "outcome": "系统在执行第三方代码前给出可复核的训练方案、确定依赖和本机适配结论",
+      "status": "implemented",
+      "machine_exit_gate": {
+        "gate_id": "V09-L2-PLAN-RESOURCE",
+        "required": true,
+        "acceptance": "TrainingPlan、EnvironmentLock、ResourceFitReport绑定source commit；资源/平台/依赖不足在Run前阻断；降级生成新计划并重新确认且不降低release gates",
+        "evidence_refs": ["acceptance/v0.9-gates.json#V09-L2-PLAN-RESOURCE"]
+      },
+      "tasks": [
+        {
+          "id": "MH-920",
+          "title": "生成版本化TrainingPlan与数据/指标协议",
+          "status": "implemented",
+          "depends_on": ["MH-913"],
+          "acceptance": "计划明确框架、入口、模型、数据、参数、评测、推理、导出和预计资源，并绑定SourceSnapshot",
+          "evidence_refs": ["plans/v0.9-universal-byom/ITERATION-PLAN.md#v3--这台机器能不能训练它812h"],
+          "blocked_by": ["真实 GitHub 旅程已有同 commit 计划/审批和刷新证据；篡改、拒绝、过期与重启尚未聚合为 C06 6/6 证据包"]
+        },
+        {
+          "id": "MH-921",
+          "title": "解析哈希约束EnvironmentLock",
+          "status": "implemented",
+          "depends_on": ["MH-920"],
+          "acceptance": "依赖版本、源和平台可复现；浮动Git branch、未知下载URL和冲突依赖失败关闭",
+          "evidence_refs": ["plans/v0.9-universal-byom/ITERATION-PLAN.md#v3--这台机器能不能训练它812h"],
+          "blocked_by": ["EnvironmentLock尚无真实正例与重启证据"]
+        },
+        {
+          "id": "MH-922",
+          "title": "实现真实ResourceFitReport与降级修订",
+          "status": "implemented",
+          "depends_on": ["MH-921"],
+          "acceptance": "实时检测CPU、RAM、磁盘、CUDA/MPS；只有完整资源依据才能形成ResourceFitReport。provisional预算在Run前阻断，不生成Report/Run，并以retryable=false的continue_to_l3_qualification交接到L3；不得在V3原地补齐或声称已训练",
+          "evidence_refs": ["plans/v0.9-universal-byom/ITERATION-PLAN.md#v3--这台机器能不能训练它812h"],
+          "blocked_by": ["真实资源探测与 blocked_environment 浏览器证据已存在；fit、降级新计划和完整负例仍未聚合为 C07 6/6 证据包"]
+        },
+        {
+          "id": "MH-923",
+          "title": "完成资源和环境负向矩阵",
+          "status": "implemented",
+          "depends_on": ["MH-922"],
+          "acceptance": "RAM/磁盘/GPU不足、平台不兼容、bool/负数探测值、依赖冲突和超预算均产生真实阻断且零TrainingRun",
+          "evidence_refs": ["plans/v0.9-universal-byom/ITERATION-PLAN.md#v3--这台机器能不能训练它812h"],
+          "blocked_by": ["BlockerEvidence v0.2、规范错误映射与不可变 supersede 链已实现，真实 blocked_environment 已在浏览器刷新后保留；尚无 C15 6/6 的完整恢复与错误/取消证据包"]
+        },
+        {
+          "id": "MH-924",
+          "title": "使verified证据在commit、index与工作树变化后可靠失效",
+          "status": "implemented",
+          "depends_on": ["MH-923"],
+          "acceptance": "每层证据保存source_commit与owned_paths；已提交、暂存、未暂存及owned-path未跟踪文件任一变化均非零退出；检查器只报告不自动改ledger",
+          "evidence_refs": ["plans/v0.9-universal-byom/ITERATION-PLAN.md#v3-6-verified-失效机制"],
+          "blocked_by": ["检查器已覆盖evidence自身、commit、index、worktree和untracked owned paths；当前l0-evidence按预期失效，且尚未生成冻结commit的l2-evidence"]
+        }
+      ]
+    },
+    {
+      "loop_id": "L3",
+      "name": "隔离构建与动态能力注册",
+      "outcome": "Code Agent可安全完成Build→Test→Register→Resume，并保持原训练任务身份",
+      "status": "planned",
+      "machine_exit_gate": {
+        "gate_id": "V09-L3-SANDBOX-BUILD",
+        "required": true,
+        "acceptance": "第三方代码仅在可强杀的独立Worker/OCI中运行；恶意仓库矩阵失败关闭；资格试跑通过后原子注册精确RecipeVersion并回到原task_id",
+        "evidence_refs": ["acceptance/v0.9-gates.json#V09-L3-SANDBOX-BUILD"]
+      },
+      "tasks": [
+        {
+          "id": "MH-930",
+          "title": "建立隔离Worker/OCI与版本化执行协议",
+          "status": "planned",
+          "depends_on": ["MH-923"],
+          "acceptance": "无隔离运行时只能分析并blocked；Worker限制文件、网络、进程、CPU、RAM、磁盘和时长，主服务不import第三方代码",
+          "evidence_refs": [],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-931",
+          "title": "实现人工补丁审批与BuildAttempt修复链",
+          "status": "planned",
+          "depends_on": ["MH-930"],
+          "acceptance": "系统只报告构建证据与建议；人工提供并批准的补丁产生不可变child BuildAttempt，patch_origin只允许human，Agent不得自动生成或应用补丁",
+          "evidence_refs": [],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-932",
+          "title": "实现资格试跑、原子注册与自动Resume",
+          "status": "planned",
+          "depends_on": ["MH-931"],
+          "acceptance": "只有安全、Schema、测试和资格试跑全通过才注册RecipeVersion；失败、取消、超时和强杀零半成品，并回到原task_id",
+          "evidence_refs": [],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-933",
+          "title": "完成恶意仓库与Worker故障负向矩阵",
+          "status": "planned",
+          "depends_on": ["MH-932"],
+          "acceptance": "路径逃逸、宿主/密钥读取、未批准网络、fork bomb、资源耗尽、快照/数据/制品篡改均被阻断；Worker崩溃后主服务可用且任务可恢复",
+          "evidence_refs": [],
+          "blocked_by": []
+        }
+      ]
+    },
+    {
+      "loop_id": "L4",
+      "name": "Schema驱动的通用训练产品闭环",
+      "outcome": "新模型无需前端硬编码即可完成数据、训练、评测、推理和交付",
+      "status": "planned",
+      "machine_exit_gate": {
+        "gate_id": "V09-L4-SCHEMA-RUNTIME",
+        "required": true,
+        "acceptance": "Runner/Worker使用版本化JSON/NDJSON协议；前端由Recipe Schema呈现数据/参数/指标/推理/制品；同一task_id在刷新和重启后保持完整血缘且无假进度",
+        "evidence_refs": ["acceptance/v0.9-gates.json#V09-L4-SCHEMA-RUNTIME"]
+      },
+      "tasks": [
+        {
+          "id": "MH-940",
+          "title": "建立Runner/Worker通用训练协议",
+          "status": "planned",
+          "depends_on": ["MH-933"],
+          "acceptance": "输入、事件、指标、失败和制品使用版本化Schema；Run取消/重试/恢复不依赖模型ID分支",
+          "evidence_refs": [],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-941",
+          "title": "实现Schema驱动数据、参数、评测、推理与交付",
+          "status": "planned",
+          "depends_on": ["MH-940"],
+          "acceptance": "新Recipe注册后无需修改app.js即可呈现数据要求、训练参数、指标、失败样本、推理表单和ArtifactBundle",
+          "evidence_refs": [],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-942",
+          "title": "闭合同、数据、Run与制品血缘",
+          "status": "planned",
+          "depends_on": ["MH-941"],
+          "acceptance": "数据或合同变化使确认失效；训练时复核数据；Run、模型、评测、推理和下载哈希均关联同一血缘",
+          "evidence_refs": [],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-943",
+          "title": "实现失败、取消、重试与服务重启恢复",
+          "status": "planned",
+          "depends_on": ["MH-942"],
+          "acceptance": "完成/质量/证据/发布结论分离；主服务或Worker重启后从原任务恢复，无动画伪进度或旧结果冒充当前结果",
+          "evidence_refs": [],
+          "blocked_by": []
+        }
+      ]
+    },
+    {
+      "loop_id": "L5",
+      "name": "冻结后盲测与可复现验收",
+      "outcome": "双来源、未知模型、负向安全和真实用户界面共同证明通用执行协议，而非模型特判",
+      "status": "planned",
+      "machine_exit_gate": {
+        "gate_id": "V09-L5-BLIND-REPRODUCTION",
+        "required": true,
+        "acceptance": "代码冻结前HF与GitHub各一真实闭环；冻结后独立选择第三个未参与开发的盲测模型；恶意/资源负向、双视口、真实PID重启、冷克隆和所有P0六点闭环通过",
+        "evidence_refs": [
+          "acceptance/v0.9-gates.json#V09-L5-BLIND-REPRODUCTION",
+          "plans/v0.9-universal-byom/acceptance-contract.md#5-l0l5-机器退出门"
+        ]
+      },
+      "tasks": [
+        {
+          "id": "MH-950",
+          "title": "完成HF标准模型真实纵向闭环",
+          "status": "planned",
+          "depends_on": ["MH-943"],
+          "acceptance": "从真实HF commit、分析、计划、资源、隔离构建到训练、评测、推理和制品使用同一task_id且无模型特判",
+          "evidence_refs": [],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-951",
+          "title": "完成GitHub自定义训练仓库真实纵向闭环",
+          "status": "planned",
+          "depends_on": ["MH-943"],
+          "acceptance": "从真实GitHub commit进入同一通用协议并产生可复核Run与ArtifactBundle，不复用HF专用分支",
+          "evidence_refs": [],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-952",
+          "title": "冻结代码并执行第三模型盲测",
+          "status": "planned",
+          "depends_on": ["MH-950", "MH-951"],
+          "acceptance": "冻结后按可复核规则选择未参与开发的模型；源码/Fixture/注册表无repo ID硬编码；修改产品代码后旧盲测失效并重新选择",
+          "evidence_refs": [],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-953",
+          "title": "完成恶意与资源负向验收",
+          "status": "planned",
+          "depends_on": ["MH-952"],
+          "acceptance": "恶意仓库、资源不足、许可拒绝、来源漂移、依赖冲突、下载中断、取消、Worker强杀和制品篡改全部失败关闭且保留恢复证据",
+          "evidence_refs": [],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-954",
+          "title": "完成真浏览器、进程重启与冷克隆",
+          "status": "planned",
+          "depends_on": ["MH-953"],
+          "acceptance": "1440×900与390×844全流程、Console/Network/overflow、不同OS PID重启、git clone --no-local --no-hardlinks全新环境复现和全部P0六点闭环通过",
+          "evidence_refs": [],
+          "blocked_by": []
+        },
+        {
+          "id": "MH-955",
+          "title": "独立验证GitHub发布链",
+          "status": "planned",
+          "depends_on": ["MH-954"],
+          "acceptance": "本地验收不要求发布；只有远程同一commit、required CI、merge、精确tag、公开Release和制品哈希由GitHub API通过时github_released才为true",
+          "evidence_refs": [],
+          "blocked_by": []
+        }
+      ]
+    }
+  ]
+}

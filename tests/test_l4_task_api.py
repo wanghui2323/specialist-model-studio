@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import io
+import os
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
@@ -14,6 +16,14 @@ except ImportError:  # pragma: no cover
     TestClient = None  # type: ignore[assignment]
 
 from model_harness.server import create_app
+from tests.contract_confirmation import contract_confirmation_payload
+from tests.run_authorization import authorize_task_run, start_authorized_task_run
+
+
+AGENT_BRIDGE_TOKEN = "test-agent-bridge-token"
+AGENT_BRIDGE_HEADERS = {
+    "X-Model-Harness-Agent-Token": AGENT_BRIDGE_TOKEN,
+}
 
 
 def _image_dataset_zip() -> bytes:
@@ -46,7 +56,7 @@ def _new_image() -> bytes:
     return output.getvalue()
 
 
-def _completed_image_task(client: TestClient, app: object) -> tuple[str, str]:
+def _ready_image_task(client: TestClient) -> str:
     created = client.post(
         "/tasks",
         json={
@@ -75,25 +85,158 @@ def _completed_image_task(client: TestClient, app: object) -> tuple[str, str]:
     assert updated.status_code == 200, updated.text
     confirmed = client.post(
         f"/tasks/{task_id}/confirm",
-        json={
-            "data_authorized": True,
-            "labels_reviewed": True,
-            "gates_reviewed": True,
-        },
+        json=contract_confirmation_payload(client, task_id),
     )
     assert confirmed.status_code == 200, confirmed.text
-    started = client.post(f"/tasks/{task_id}/runs")
+    return task_id
+
+
+def _completed_image_task(client: TestClient, app: object) -> tuple[str, str]:
+    task_id = _ready_image_task(client)
+    started = start_authorized_task_run(client, task_id)
     assert started.status_code == 202, started.text
     run_id = started.json()["task"]["current_run_id"]
     app.state.run_service.wait(run_id, timeout=30)  # type: ignore[attr-defined]
     return task_id, run_id
 
 
+def _authorized_sample_inference(
+    client: TestClient,
+    task_id: str,
+    run_id: str,
+    payload: bytes,
+    *,
+    filename: str,
+    checkpoint_id: str,
+):
+    uploaded = client.post(
+        f"/tasks/{task_id}/runs/{run_id}/inference-inputs",
+        content=payload,
+        headers={"X-Filename": filename, "X-Sample-Type": "image"},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    inference_input = uploaded.json()["inference_input"]
+    authorized = client.post(
+        f"/tasks/{task_id}/runs/{run_id}/sample-inference-authorizations",
+        headers=AGENT_BRIDGE_HEADERS,
+        json={
+            "inference_input_id": inference_input["inference_input_id"],
+            "inference_input_sha256": inference_input["sha256"],
+            "approval": {"actor": "user", "checkpoint_id": checkpoint_id},
+        },
+    )
+    assert authorized.status_code == 201, authorized.text
+    authorization_body = authorized.json()
+    authorization = authorization_body["sample_inference_authorization"]
+    return client.post(
+        f"/tasks/{task_id}/runs/{run_id}/inference-inputs/"
+        f"{inference_input['inference_input_id']}/execute",
+        json={
+            "sample_inference_authorization_id": authorization[
+                "authorization_id"
+            ],
+            "authorization_token": authorization_body["authorization_token"],
+            "sample_inference_request_sha256": authorization["scope_sha256"],
+        },
+    )
+
+
 @unittest.skipIf(TestClient is None, "server extra is not installed")
 class L4TaskApiTests(unittest.TestCase):
+    def test_run_start_requires_verified_one_shot_backend_authorization(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.dict(
+                os.environ,
+                {"MODEL_HARNESS_AGENT_BRIDGE_TOKEN": AGENT_BRIDGE_TOKEN},
+            ):
+                app = create_app(Path(temporary) / "runs")
+            with TestClient(app) as client:  # type: ignore[misc]
+                task_id = _ready_image_task(client)
+
+                bypassed = client.post(f"/tasks/{task_id}/runs")
+                self.assertEqual(bypassed.status_code, 409, bypassed.text)
+                task = client.get(f"/tasks/{task_id}").json()["task"]
+                self.assertIsNone(task["current_run_id"])
+                self.assertEqual(task["run_ids"], [])
+
+                forged = client.post(
+                    f"/tasks/{task_id}/run-authorizations",
+                    json={
+                        "contract_sha256": task["confirmed_contract_sha256"],
+                        "dataset_id": task["dataset_id"],
+                        "dataset_fingerprint_sha256": task["dataset_report"][
+                            "fingerprint_sha256"
+                        ],
+                        "spec_revision": task["current_spec_revision"],
+                        "approval": {
+                            "actor": "user",
+                            "checkpoint_id": "forged-native-approval",
+                        },
+                    },
+                )
+                self.assertEqual(forged.status_code, 403, forged.text)
+
+                issued = authorize_task_run(
+                    client,
+                    task_id,
+                    checkpoint_id="native-run-approval:l4-hard-gate",
+                )
+                authorization = issued["run_authorization"]
+                self.assertEqual(authorization["action"], "start_task_run")
+                self.assertEqual(
+                    authorization["approval_decision"]["verified_by"],
+                    "agent_bridge_token",
+                )
+                self.assertEqual(
+                    authorization["scope"]["prior_task_status"],
+                    "ready",
+                )
+                self.assertIsNone(authorization["scope"]["prior_run_id"])
+
+                wrong_token = client.post(
+                    f"/tasks/{task_id}/runs",
+                    json={
+                        "run_authorization_id": authorization["authorization_id"],
+                        "authorization_token": "not-the-issued-token",
+                        "run_request_sha256": authorization["scope_sha256"],
+                    },
+                )
+                self.assertEqual(wrong_token.status_code, 409, wrong_token.text)
+
+                started = client.post(
+                    f"/tasks/{task_id}/runs",
+                    json={
+                        "run_authorization_id": authorization["authorization_id"],
+                        "authorization_token": issued["authorization_token"],
+                        "run_request_sha256": authorization["scope_sha256"],
+                    },
+                )
+                self.assertEqual(started.status_code, 202, started.text)
+                run_id = started.json()["task"]["current_run_id"]
+                self.assertTrue(run_id)
+
+                replayed = client.post(
+                    f"/tasks/{task_id}/runs",
+                    json={
+                        "run_authorization_id": authorization["authorization_id"],
+                        "authorization_token": issued["authorization_token"],
+                        "run_request_sha256": authorization["scope_sha256"],
+                    },
+                )
+                self.assertEqual(replayed.status_code, 409, replayed.text)
+                self.assertEqual(
+                    client.get(f"/tasks/{task_id}").json()["task"]["run_ids"],
+                    [run_id],
+                )
+                app.state.run_service.wait(run_id, timeout=30)  # type: ignore[attr-defined]
+
     def test_task_owned_evaluation_sample_and_bundle_form_a_real_product_loop(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            app = create_app(Path(temporary) / "runs")
+            with patch.dict(
+                os.environ,
+                {"MODEL_HARNESS_AGENT_BRIDGE_TOKEN": AGENT_BRIDGE_TOKEN},
+            ):
+                app = create_app(Path(temporary) / "runs")
             with TestClient(app) as client:  # type: ignore[misc]
                 task_id, run_id = _completed_image_task(client, app)
 
@@ -115,7 +258,7 @@ class L4TaskApiTests(unittest.TestCase):
                     "evaluation",
                 )
 
-                inferred = client.post(
+                legacy = client.post(
                     f"/tasks/{task_id}/runs/{run_id}/sample-inferences",
                     content=_new_image(),
                     headers={
@@ -123,6 +266,15 @@ class L4TaskApiTests(unittest.TestCase):
                         "X-Filename": "new-red-part.png",
                         "X-Sample-Type": "image",
                     },
+                )
+                self.assertEqual(legacy.status_code, 410, legacy.text)
+                inferred = _authorized_sample_inference(
+                    client,
+                    task_id,
+                    run_id,
+                    _new_image(),
+                    filename="new-red-part.png",
+                    checkpoint_id="native-sample-loop-approval",
                 )
                 self.assertEqual(inferred.status_code, 201, inferred.text)
                 inference_body = inferred.json()
@@ -153,9 +305,63 @@ class L4TaskApiTests(unittest.TestCase):
                     sample_check,
                 )
 
-                built = client.post(
+                unauthorized_build = client.post(
                     f"/tasks/{task_id}/runs/{run_id}/artifact-bundles",
                     json={"sample_inference_check_id": sample_check["check_id"]},
+                )
+                self.assertEqual(unauthorized_build.status_code, 409)
+
+                authorization_payload = {
+                    "evaluation_report_id": evaluation_body[
+                        "evaluation_report"
+                    ]["report_id"],
+                    "evaluation_report_sha256": evaluation_body[
+                        "evaluation_report"
+                    ]["report_sha256"],
+                    "sample_inference_check_id": sample_check["check_id"],
+                    "approval": {
+                        "actor": "user",
+                        "checkpoint_id": "native-build-checkpoint-1",
+                    },
+                }
+                forged_approval = client.post(
+                    f"/tasks/{task_id}/runs/{run_id}/artifact-bundle-authorizations",
+                    json=authorization_payload,
+                )
+                self.assertEqual(forged_approval.status_code, 403)
+                wrong_bridge = client.post(
+                    f"/tasks/{task_id}/runs/{run_id}/artifact-bundle-authorizations",
+                    json=authorization_payload,
+                    headers={"X-Model-Harness-Agent-Token": "wrong"},
+                )
+                self.assertEqual(wrong_bridge.status_code, 403)
+                authorized = client.post(
+                    f"/tasks/{task_id}/runs/{run_id}/artifact-bundle-authorizations",
+                    json=authorization_payload,
+                    headers=AGENT_BRIDGE_HEADERS,
+                )
+                self.assertEqual(authorized.status_code, 201, authorized.text)
+                build_authorization = authorized.json()
+                build_record = build_authorization[
+                    "artifact_bundle_authorization"
+                ]
+                self.assertEqual(
+                    build_record["approval_decision"]["verified_by"],
+                    "agent_bridge_token",
+                )
+
+                built = client.post(
+                    f"/tasks/{task_id}/runs/{run_id}/artifact-bundles",
+                    json={
+                        "artifact_bundle_authorization_id": build_record[
+                            "authorization_id"
+                        ],
+                        "authorization_token": build_authorization[
+                            "authorization_token"
+                        ],
+                        "bundle_request_sha256": build_record["scope_sha256"],
+                        "sample_inference_check_id": sample_check["check_id"],
+                    },
                 )
                 self.assertEqual(built.status_code, 201, built.text)
                 bundle = built.json()["artifact_bundle"]
@@ -164,6 +370,29 @@ class L4TaskApiTests(unittest.TestCase):
                 self.assertFalse(
                     bundle["manifest"]["privacy_boundary"]["raw_data_included"]
                 )
+                lineage = bundle["manifest"]["authorization_lineage"]
+                self.assertEqual(
+                    lineage["authorization_id"],
+                    build_record["authorization_id"],
+                )
+                self.assertEqual(
+                    lineage["approval_checkpoint_id"],
+                    "native-build-checkpoint-1",
+                )
+                replayed_build = client.post(
+                    f"/tasks/{task_id}/runs/{run_id}/artifact-bundles",
+                    json={
+                        "artifact_bundle_authorization_id": build_record[
+                            "authorization_id"
+                        ],
+                        "authorization_token": build_authorization[
+                            "authorization_token"
+                        ],
+                        "bundle_request_sha256": build_record["scope_sha256"],
+                        "sample_inference_check_id": sample_check["check_id"],
+                    },
+                )
+                self.assertEqual(replayed_build.status_code, 409)
 
                 bundles = client.get(
                     f"/tasks/{task_id}/runs/{run_id}/artifact-bundles"
@@ -177,9 +406,46 @@ class L4TaskApiTests(unittest.TestCase):
                     f"/tasks/{task_id}/runs/{run_id}/artifact-bundles/{bundle_id}"
                 )
                 self.assertEqual(bundle_detail.status_code, 200, bundle_detail.text)
-                downloaded = client.get(
+                bare_download = client.get(
                     f"/tasks/{task_id}/runs/{run_id}/artifact-bundles/"
                     f"{bundle_id}/download"
+                )
+                self.assertEqual(bare_download.status_code, 405)
+                download_authorized = client.post(
+                    f"/tasks/{task_id}/runs/{run_id}/artifact-bundles/"
+                    f"{bundle_id}/download-authorizations",
+                    json={
+                        "manifest_sha256": bundle["manifest_sha256"],
+                        "archive_sha256": bundle["archive"]["sha256"],
+                        "approval": {
+                            "actor": "user",
+                            "checkpoint_id": "native-download-checkpoint-1",
+                        },
+                    },
+                    headers=AGENT_BRIDGE_HEADERS,
+                )
+                self.assertEqual(
+                    download_authorized.status_code,
+                    201,
+                    download_authorized.text,
+                )
+                download_authorization = download_authorized.json()
+                download_record = download_authorization[
+                    "artifact_bundle_download_authorization"
+                ]
+                download_payload = {
+                    "artifact_bundle_download_authorization_id": download_record[
+                        "authorization_id"
+                    ],
+                    "authorization_token": download_authorization[
+                        "authorization_token"
+                    ],
+                    "download_request_sha256": download_record["scope_sha256"],
+                }
+                downloaded = client.post(
+                    f"/tasks/{task_id}/runs/{run_id}/artifact-bundles/"
+                    f"{bundle_id}/download",
+                    json=download_payload,
                 )
                 self.assertEqual(downloaded.status_code, 200, downloaded.text)
                 self.assertEqual(downloaded.headers["content-type"], "application/zip")
@@ -189,10 +455,38 @@ class L4TaskApiTests(unittest.TestCase):
                 self.assertIn("evidence/evaluation_report.json", names)
                 self.assertIn("evidence/inference_check.json", names)
                 self.assertNotIn("task_contract.json", names)
+                replayed_download = client.post(
+                    f"/tasks/{task_id}/runs/{run_id}/artifact-bundles/"
+                    f"{bundle_id}/download",
+                    json=download_payload,
+                )
+                self.assertEqual(replayed_download.status_code, 409)
+                build_audit = client.get(
+                    f"/tasks/{task_id}/delivery-authorizations/"
+                    f"{build_record['authorization_id']}"
+                )
+                self.assertEqual(build_audit.status_code, 200, build_audit.text)
+                self.assertEqual(
+                    build_audit.json()["delivery_authorization"]["status"],
+                    "consumed",
+                )
+                download_audit = client.get(
+                    f"/tasks/{task_id}/delivery-authorizations/"
+                    f"{download_record['authorization_id']}"
+                )
+                self.assertEqual(download_audit.status_code, 200, download_audit.text)
+                self.assertEqual(
+                    download_audit.json()["delivery_authorization"]["status"],
+                    "consumed",
+                )
 
     def test_failed_sample_and_cross_task_access_preserve_run_lineage(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            app = create_app(Path(temporary) / "runs")
+            with patch.dict(
+                os.environ,
+                {"MODEL_HARNESS_AGENT_BRIDGE_TOKEN": AGENT_BRIDGE_TOKEN},
+            ):
+                app = create_app(Path(temporary) / "runs")
             with TestClient(app) as client:  # type: ignore[misc]
                 owner_task_id, run_id = _completed_image_task(client, app)
                 before_owner = client.get(f"/tasks/{owner_task_id}").json()["task"]
@@ -201,10 +495,13 @@ class L4TaskApiTests(unittest.TestCase):
                     item["run_id"] for item in app.state.run_service.list_runs()
                 ]
 
-                invalid = client.post(
-                    f"/tasks/{owner_task_id}/runs/{run_id}/sample-inferences",
-                    content=b"not an image",
-                    headers={"X-Filename": "broken.png", "X-Sample-Type": "image"},
+                invalid = _authorized_sample_inference(
+                    client,
+                    owner_task_id,
+                    run_id,
+                    b"not an image",
+                    filename="broken.png",
+                    checkpoint_id="native-blocked-sample-approval",
                 )
                 self.assertEqual(invalid.status_code, 422, invalid.text)
                 invalid_body = invalid.json()
@@ -235,7 +532,7 @@ class L4TaskApiTests(unittest.TestCase):
                 )
                 self.assertEqual(cross_evaluation.status_code, 409)
                 cross_sample = client.post(
-                    f"/tasks/{other_task_id}/runs/{run_id}/sample-inferences",
+                    f"/tasks/{other_task_id}/runs/{run_id}/inference-inputs",
                     content=_new_image(),
                     headers={"X-Filename": "cross.png", "X-Sample-Type": "image"},
                 )

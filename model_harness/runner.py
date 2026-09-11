@@ -14,9 +14,10 @@ import numpy as np
 import sklearn
 
 from .contracts import load_contract, validate_contract
-from .errors import RunCancelled
+from .errors import ContractError, RunCancelled
 from .evidence import EvaluationReport
 from .io_utils import read_json, sha256_file, write_json
+from .launch_preflight import evaluate_launch_resource_preflight
 from .optimization import attach_provenance, propose_strategies_with_provenance
 from .plugins import PluginRegistry, default_registry
 from .state import RunState
@@ -30,7 +31,7 @@ def _safe_slug(value: str) -> str:
     return slug or "model-run"
 
 
-def _default_run_id(task_id: str) -> str:
+def new_run_id(task_id: str) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     return f"{stamp}-{_safe_slug(task_id)}"
 
@@ -78,7 +79,7 @@ def _write_manifest(
         },
         "contract_snapshot_sha256": sha256_file(run_dir / "task_contract.json"),
         "artifacts": artifacts,
-        "reproduce": "small-model-harness run <task_contract.json>",
+        "reproduce": "specialist-model-studio run <task_contract.json>",
     }
     write_json(run_dir / "run_manifest.json", manifest)
     return manifest
@@ -90,12 +91,29 @@ def prepare_run(
     run_id: str | None = None,
     registry: PluginRegistry | None = None,
     parent_run_id: str | None = None,
+    workspace_task_id: str | None = None,
+    workspace_root: str | Path | None = None,
 ) -> Path:
     selected_registry = registry or default_registry()
     raw = _resolve_contract(contract, selected_registry)
     plugin = selected_registry.get_recipe(str(raw["recipe"]))
     resolved_runs_dir = Path(runs_dir).expanduser().resolve()
-    selected_run_id = _safe_slug(run_id or _default_run_id(str(raw["task_id"])))
+    contract_task_id = str(raw["task_id"])
+    resolved_workspace_root = (
+        Path(workspace_root).expanduser().resolve()
+        if workspace_root is not None
+        else resolved_runs_dir / "_workspace"
+    )
+    owned_task_path = resolved_workspace_root / "tasks" / contract_task_id / "task.json"
+    if workspace_task_id is not None and workspace_task_id != contract_task_id:
+        raise ContractError("workspace task authorization does not match contract task_id")
+    if owned_task_path.is_file() and workspace_task_id != contract_task_id:
+        raise ContractError(
+            "workspace-owned tasks can only create runs through TrainingWorkspace"
+        )
+    if workspace_task_id is not None and not owned_task_path.is_file():
+        raise ContractError("workspace task authorization references an unknown task")
+    selected_run_id = _safe_slug(run_id or new_run_id(contract_task_id))
     run_dir = resolved_runs_dir / selected_run_id
     if run_dir.exists():
         raise FileExistsError(f"run directory already exists: {run_dir}")
@@ -149,6 +167,24 @@ def execute_run(
         _check_cancel(state, cancel_check)
         stage_started = time.perf_counter()
         state.transition("preflight")
+        launch_resource_preflight = evaluate_launch_resource_preflight(
+            raw,
+            disk_path=resolved,
+        )
+        state.event(
+            "preflight.launch_resources_checked",
+            launch_resource_preflight,
+        )
+        if launch_resource_preflight["decision"] == "blocked":
+            failed_checks = [
+                str(item.get("code"))
+                for item in launch_resource_preflight["checks"]
+                if item.get("passed") is not True
+            ]
+            raise ContractError(
+                "launch resource preflight blocked training: "
+                + ", ".join(failed_checks)
+            )
         timings_ms["preflight"] = (time.perf_counter() - stage_started) * 1000
         state.event(
             "preflight.completed",
@@ -156,6 +192,9 @@ def execute_run(
                 "recipe": raw["recipe"],
                 "mode": raw["interaction"]["mode"],
                 "candidate_count": len(raw["model_selection"]["candidates"]),
+                "launch_resource_decision": launch_resource_preflight[
+                    "decision"
+                ],
                 "duration_ms": timings_ms["preflight"],
             },
         )

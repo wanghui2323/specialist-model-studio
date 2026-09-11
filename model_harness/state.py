@@ -12,6 +12,7 @@ from .io_utils import read_json, write_json
 
 
 SCHEMA_VERSION = "0.2"
+_STATE_IO_LOCK = RLock()
 ACTIVE_STATUSES = {
     "created",
     "queued",
@@ -114,8 +115,27 @@ class RunState:
         return bool(self.data.get("cancel_requested", False))
 
     def _save(self) -> None:
-        self.data["updated_at_utc"] = utc_now()
-        write_json(self.state_path, self.data)
+        with _STATE_IO_LOCK:
+            self._merge_persisted_control_state()
+            self.data["updated_at_utc"] = utc_now()
+            write_json(self.state_path, self.data)
+
+    def _merge_persisted_control_state(self) -> None:
+        """Never let a stale worker overwrite a concurrent cancel request."""
+
+        if not self.state_path.is_file():
+            return
+        persisted = read_json(self.state_path)
+        self.data["event_seq"] = max(
+            int(self.data.get("event_seq", 0)),
+            int(persisted.get("event_seq", 0)),
+        )
+        if persisted.get("cancel_requested") is True:
+            self.data["cancel_requested"] = True
+            if persisted.get("cancel_reason") is not None:
+                self.data["cancel_reason"] = persisted.get("cancel_reason")
+            if isinstance(persisted.get("cancel_request"), dict):
+                self.data["cancel_request"] = dict(persisted["cancel_request"])
 
     def event(
         self,
@@ -123,7 +143,8 @@ class RunState:
         payload: dict[str, Any],
         stage: str | None = None,
     ) -> dict[str, Any]:
-        with self._lock:
+        with self._lock, _STATE_IO_LOCK:
+            self._merge_persisted_control_state()
             sequence = int(self.data.get("event_seq", 0)) + 1
             record = {
                 "schema_version": SCHEMA_VERSION,
@@ -159,22 +180,58 @@ class RunState:
                 stage=new_status,
             )
 
-    def request_cancel(self, reason: str = "requested by user") -> bool:
+    def request_cancel(
+        self,
+        reason: str = "requested by user",
+        *,
+        actor: str = "user",
+        cancellation_kind: str = "user_requested",
+        scope: str = "training_run",
+    ) -> bool:
         with self._lock:
             if self.status not in ACTIVE_STATUSES:
                 return False
+            request = {
+                "actor": actor,
+                "kind": cancellation_kind,
+                "reason": reason,
+                "scope": scope,
+                "requested_at_utc": utc_now(),
+            }
             self.data["cancel_requested"] = True
             self.data["cancel_reason"] = reason
+            self.data["cancel_request"] = request
             self._save()
-            self.event("run.cancel_requested", {"reason": reason})
+            self.event("run.cancel_requested", request)
             return True
 
-    def cancel(self, reason: str = "requested by user") -> None:
+    def cancel(
+        self,
+        reason: str = "requested by user",
+        *,
+        actor: str = "user",
+        cancellation_kind: str = "user_requested",
+        scope: str = "training_run",
+    ) -> None:
         current = self.status
         if "cancelled" not in ALLOWED_TRANSITIONS.get(current, set()):
             return
-        self.transition("cancelled", cancel_reason=reason)
-        self.event("run.cancelled", {"from": current, "reason": reason})
+        request = self.data.get("cancel_request")
+        if not isinstance(request, dict):
+            request = {
+                "actor": actor,
+                "kind": cancellation_kind,
+                "reason": reason,
+                "scope": scope,
+                "requested_at_utc": utc_now(),
+            }
+        effective_reason = str(request.get("reason") or reason)
+        self.transition(
+            "cancelled",
+            cancel_reason=effective_reason,
+            cancel_request=request,
+        )
+        self.event("run.cancelled", {"from": current, **request})
 
     def interrupt(self, message: str) -> None:
         current = self.status

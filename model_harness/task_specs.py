@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 from typing import Any
 
 
@@ -75,6 +76,37 @@ FAMILY_DETAILS: dict[str, dict[str, str]] = {
 
 TASK_FAMILY_VALUES = tuple(FAMILY_DETAILS)
 
+_FAMILY_SCOPED_CAPABILITY_FIELDS = (
+    "target_kind",
+    "target_column",
+    "primary_metric",
+    "data_adapter",
+)
+
+MODALITY_CLARIFICATION_FAMILIES: dict[str, tuple[str, ...]] = {
+    "audio": ("audio_classification", "asr", "speech_synthesis", "custom"),
+    "image": (
+        "image_classification",
+        "ocr",
+        "object_detection",
+        "segmentation",
+        "custom",
+    ),
+    "tabular": (
+        "tabular_classification",
+        "tabular_regression",
+        "time_series_forecasting",
+        "anomaly_detection",
+        "custom",
+    ),
+    "time_series": (
+        "time_series_forecasting",
+        "anomaly_detection",
+        "custom",
+    ),
+    "text": ("text_classification", "named_entity_recognition", "custom"),
+}
+
 FAMILY_ALIASES = {
     "classification": "classification",
     "image_classification": "image_classification",
@@ -141,11 +173,51 @@ def normalize_family(value: Any) -> str | None:
     return FAMILY_ALIASES.get(selected)
 
 
+def modality_from_candidate_families(values: list[Any]) -> str | None:
+    """Recover the clarified modality when the user selects ``custom``.
+
+    A custom task deliberately has no predeclared output family, but it should
+    not discard an already-established input modality such as image or audio.
+    The candidate set is backend-owned decision evidence, so it is safer than
+    guessing from arbitrary prose during the revision write.
+    """
+
+    families = {
+        normalized
+        for value in values
+        if (normalized := normalize_family(value)) not in {None, "custom"}
+    }
+    if not families:
+        return None
+    matches = [
+        modality
+        for modality, candidates in MODALITY_CLARIFICATION_FAMILIES.items()
+        if families <= (set(candidates) - {"custom"})
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def capability_for_family(
     family: str,
     current: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Return capability facts that are internally consistent with ``family``.
+
+    A known family transition invalidates output, metric and adapter choices
+    owned by the previous family. Same-family updates, and requests whose
+    previous family cannot be inferred, retain user-provided details.
+    """
+
     result = deepcopy(current or {})
+    previous_family = normalize_family(result.get("family"))
+    if previous_family is None:
+        previous_family = _family_from_capability(
+            str(result.get("modality", "")).strip().lower(),
+            str(result.get("objective", "")).strip().lower(),
+        )
+    if previous_family is not None and previous_family != family:
+        for key in _FAMILY_SCOPED_CAPABILITY_FIELDS:
+            result.pop(key, None)
     result["family"] = family
     if family == "image_classification":
         result.update({"modality": "image", "objective": "classification"})
@@ -234,7 +306,22 @@ def capability_decision(
     looks_audio = _looks_audio(text, modality)
     looks_image = _looks_image(text, modality)
     looks_tabular = _looks_tabular(text, modality)
+    # The temporal conflict guard must not turn an explicitly rejected option
+    # into a requirement. Keep the original goal unchanged in the TaskSpec.
+    temporal_text = _positive_temporal_text(text)
+    looks_time_series = _looks_time_series(temporal_text, modality)
     looks_text = _looks_text(text, modality)
+    explicit_custom_intent = _contains_any(
+        text,
+        "其他专用模型能力",
+        "其他专用模型",
+        "自定义模型能力",
+        "自定义输入输出",
+        "custom model",
+        "custom output",
+    )
+    if explicit_custom_intent:
+        reason_codes.append("text_explicitly_requests_custom_output")
 
     asr_intent = _contains_any(
         text,
@@ -361,7 +448,7 @@ def capability_decision(
         reason_codes.append("text_mentions_named_entities")
 
     forecasting_intent = _contains_any(
-        text,
+        temporal_text,
         "时间序列预测",
         "时序预测",
         "销量预测",
@@ -369,7 +456,7 @@ def capability_decision(
         "forecasting",
         "forecast",
     ) or (
-        _contains_any(text, "预测", "预估") and _looks_time_series(text, modality)
+        _contains_any(temporal_text, "预测", "预估") and looks_time_series
     )
     if forecasting_intent:
         strong_families.add("time_series_forecasting")
@@ -404,6 +491,7 @@ def capability_decision(
         "预测价格",
         "预测温度",
         "预测寿命",
+        "寿命预测",
         "预测分数",
         "评分预测",
         "连续值",
@@ -424,6 +512,18 @@ def capability_decision(
             explicit_family,
             strong_families,
         ):
+            if (
+                explicit_family == "tabular_regression"
+                and "time_series_forecasting" in strong_families
+            ):
+                return _clarification(
+                    sorted(
+                        {explicit_family, *strong_families, "custom"},
+                        key=_family_sort_key,
+                    ),
+                    "时序预测和普通表格回归的数据切分方式不同",
+                    [*reason_codes, "explicit_family_conflicts_with_text"],
+                )
             reason_codes.append("explicit_family_overrides_ambiguous_text")
         return _resolved(
             explicit_family,
@@ -431,6 +531,8 @@ def capability_decision(
             1.0,
             reason_codes,
         )
+    if explicit_custom_intent and explicit is None:
+        return _needs_confirmation("custom", reason_codes)
     conflicting = bool(
         explicit
         and strong_families
@@ -447,7 +549,7 @@ def capability_decision(
         return _resolved(explicit, "explicit_capability", 1.0, reason_codes)
     if len(strong_families) > 1:
         return _clarification(
-            sorted(strong_families, key=_family_sort_key),
+            sorted({*strong_families, "custom"}, key=_family_sort_key),
             "业务描述同时包含多种不同的输出形式",
             [*reason_codes, "multiple_output_families"],
         )
@@ -455,50 +557,50 @@ def capability_decision(
         inferred = next(iter(strong_families))
         if inferred == "ocr":
             return _clarification(
-                ["ocr", "image_classification", "object_detection"],
-                "OCR 需要确认是读取整体文字、判断文档类别还是定位文字区域",
+                ["ocr", "image_classification", "object_detection", "custom"],
+                "你希望它读出文字、判断文档类别，还是定位文字区域？",
                 [*reason_codes, "ocr_output_requires_clarification"],
             )
         return _needs_confirmation(inferred, reason_codes)
     if generic_visual_recognition:
         return _clarification(
-            [
-                "image_classification",
-                "ocr",
-                "object_detection",
-                "segmentation",
-                "anomaly_detection",
-            ],
-            "“识别/检测图片”未说明是输出类别、文字、位置、掩码还是异常",
+            list(MODALITY_CLARIFICATION_FAMILIES["image"]),
+            "你希望图片模型输出类别、文字、目标位置、分割区域，还是其他明确结果？",
             [*reason_codes, "generic_visual_recognition"],
         )
-    if looks_audio and _contains_any(text, "识别", "检测", "判断", "理解"):
+    if looks_audio:
         return _clarification(
-            ["audio_classification", "asr", "speech_synthesis", "custom"],
-            "“处理音频”未说明是输出类别、转写文字、合成语音还是其他结果",
-            [*reason_codes, "generic_audio_recognition"],
+            list(MODALITY_CLARIFICATION_FAMILIES["audio"]),
+            "你希望这个语音模型最终输出什么？",
+            [*reason_codes, "generic_audio_task"],
+        )
+    if looks_image:
+        return _clarification(
+            list(MODALITY_CLARIFICATION_FAMILIES["image"]),
+            "你希望图片模型输出类别、文字、目标位置、分割区域，还是其他明确结果？",
+            [*reason_codes, "generic_image_task"],
+        )
+    if looks_time_series:
+        return _clarification(
+            list(MODALITY_CLARIFICATION_FAMILIES["time_series"]),
+            "你是想预测未来数值、发现序列中的异常，还是完成其他时序任务？",
+            [*reason_codes, "generic_time_series_task"],
         )
     if looks_tabular:
         return _clarification(
-            [
-                "tabular_classification",
-                "tabular_regression",
-                "time_series_forecasting",
-                "anomaly_detection",
-                "custom",
-            ],
-            "表格或结构化数据任务未说明是输出类别、数值、未来序列还是异常",
+            list(MODALITY_CLARIFICATION_FAMILIES["tabular"]),
+            "你希望表格模型输出类别、数值、未来趋势、异常，还是其他明确结果？",
             [*reason_codes, "generic_tabular_task"],
         )
     if looks_text:
         return _clarification(
-            ["text_classification", "named_entity_recognition", "custom"],
-            "文本任务未说明是输出类别、实体还是其他结构",
+            list(MODALITY_CLARIFICATION_FAMILIES["text"]),
+            "你希望文本模型输出类别、实体，还是其他结构？",
             [*reason_codes, "generic_text_task"],
         )
     return _clarification(
         ["classification", "regression", "custom"],
-        "尚未说明模型要接收什么、输出什么",
+        "模型会接收什么，最终应该输出什么？",
         [*reason_codes, "missing_input_output_definition"],
     )
 
@@ -575,17 +677,25 @@ def _family_from_capability(modality: str, objective: str) -> str | None:
 def _family_compatible(explicit: str, inferred: set[str]) -> bool:
     if explicit in inferred:
         return True
-    groups = (
-        {
-            "classification",
-            "image_classification",
-            "audio_classification",
-            "text_classification",
-            "tabular_classification",
-        },
-        {"regression", "tabular_regression", "time_series_forecasting"},
-    )
-    return any(explicit in group and inferred <= group for group in groups)
+    classification_group = {
+        "classification",
+        "image_classification",
+        "audio_classification",
+        "text_classification",
+        "tabular_classification",
+    }
+    if explicit in classification_group and inferred <= classification_group:
+        return True
+    regression_group = {
+        "regression",
+        "tabular_regression",
+        "time_series_forecasting",
+    }
+    if explicit == "regression" and inferred <= regression_group:
+        return True
+    if inferred == {"regression"} and explicit in regression_group:
+        return True
+    return False
 
 
 def _resolved(
@@ -609,13 +719,14 @@ def _needs_confirmation(
     family: str,
     reason_codes: list[str],
 ) -> dict[str, Any]:
+    label = FAMILY_DETAILS.get(family, {"label": family})["label"]
     return {
         "status": "needs_confirmation",
         "selected_family": family,
         "source": "business_goal",
         "confidence": 0.82,
         "reason_codes": reason_codes,
-        "question": "我已形成一个候选任务规格。请确认输出形式，或选择其他能力。",
+        "question": f"我理解为“{label}”。这个理解对吗？",
         "candidates": [_candidate(family)],
     }
 
@@ -625,13 +736,18 @@ def _clarification(
     reason: str,
     reason_codes: list[str],
 ) -> dict[str, Any]:
+    question = (
+        f"{reason}请选择一个最接近的选项。"
+        if reason.endswith(("？", "?"))
+        else f"{reason}。请选择你希望模型的唯一输出形式。"
+    )
     return {
         "status": "needs_clarification",
         "selected_family": None,
         "source": "ambiguous",
         "confidence": 0.0,
         "reason_codes": reason_codes,
-        "question": f"{reason}。请选择你希望模型的唯一输出形式。",
+        "question": question,
         "candidates": [_candidate(family) for family in families],
     }
 
@@ -663,6 +779,32 @@ def _family_sort_key(family: str) -> tuple[int, str]:
     return order.get(family, 99), family
 
 
+_NEGATED_TEMPORAL_MENTION = re.compile(
+    r"(?:不是|并非|而非|不属于|不涉及|不使用|不采用|不做|不需要|无需|不含|不包含|没有)"
+    r"\s*(?:任何|一个|这种|基于|进行|做)?\s*[‘“\"]?"
+    r"(?:时间序列(?:预测|模型|数据|任务)?|时序(?:预测|模型|数据|任务)?|历史序列|"
+    r"销量预测|需求预测|下个月|下一周|未来7天|未来一周|未来一个月|逐日|每小时|按天|按周)"
+    r"|\b(?:not\s+(?:a\s+|using\s+|doing\s+)?|no\s+|without\s+(?:using\s+)?)"
+    r"(?:time[- ]series(?:\s+forecasting)?|forecast(?:ing)?)\b"
+)
+
+
+def _positive_temporal_text(text: str) -> str:
+    """Exclude only locally, explicitly negated temporal terms from the guard.
+
+    This is not a general intent parser or authorization. Affirmative mentions
+    elsewhere and structured time-series modality still trigger the guard;
+    double negatives and unrecognized wording are conservatively retained.
+    """
+    def replace(match: re.Match[str]) -> str:
+        before = text[:match.start()]
+        if re.search(r"(?:不是|并非|不能|不必|不要|not|never)\s*$", before):
+            return match.group()
+        return " "
+
+    return _NEGATED_TEMPORAL_MENTION.sub(replace, text)
+
+
 def _contains_any(text: str, *needles: str) -> bool:
     return any(needle in text for needle in needles)
 
@@ -684,6 +826,9 @@ def _looks_audio(text: str, modality: str) -> bool:
         text,
         "语音",
         "音频",
+        "录音",
+        "录制音频",
+        "录制声音",
         "声音",
         "唤醒词",
         "关键词",

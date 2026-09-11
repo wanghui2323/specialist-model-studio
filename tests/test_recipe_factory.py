@@ -52,6 +52,19 @@ VALID_SPEC = {
 }
 
 
+def verified_registration_approval(
+    checkpoint_id: str = "test-recipe-registration-checkpoint",
+) -> dict[str, str]:
+    return {
+        "decision": "approved",
+        "actor": "user",
+        "checkpoint_id": checkpoint_id,
+        "verified_by": "agent_bridge_token",
+        "bridge_token_sha256": "a" * 64,
+        "reason": "reviewed exact candidate and validation digests",
+    }
+
+
 def build_ready(factory: RecipeFactory, task_id: str = "task-a") -> dict:
     started = factory.start_build(
         task_id=task_id,
@@ -265,7 +278,10 @@ class DeclarativeRecipeFactoryTests(unittest.TestCase):
             with self.assertRaises(ContractError):
                 factory.register(
                     ready["attempt_id"],
-                    approval={"decision": "approved", "actor": ""},
+                    approval={
+                        **verified_registration_approval(),
+                        "actor": "",
+                    },
                     candidate_digest=ready["candidate_digest"],
                     validation_digest=ready["validation_digest"],
                     current_spec_revision=3,
@@ -274,7 +290,7 @@ class DeclarativeRecipeFactoryTests(unittest.TestCase):
             with self.assertRaises(StaleSpecRevisionError):
                 factory.register(
                     ready["attempt_id"],
-                    approval={"decision": "approved", "actor": "user-1"},
+                    approval=verified_registration_approval(),
                     candidate_digest=ready["candidate_digest"],
                     validation_digest=ready["validation_digest"],
                     current_spec_revision=4,
@@ -288,7 +304,7 @@ class DeclarativeRecipeFactoryTests(unittest.TestCase):
             with self.assertRaises(VersionIntegrityError):
                 factory.register(
                     ready["attempt_id"],
-                    approval={"decision": "approved", "actor": "user-1"},
+                    approval=verified_registration_approval(),
                     candidate_digest="0" * 64,
                     validation_digest=ready["validation_digest"],
                     current_spec_revision=3,
@@ -315,7 +331,9 @@ class DeclarativeRecipeFactoryTests(unittest.TestCase):
             with self.assertRaises(VersionIntegrityError):
                 factory.register(
                     tamper_ready["attempt_id"],
-                    approval={"decision": "approved", "actor": "user-1"},
+                    approval=verified_registration_approval(
+                        "test-tamper-registration-checkpoint"
+                    ),
                     candidate_digest=tamper_ready["candidate_digest"],
                     validation_digest=tamper_ready["validation_digest"],
                     current_spec_revision=3,
@@ -343,13 +361,24 @@ class DeclarativeRecipeFactoryTests(unittest.TestCase):
 
             registered = factory.register(
                 ready["attempt_id"],
-                approval={"decision": "approved", "actor": "user-1"},
+                approval=verified_registration_approval(
+                    "test-approved-registration-checkpoint"
+                ),
                 candidate_digest=ready["candidate_digest"],
                 validation_digest=ready["validation_digest"],
                 current_spec_revision=3,
                 activate=activate,
             )
             self.assertEqual(registered["status"], "registered")
+            self.assertEqual(
+                registered["approval"]["checkpoint_id"],
+                "test-approved-registration-checkpoint",
+            )
+            self.assertEqual(
+                registered["approval"]["verified_by"],
+                "agent_bridge_token",
+            )
+            self.assertEqual(len(registered["approval"]["approval_sha256"]), 64)
             self.assertEqual(len(calls), 1)
             active = factory.version_store.active_for_task("task-register")
             self.assertEqual(active["intent_id"], registered["intent_id"])
@@ -371,7 +400,9 @@ class DeclarativeRecipeFactoryTests(unittest.TestCase):
             with self.assertRaises(RegistrationRecoveryRequired):
                 factory.register(
                     ready["attempt_id"],
-                    approval={"decision": "approved", "actor": "user-1"},
+                    approval=verified_registration_approval(
+                        "test-recovery-registration-checkpoint"
+                    ),
                     candidate_digest=ready["candidate_digest"],
                     validation_digest=ready["validation_digest"],
                     current_spec_revision=3,

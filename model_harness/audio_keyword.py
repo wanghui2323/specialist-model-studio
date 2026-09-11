@@ -28,7 +28,11 @@ from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, recall_s
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from .data_adapters import DataAdapterManifest, DataImportResult
+from .data_adapters import (
+    DataAdapterManifest,
+    DataImportResult,
+    verify_training_dataset_integrity,
+)
 from .errors import ContractError
 from .io_utils import read_json, write_json
 
@@ -607,6 +611,7 @@ def _candidates(seed: int, estimators: int) -> dict[str, Any]:
 
 
 def train_audio_keyword(contract: dict[str, Any]) -> AudioTrainingContext:
+    verify_training_dataset_integrity(contract["dataset"])
     dataset = contract["dataset"]
     root = Path(dataset["root"]).expanduser().resolve()
     manifest = read_json(Path(dataset["manifest_path"]))

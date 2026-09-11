@@ -18,6 +18,7 @@ from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_err
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+from ..data_adapters import verify_training_dataset_integrity
 from ..io_utils import read_json, write_json
 from ..plugin_api import StrategyProposal
 
@@ -158,6 +159,7 @@ def regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, floa
 
 
 def train(contract: dict[str, Any]) -> TrainingContext:
+    verify_training_dataset_integrity(contract["dataset"])
     X, y, row_numbers = _load_rows(contract)
     dataset = contract["dataset"]
     train_idx, validation_idx, test_idx = _split_indices(
@@ -248,7 +250,10 @@ def evaluate(context: TrainingContext, contract: dict[str, Any]) -> EvaluationCo
         },
         "validation_candidates": context.validation_results,
         "clean_test": clean,
-        "failure_count": len(failures),
+        "failure_count": int(
+            np.sum(errors > float(contract["release_gates"]["clean_test_mae_max"]))
+        ),
+        "failure_sample_count": len(failures),
         "latency": _latency(context),
     }
     return EvaluationContext(prediction=prediction, metrics=metrics, failure_samples=failures)

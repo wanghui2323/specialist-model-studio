@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
@@ -14,6 +15,13 @@ except ImportError:  # pragma: no cover
     TestClient = None  # type: ignore[assignment]
 
 from model_harness.server import create_app
+from model_harness.errors import HarnessError
+from model_harness.io_utils import read_json, sha256_file, write_json
+from tests.contract_confirmation import contract_confirmation_payload
+from tests.run_authorization import (
+    request_task_run_authorization,
+    start_authorized_task_run,
+)
 
 
 def build_image_dataset_zip() -> bytes:
@@ -48,6 +56,217 @@ def build_image_dataset_with_duplicate_zip() -> bytes:
 
 @unittest.skipIf(TestClient is None, "server extra is not installed")
 class WorkspaceLoopTests(unittest.TestCase):
+    def test_task_owned_resume_reauthorizes_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runs_dir = Path(temp_dir) / "runs"
+            app = create_app(runs_dir)
+            with TestClient(app) as client:  # type: ignore[misc]
+                workspace = app.state.training_workspace
+                created = client.post(
+                    "/tasks",
+                    json={
+                        "name": "restart resume guard",
+                        "business_goal": "resume only through the owning task",
+                        "recipe_id": "image-folder-classification",
+                    },
+                )
+                self.assertEqual(created.status_code, 201, created.text)
+                task_id = created.json()["task"]["task_id"]
+                uploaded = client.post(
+                    f"/tasks/{task_id}/dataset",
+                    content=build_image_dataset_zip(),
+                    headers={"X-Filename": "restart-resume.zip"},
+                )
+                self.assertEqual(uploaded.status_code, 201, uploaded.text)
+                confirmed = client.post(
+                    f"/tasks/{task_id}/confirm",
+                    json=contract_confirmation_payload(client, task_id),
+                )
+                self.assertEqual(confirmed.status_code, 200, confirmed.text)
+                contract = read_json(workspace._contract_path(task_id))
+                record = read_json(workspace._task_path(task_id))
+                parent = app.state.run_service.submit(
+                    contract,
+                    workspace_task_id=task_id,
+                )
+                app.state.run_service.wait(parent.name, timeout=30)
+                record["current_run_id"] = parent.name
+                record["run_ids"] = [parent.name]
+                record["status"] = "interrupted"
+                write_json(workspace._task_path(task_id), record)
+                parent_run_id = parent.name
+
+            parent_state_path = runs_dir / parent_run_id / "run_state.json"
+            parent_state = read_json(parent_state_path)
+            parent_state["status"] = "interrupted"
+            write_json(parent_state_path, parent_state)
+
+            restarted = create_app(runs_dir)
+            with TestClient(restarted) as client:  # type: ignore[misc]
+                resumed = client.post(
+                    f"/tasks/{task_id}/runs/{parent_run_id}/resume"
+                )
+                self.assertEqual(resumed.status_code, 202, resumed.text)
+                child_run_id = resumed.json()["task"]["current_run_id"]
+                self.assertNotEqual(child_run_id, parent_run_id)
+                restarted.state.run_service.wait(child_run_id, timeout=30)
+                child = restarted.state.run_service.status(child_run_id)
+                self.assertEqual(child["task_id"], task_id)
+                self.assertEqual(child["parent_run_id"], parent_run_id)
+
+    def test_run_endpoint_fails_before_submit_when_v09_authorization_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runs_dir = Path(temp_dir) / "runs"
+            app = create_app(runs_dir)
+            with TestClient(app) as client:  # type: ignore[misc]
+                created = client.post(
+                    "/tasks",
+                    json={
+                        "name": "V3 execution guard",
+                        "business_goal": "区分红色和蓝色零件",
+                    },
+                )
+                task_id = created.json()["task"]["task_id"]
+                uploaded = client.post(
+                    f"/tasks/{task_id}/dataset",
+                    content=build_image_dataset_zip(),
+                    headers={
+                        "Content-Type": "application/zip",
+                        "X-Filename": "guard.zip",
+                    },
+                )
+                self.assertEqual(uploaded.status_code, 201, uploaded.text)
+                confirmed = client.post(
+                    f"/tasks/{task_id}/confirm",
+                    json=contract_confirmation_payload(client, task_id),
+                )
+                self.assertEqual(confirmed.status_code, 200, confirmed.text)
+                before = set(runs_dir.glob("*"))
+                with patch.object(
+                    app.state.training_workspace,
+                    "authorize_v09_execution",
+                    side_effect=HarnessError("blocked_resources fixture"),
+                ):
+                    response = request_task_run_authorization(
+                        client,
+                        task_id,
+                        checkpoint_id="native-run:v09-blocked",
+                    )
+                self.assertEqual(response.status_code, 409, response.text)
+                self.assertIn("blocked_resources", response.json()["detail"])
+                self.assertEqual(set(runs_dir.glob("*")), before)
+                task = client.get(f"/tasks/{task_id}").json()["task"]
+                self.assertEqual(task["run_ids"], [])
+
+    def test_run_intent_recovers_after_task_lineage_write_failure_without_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runs_dir = Path(temp_dir) / "runs"
+            app = create_app(runs_dir)
+            with TestClient(app) as client:  # type: ignore[misc]
+                task_id = client.post(
+                    "/tasks",
+                    json={
+                        "name": "durable run intent",
+                        "business_goal": "recover one real image training run",
+                    },
+                ).json()["task"]["task_id"]
+                uploaded = client.post(
+                    f"/tasks/{task_id}/dataset",
+                    content=build_image_dataset_zip(),
+                    headers={"X-Filename": "intent.zip"},
+                )
+                self.assertEqual(uploaded.status_code, 201, uploaded.text)
+                confirmed = client.post(
+                    f"/tasks/{task_id}/confirm",
+                    json=contract_confirmation_payload(client, task_id),
+                )
+                self.assertEqual(confirmed.status_code, 200, confirmed.text)
+                workspace = app.state.training_workspace
+                task_path = workspace._task_path(task_id)
+
+                def fail_only_final_lineage_write(path: Path, value: object) -> None:
+                    if (
+                        Path(path) == task_path
+                        and isinstance(value, dict)
+                        and value.get("current_run_id")
+                        and value.get("pending_run") is None
+                    ):
+                        raise OSError("injected final task ledger write failure")
+                    write_json(Path(path), value)
+
+                with patch(
+                    "model_harness.workspace.write_json",
+                    side_effect=fail_only_final_lineage_write,
+                ):
+                    with self.assertRaisesRegex(OSError, "injected final"):
+                        workspace.start_run(task_id)
+
+                persisted = read_json(task_path)
+                pending_run_id = persisted["pending_run"]["run_id"]
+                self.assertEqual(persisted["run_ids"], [])
+                app.state.run_service.wait(pending_run_id, timeout=30)
+
+                recovered = workspace.start_run(task_id)
+                self.assertEqual(recovered["run_ids"], [pending_run_id])
+                self.assertEqual(recovered["current_run_id"], pending_run_id)
+                self.assertIsNone(read_json(task_path)["pending_run"])
+                self.assertEqual(
+                    [item["run_id"] for item in app.state.run_service.list_runs()],
+                    [pending_run_id],
+                )
+
+            restarted = create_app(runs_dir)
+            with TestClient(restarted) as client:  # type: ignore[misc]
+                task = client.get(f"/tasks/{task_id}").json()["task"]
+                self.assertEqual(task["run_ids"], [pending_run_id])
+                self.assertEqual(task["current_run_id"], pending_run_id)
+
+    def test_task_run_rejects_contract_owned_by_another_task_before_submit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runs_dir = Path(temp_dir) / "runs"
+            app = create_app(runs_dir)
+            with TestClient(app) as client:  # type: ignore[misc]
+                task_id = client.post(
+                    "/tasks",
+                    json={
+                        "name": "contract owner guard",
+                        "business_goal": "区分红色和蓝色零件",
+                    },
+                ).json()["task"]["task_id"]
+                uploaded = client.post(
+                    f"/tasks/{task_id}/dataset",
+                    content=build_image_dataset_zip(),
+                    headers={"X-Filename": "guard.zip"},
+                )
+                self.assertEqual(uploaded.status_code, 201, uploaded.text)
+                confirmed = client.post(
+                    f"/tasks/{task_id}/confirm",
+                    json=contract_confirmation_payload(client, task_id),
+                )
+                self.assertEqual(confirmed.status_code, 200, confirmed.text)
+                workspace = app.state.training_workspace
+                contract_path = workspace._contract_path(task_id)
+                task_path = workspace._task_path(task_id)
+                contract = read_json(contract_path)
+                contract["task_id"] = "another-task"
+                write_json(contract_path, contract)
+                task = read_json(task_path)
+                task["confirmed_contract_sha256"] = sha256_file(contract_path)
+                write_json(task_path, task)
+
+                before = {item["run_id"] for item in app.state.run_service.list_runs()}
+                rejected = request_task_run_authorization(
+                    client,
+                    task_id,
+                    checkpoint_id="native-run:wrong-contract-owner",
+                )
+                self.assertEqual(rejected.status_code, 409, rejected.text)
+                self.assertIn("重新确认", rejected.json()["detail"])
+                self.assertEqual(
+                    {item["run_id"] for item in app.state.run_service.list_runs()},
+                    before,
+                )
+
     def test_user_dataset_contract_run_and_artifacts_form_a_real_loop(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             app = create_app(Path(temp_dir) / "runs")
@@ -91,16 +310,12 @@ class WorkspaceLoopTests(unittest.TestCase):
                 self.assertEqual(updated.status_code, 200, updated.text)
                 confirmed = client.post(
                     f"/tasks/{task_id}/confirm",
-                    json={
-                        "data_authorized": True,
-                        "labels_reviewed": True,
-                        "gates_reviewed": True,
-                    },
+                    json=contract_confirmation_payload(client, task_id),
                 )
                 self.assertEqual(confirmed.status_code, 200, confirmed.text)
                 self.assertEqual(confirmed.json()["task"]["status"], "ready")
 
-                started = client.post(f"/tasks/{task_id}/runs")
+                started = start_authorized_task_run(client, task_id)
                 self.assertEqual(started.status_code, 202, started.text)
                 run_id = started.json()["task"]["current_run_id"]
                 app.state.run_service.wait(run_id, timeout=30)
@@ -126,6 +341,87 @@ class WorkspaceLoopTests(unittest.TestCase):
                 )
                 model = client.get(f"/runs/{run_id}/artifacts/model.joblib")
                 self.assertEqual(model.status_code, 200)
+
+                run_state_path = (
+                    app.state.run_service.runs_dir / run_id / "run_state.json"
+                )
+                original_run_state = read_json(run_state_path)
+                forged_run_state = dict(original_run_state)
+                forged_run_state["task_id"] = "another-task"
+                write_json(run_state_path, forged_run_state)
+                before_children = {
+                    item["run_id"] for item in app.state.run_service.list_runs()
+                }
+                wrong_owner = client.post(
+                    f"/tasks/{task_id}/runs/{run_id}/strategies/balance-class-weights/apply",
+                    json={"approval_confirmed": True},
+                )
+                self.assertEqual(wrong_owner.status_code, 409, wrong_owner.text)
+                self.assertEqual(
+                    {item["run_id"] for item in app.state.run_service.list_runs()},
+                    before_children,
+                )
+                write_json(run_state_path, original_run_state)
+
+                workspace = app.state.training_workspace
+                task_path = workspace._task_path(task_id)
+                persisted_task = read_json(task_path)
+                persisted_task["contract_confirmed"] = False
+                write_json(task_path, persisted_task)
+                with patch.object(
+                    app.state.run_service,
+                    "resume",
+                    side_effect=AssertionError("resume must not be called"),
+                ):
+                    blocked_resume = client.post(
+                        f"/tasks/{task_id}/runs/{run_id}/resume"
+                    )
+                self.assertEqual(blocked_resume.status_code, 409, blocked_resume.text)
+                with patch.object(
+                    app.state.run_service,
+                    "apply_strategy",
+                    side_effect=AssertionError("strategy must not be called"),
+                ):
+                    blocked_strategy = client.post(
+                        f"/tasks/{task_id}/runs/{run_id}/strategies/balance-class-weights/apply",
+                        json={"approval_confirmed": True},
+                    )
+                self.assertEqual(
+                    blocked_strategy.status_code, 409, blocked_strategy.text
+                )
+                self.assertEqual(
+                    {item["run_id"] for item in app.state.run_service.list_runs()},
+                    before_children,
+                )
+                persisted_task["contract_confirmed"] = True
+                write_json(task_path, persisted_task)
+
+                contract_path = workspace._contract_path(task_id)
+                original_contract = read_json(contract_path)
+                changed_contract = read_json(contract_path)
+                changed_contract["release_gates"][
+                    "clean_test_accuracy_min"
+                ] = 0.51
+                write_json(contract_path, changed_contract)
+                persisted_task["confirmed_contract_sha256"] = sha256_file(
+                    contract_path
+                )
+                write_json(task_path, persisted_task)
+                stale_parent = client.post(
+                    f"/tasks/{task_id}/runs/{run_id}/strategies/balance-class-weights/apply",
+                    json={"approval_confirmed": True},
+                )
+                self.assertEqual(stale_parent.status_code, 409, stale_parent.text)
+                self.assertIn("重新确认", stale_parent.text)
+                self.assertEqual(
+                    {item["run_id"] for item in app.state.run_service.list_runs()},
+                    before_children,
+                )
+                write_json(contract_path, original_contract)
+                persisted_task["confirmed_contract_sha256"] = sha256_file(
+                    contract_path
+                )
+                write_json(task_path, persisted_task)
 
                 preview = report["previews"][0]["relative_path"]
                 dataset_id = report["dataset_id"]

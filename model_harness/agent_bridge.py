@@ -77,7 +77,6 @@ _AGENT_PUBLIC_ROUTE_ROOTS = (
     "/agent",
     "/app",
     "/capabilities",
-    "/chat",
     "/data-adapters",
     "/health",
     "/model-assets",
@@ -91,7 +90,7 @@ _AGENT_PUBLIC_EMBEDDED_WINDOWS_PATH = re.compile(
     r"(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/]|\\\\)[^\s\"'<>]+"
 )
 _AGENT_PUBLIC_EMBEDDED_POSIX_PATH = re.compile(
-    r"(?<![A-Za-z0-9:/])/[^\s\"'<>]+"
+    r"(?<![\w:/])/[^\s\"'<>]+"
 )
 
 
@@ -167,20 +166,16 @@ def agent_public_projection(value: Any) -> Any:
     return value
 
 
-def _text_content(blocks: Any) -> str:
-    if not isinstance(blocks, list):
-        return ""
-    return "\n".join(
-        str(block.get("text", ""))
-        for block in blocks
-        if isinstance(block, dict) and block.get("type") == "text"
-    ).strip()
-
-
 class DshRpcClient:
     """Small product-facing adapter over DeepSeek Harness's public HTTP RPC."""
 
-    def __init__(self, base_url: str, timeout_seconds: float = 30.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        timeout_seconds: float = 30.0,
+        *,
+        reuse_unary_connection: bool = True,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         parsed = urlparse(self.base_url)
@@ -188,6 +183,7 @@ class DshRpcClient:
             raise ValueError("DSH bridge currently requires an http:// host")
         self.host = parsed.hostname
         self.port = parsed.port or 80
+        self.reuse_unary_connection = reuse_unary_connection
         self._rpc_lock = threading.RLock()
         self._rpc_connection: http.client.HTTPConnection | None = None
 
@@ -266,7 +262,7 @@ class DshRpcClient:
                     response = connection.getresponse()
                     raw = response.read().decode("utf-8")
                     body = json.loads(raw)
-                    if response.will_close:
+                    if response.will_close or not self.reuse_unary_connection:
                         self._close_rpc_connection_locked()
                     if not isinstance(body, dict):
                         raise json.JSONDecodeError("response is not an object", raw, 0)
@@ -296,10 +292,19 @@ class DshRpcClient:
             self._close_rpc_connection_locked()
 
     def available(self) -> bool:
+        # Availability is a probe, not part of a transactional RPC sequence.
+        # Use a fresh connection so a server-side keep-alive timeout cannot turn
+        # an otherwise healthy DSH runtime into a false-negative gate for the
+        # following session.create call.
+        with self._rpc_lock:
+            self._close_rpc_connection_locked()
         try:
             self.call("session.list", {})
         except AgentRuntimeError:
             return False
+        finally:
+            with self._rpc_lock:
+                self._close_rpc_connection_locked()
         return True
 
 
@@ -319,7 +324,16 @@ class DshEventHub:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._stream_lock = threading.RLock()
-        self._stream_connection: http.client.HTTPConnection | None = None
+        self._stream_connection: Any | None = None
+        self._health_lock = threading.RLock()
+        self._stream_health: dict[str, Any] = {
+            "connected_at": None,
+            "last_event_at": None,
+            "last_error_at": None,
+            "consecutive_failures": 0,
+            "recovered_at": None,
+            "status": "not_started",
+        }
 
     def bind_workspace(self, root: Path) -> None:
         """Bind pending requests to the workspace before consuming runtime events."""
@@ -346,6 +360,7 @@ class DshEventHub:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
+        self._mark_stream_connecting()
         self._thread = threading.Thread(target=self._run, daemon=True, name="dsh-event-hub")
         self._thread.start()
 
@@ -361,6 +376,40 @@ class DshEventHub:
         close_client = getattr(self.client, "close", None)
         if callable(close_client):
             close_client()
+        self._mark_stream_stopped()
+
+    def stream_health(self) -> dict[str, Any]:
+        """Return a thread-safe snapshot of the event downlink health."""
+
+        with self._health_lock:
+            return dict(self._stream_health)
+
+    def _mark_stream_connecting(self) -> None:
+        with self._health_lock:
+            self._stream_health["status"] = "connecting"
+
+    def _mark_stream_connected(self) -> None:
+        now = time.time()
+        with self._health_lock:
+            if self._stream_health["consecutive_failures"]:
+                self._stream_health["recovered_at"] = now
+            self._stream_health["connected_at"] = now
+            self._stream_health["consecutive_failures"] = 0
+            self._stream_health["status"] = "healthy"
+
+    def _mark_stream_event(self) -> None:
+        with self._health_lock:
+            self._stream_health["last_event_at"] = time.time()
+
+    def _mark_stream_failure(self) -> None:
+        with self._health_lock:
+            self._stream_health["last_error_at"] = time.time()
+            self._stream_health["consecutive_failures"] += 1
+            self._stream_health["status"] = "degraded"
+
+    def _mark_stream_stopped(self) -> None:
+        with self._health_lock:
+            self._stream_health["status"] = "stopped"
 
     def pending_for(self, session_id: str) -> list[dict[str, Any]]:
         with self._lock:
@@ -411,6 +460,7 @@ class DshEventHub:
 
     def _run(self) -> None:
         while not self._stop.is_set():
+            self._mark_stream_connecting()
             try:
                 connection = self.client.connection(
                     timeout=self.STREAM_TIMEOUT_SECONDS
@@ -430,15 +480,28 @@ class DshEventHub:
                         },
                     )
                     response = connection.getresponse()
+                    if response.status == 426:
+                        # DSH rc.6 moved ordinary network event downlinks from
+                        # SSE to WebSocket. Keep the SSE branch for compatible
+                        # in-process/older hosts, then upgrade explicitly.
+                        with self._stream_lock:
+                            if self._stream_connection is connection:
+                                self._stream_connection = None
+                        connection.close()
+                        self._consume_websocket()
+                        continue
                     if response.status >= 400:
                         raise AgentRuntimeError(
                             f"Agent 事件流返回 HTTP {response.status}"
                         )
+                    self._mark_stream_connected()
                     buffer: list[str] = []
                     while not self._stop.is_set():
                         raw_line = response.readline()
                         if not raw_line:
-                            break
+                            if self._stop.is_set():
+                                return
+                            raise AgentRuntimeError("Agent SSE 事件流意外结束")
                         if self._stop.is_set():
                             return
                         line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
@@ -447,6 +510,7 @@ class DshEventHub:
                                 buffer.append(line[6:])
                             continue
                         if buffer:
+                            self._mark_stream_event()
                             self._consume("".join(buffer))
                             buffer = []
                 finally:
@@ -455,9 +519,53 @@ class DshEventHub:
                             self._stream_connection = None
                     connection.close()
             except Exception:
-                pass
+                if not self._stop.is_set():
+                    self._mark_stream_failure()
             if not self._stop.is_set():
                 self._stop.wait(self.RECONNECT_DELAY_SECONDS)
+
+    def _consume_websocket(self) -> None:
+        try:
+            from websockets.sync.client import connect
+        except ImportError as exc:  # pragma: no cover - packaging guard
+            raise AgentRuntimeError(
+                "DSH WebSocket 事件桥缺少 websockets；请安装 server 依赖"
+            ) from exc
+
+        uri = f"ws://{self.client.host}:{self.client.port}/api/events.mux"
+        websocket = connect(
+            uri,
+            proxy=None,
+            open_timeout=5,
+            close_timeout=1,
+            ping_interval=20,
+            ping_timeout=20,
+        )
+        with self._stream_lock:
+            if self._stop.is_set():
+                websocket.close()
+                return
+            self._stream_connection = websocket
+        self._mark_stream_connected()
+        try:
+            while not self._stop.is_set():
+                try:
+                    raw = websocket.recv(timeout=1.0)
+                except TimeoutError:
+                    continue
+                if raw is None:
+                    if self._stop.is_set():
+                        return
+                    raise AgentRuntimeError("Agent WebSocket 事件流意外结束")
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", errors="replace")
+                self._mark_stream_event()
+                self._consume(str(raw))
+        finally:
+            with self._stream_lock:
+                if self._stream_connection is websocket:
+                    self._stream_connection = None
+            websocket.close()
 
     def _consume(self, raw: str) -> None:
         try:
@@ -481,6 +589,7 @@ class DshEventHub:
                     "rpc_id": rpc_id,
                     "session_id": session_id,
                     "approval_id": payload.get("approvalId"),
+                    "call_id": payload.get("callId"),
                     "tool_name": payload.get("toolName"),
                     "title": TOOL_LABELS.get(payload.get("toolName"), "执行关键操作"),
                     "reason": payload.get("reason") or "Agent 请求执行会改变训练任务状态的操作。",
@@ -508,175 +617,3 @@ class DshEventHub:
                 self._pending.pop(session_id, None)
             if changed:
                 self._persist_locked()
-
-
-class ConversationBridge:
-    """Owns the stable mapping between a training task and one DSH session."""
-
-    def __init__(self, root: Path, client: DshRpcClient, events: DshEventHub, cwd: Path) -> None:
-        self.path = root / "conversations.json"
-        self.client = client
-        self.events = events
-        self.events.bind_workspace(root)
-        self.cwd = cwd.resolve()
-        self._lock = threading.RLock()
-
-    def runtime_status(self) -> dict[str, Any]:
-        return {
-            "available": self.client.available(),
-            "engine": "DeepSeek Harness",
-            "role": "底层会话、Agent Loop、工具与审批运行时",
-        }
-
-    def session_for(self, task_id: str) -> str | None:
-        with self._lock:
-            return self._read().get(task_id, {}).get("session_id")
-
-    def ensure_session(self, task_id: str, title: str) -> str:
-        with self._lock:
-            mappings = self._read()
-            existing = mappings.get(task_id, {}).get("session_id")
-            if isinstance(existing, str) and existing:
-                return existing
-            value = self.client.call(
-                "session.create",
-                {"cwd": str(self.cwd), "agentPreset": "model-training"},
-            )
-            session_id = value.get("sessionId") if isinstance(value, dict) else None
-            if not isinstance(session_id, str) or not session_id:
-                raise AgentRuntimeError("训练 Agent 未返回有效会话 ID")
-            try:
-                self.client.call("session.rename", {"sessionId": session_id, "title": title})
-            except AgentRuntimeError:
-                pass
-            mappings[task_id] = {
-                "session_id": session_id,
-                "created_at": time.time(),
-            }
-            write_json(self.path, mappings)
-        return session_id
-
-    def prompt(self, task_id: str, title: str, message: str) -> str:
-        session_id = self.ensure_session(task_id, title)
-        instruction = (
-            f"你正在 Model Harness 产品中推进训练任务 `{task_id}`。"
-            "训练任务本身是唯一事实源；先用 model_harness_get_task 读取状态，"
-            "再根据用户这条消息决定下一步，不要创建第二个任务。\n\n"
-            f"用户消息：{message.strip()}"
-        )
-        self.client.call(
-            "session.prompt",
-            {
-                "sessionId": session_id,
-                "mode": "queue",
-                "content": [{"type": "text", "text": instruction}],
-                "clientTimeZone": "Asia/Shanghai",
-            },
-        )
-        return session_id
-
-    def cancel(self, task_id: str) -> None:
-        session_id = self.session_for(task_id)
-        if not session_id:
-            raise AgentRuntimeError("这个任务还没有启动 Agent 会话")
-        self.client.call("session.cancel", {"sessionId": session_id})
-
-    def answer_approval(self, task_id: str, rpc_id: str, outcome: str) -> None:
-        session_id = self._require_session(task_id)
-        pending = {item["rpc_id"]: item for item in self.events.pending_for(session_id)}
-        item = pending.get(rpc_id)
-        if not item or item.get("kind") != "approval":
-            raise AgentRuntimeError("这条批准请求已经失效")
-        self.client.respond(
-            rpc_id,
-            {
-                "sessionId": session_id,
-                "approvalId": item["approval_id"],
-                "outcome": outcome,
-            },
-        )
-        self.events.resolve_local(session_id, rpc_id)
-
-    def answer_question(self, task_id: str, rpc_id: str, answers: list[dict[str, Any]]) -> None:
-        session_id = self._require_session(task_id)
-        self.client.respond(
-            rpc_id,
-            {"sessionId": session_id, "answer": {"answers": answers}},
-        )
-        self.events.resolve_local(session_id, rpc_id)
-
-    def conversation(self, task_id: str) -> dict[str, Any]:
-        session_id = self.session_for(task_id)
-        if not session_id:
-            return {
-                "session_id": None,
-                "running": False,
-                "items": [],
-                "pending": [],
-            }
-        history = self.client.call(
-            "session.history",
-            {"sessionId": session_id, "maxMessages": 120},
-        )
-        summaries = self.client.call("session.list", {}).get("items", [])
-        summary = next((item for item in summaries if item.get("sessionId") == session_id), {})
-        return {
-            "session_id": session_id,
-            "running": bool(summary.get("running")),
-            "items": self._fold_history(history.get("events", [])),
-            "pending": self.events.pending_for(session_id),
-        }
-
-    def _require_session(self, task_id: str) -> str:
-        session_id = self.session_for(task_id)
-        if not session_id:
-            raise AgentRuntimeError("这个任务还没有启动 Agent 会话")
-        return session_id
-
-    def _read(self) -> dict[str, Any]:
-        if not self.path.exists():
-            return {}
-        value = read_json(self.path)
-        return value if isinstance(value, dict) else {}
-
-    @staticmethod
-    def _fold_history(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = []
-        tools: dict[str, dict[str, Any]] = {}
-        for entry in entries:
-            event = entry.get("event", {})
-            event_type = event.get("type")
-            data = event.get("data", {})
-            base = {"seq": event.get("seq", 0), "time": event.get("time")}
-            if event_type == "user/message" and data.get("source", {}).get("kind") == "user":
-                text = _text_content(data.get("content"))
-                marker = "用户消息："
-                if marker in text and "你正在 Model Harness 产品中" in text:
-                    text = text.split(marker, 1)[1]
-                if text:
-                    items.append({**base, "kind": "message", "role": "user", "text": text})
-            elif event_type == "assistant/message":
-                text = _text_content(data.get("message", {}).get("content"))
-                if text:
-                    items.append({**base, "kind": "message", "role": "assistant", "text": text})
-            elif event_type == "tool/call":
-                call_id = data.get("callId")
-                tool = {
-                    **base,
-                    "kind": "tool",
-                    "call_id": call_id,
-                    "name": data.get("name", "unknown"),
-                    "label": TOOL_LABELS.get(data.get("name"), "执行训练工具"),
-                    "status": "running",
-                }
-                if isinstance(call_id, str):
-                    tools[call_id] = tool
-                items.append(tool)
-            elif event_type == "tool/result":
-                block = (data.get("message", {}).get("content") or [{}])[0]
-                call_id = block.get("toolCallId") if isinstance(block, dict) else None
-                tool = tools.get(call_id)
-                if tool:
-                    tool["status"] = "failed" if block.get("isError") or data.get("error") else "completed"
-                    tool["result"] = _text_content(block.get("content"))[:500]
-        return sorted(items, key=lambda item: item.get("seq", 0))

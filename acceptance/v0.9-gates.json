@@ -1,0 +1,91 @@
+{
+  "schema_version": "0.2",
+  "iteration": "v0.9-universal-byom",
+  "expected_product_name": "Specialist Model Studio",
+  "expected_distribution_name": "specialist-model-studio",
+  "canonical_console_script": "specialist-model-studio",
+  "compatibility_console_scripts": ["small-model-harness"],
+  "expected_package_version": "0.9.0rc1",
+  "expected_api_version": "0.9.0-rc.1",
+  "allowed_gate_statuses": ["passed", "failed", "blocked"],
+  "aggregation_contract": {
+    "required_gate_pass_condition": "status must equal passed",
+    "level_pass_condition": "every required gate in the level must equal passed",
+    "reviewable_rc_condition": "every required_for_review_rc gate must equal passed; blocked L3-L5 gates remain visible and do not become local_byom_verified",
+    "local_byom_verified_condition": "every required L0-L5 gate must equal passed",
+    "github_released_condition": "local_byom_verified plus every required_for_github_release gate must equal passed",
+    "skipped_policy": "skipped is forbidden and must never aggregate to passed"
+  },
+  "review_candidate_gates": [
+    {
+      "gate_id": "V09-RC-VERSION-SYNC",
+      "required_for_review_rc": true,
+      "description": "Python package, API, CLI and DeepSeek adapter identify the same 0.9 RC line."
+    },
+    {
+      "gate_id": "V09-RC-BOUNDARY-TRUTH",
+      "required_for_review_rc": true,
+      "description": "The API and UI distinguish registered Recipe training from arbitrary-repository analysis, and report BYOM execution unavailable without verified isolation."
+    },
+    {
+      "gate_id": "V09-RC-CONVERSATION-BROWSER",
+      "required_for_review_rc": true,
+      "description": "A vague request is clarified one implementation-changing question at a time; the evidence workspace opens on demand and passes desktop/mobile keyboard checks."
+    },
+    {
+      "gate_id": "V09-RC-TWO-REAL-RECIPES",
+      "required_for_review_rc": true,
+      "description": "Two registered user-data Recipes complete real training, deep verification, evaluation gates and traceable artifacts."
+    },
+    {
+      "gate_id": "V09-RC-WHEEL-ISOLATION",
+      "required_for_review_rc": true,
+      "description": "A non-editable wheel installs outside the repository and serves health, runtime, family catalog and app routes."
+    }
+  ],
+  "levels": [
+    {
+      "level_id": "L0",
+      "gate_id": "V09-L0-CONTRACT-BASELINE",
+      "required": true,
+      "description": "Universal-support semantics, primary object, safety boundary and evidence tiers are machine-readable and truthful."
+    },
+    {
+      "level_id": "L1",
+      "gate_id": "V09-L1-DUAL-SOURCE",
+      "required": true,
+      "description": "Hugging Face and GitHub resolve to immutable commits with fail-closed negatives and restart-safe evidence."
+    },
+    {
+      "level_id": "L2",
+      "gate_id": "V09-L2-PLAN-RESOURCE",
+      "required": true,
+      "description": "A versioned training plan and real resource result are bound to the immutable source before execution."
+    },
+    {
+      "level_id": "L3",
+      "gate_id": "V09-L3-SANDBOX-BUILD",
+      "required": true,
+      "description": "Untrusted code runs only in a verified, killable isolated worker and can qualify, register and resume the same task."
+    },
+    {
+      "level_id": "L4",
+      "gate_id": "V09-L4-SCHEMA-RUNTIME",
+      "required": true,
+      "description": "A newly registered repository trains, evaluates, infers and packages without model-specific frontend branches."
+    },
+    {
+      "level_id": "L5",
+      "gate_id": "V09-L5-BLIND-REPRODUCTION",
+      "required": true,
+      "description": "Frozen-source blind testing, negative matrix, browser, process restart and cold reproduction all pass."
+    },
+    {
+      "level_id": "release",
+      "gate_id": "V09-RELEASE-CHAIN",
+      "required": false,
+      "required_for_github_release": true,
+      "description": "The exact verified commit is merged, tagged v0.9.0-rc.1 and published with hashed wheel and sdist assets."
+    }
+  ]
+}
