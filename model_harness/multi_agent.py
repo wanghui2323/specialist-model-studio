@@ -1049,7 +1049,13 @@ class DshConversationV2Projector:
                         "text": "已暂缓当前检查点，继续讨论；没有提交答案或批准。"}})
                     continue
                 if reason_kind == "completed":
-                    if not is_root_session:
+                    if is_root_session:
+                        # Transport termination is an observation, not proof
+                        # that the requested domain outcome was completed.
+                        projected.append({**base, "category": "agent_status",
+                            "type": "turn_finished", "status": "observed",
+                            "payload": {"reason": reason_kind}})
+                    else:
                         projected.append(
                             {
                                 **base,
@@ -2076,6 +2082,12 @@ class DshMultiAgentRuntime:
         return selected
 
     def conversation(self, task_id: str) -> dict[str, Any]:
+        # A refresh must not reconcile a pre-submit history snapshot against a
+        # post-submit run list. Mutations already use this reentrant lock.
+        with self._lock:
+            return self._conversation_snapshot(task_id)
+
+    def _conversation_snapshot(self, task_id: str) -> dict[str, Any]:
         team = self.store.load_team(task_id)
         background_actions = self._background_actions(task_id)
         background_action_running = any(
@@ -2177,7 +2189,9 @@ class DshMultiAgentRuntime:
         # Reconcile once before child reads so real delegate tool results can
         # establish each DSH child session id. Do not close the task run while
         # a newly discovered child may still be working.
-        team = self._reconcile_team(task_id=task_id, running=True)
+        team = self._reconcile_team(
+            task_id=task_id, running=root_running, reconcile_lifecycle=False,
+        )
         team, projection_errors = self._verify_child_lineage(
             task_id=task_id,
             team=team,
@@ -4175,6 +4189,7 @@ class DshMultiAgentRuntime:
         verdict_index: SynthesisVerdictIndex | None = None,
         observation_degraded: bool = False,
         session_terminal_observed: bool = False,
+        reconcile_lifecycle: bool = True,
     ) -> dict[str, Any]:
         team = self._require_team(task_id)
         # team.json rows are canonical and are preserved. Only the current
@@ -4323,7 +4338,7 @@ class DshMultiAgentRuntime:
             }:
                 delegation["status"] = target["status"]
         run_updates: list[dict[str, Any]] = []
-        if team.get("runs"):
+        if reconcile_lifecycle and team.get("runs"):
             run_updates.extend(
                 self._converge_cancel_requested_runs(
                     task_id=task_id,
@@ -4495,7 +4510,20 @@ class DshMultiAgentRuntime:
                     )
             if verdict_index is not None:
                 for historical in team["runs"][:-1]:
-                    if historical.get("status") != "completed":
+                    # Recover old false-running rows only from an exact root
+                    # turn/end observation. A newer queued request, a child
+                    # completion, or coordinator prose cannot close this run.
+                    finished = next((event for event in reversed(events)
+                        if event.get("event_type") == "turn_finished"
+                        and event.get("status") == "observed"
+                        and event.get("session_id") == team.get("root_session_id")
+                        and event.get("agent_run_id") == historical.get("run_id")
+                        and event.get("turn_id")), None)
+                    if historical.get("status") != "completed" and not (
+                        finished and historical.get("status") in {
+                            "running", "waiting_for_human", "idle_without_final",
+                        }
+                    ):
                         continue
                     historical_run_id = str(historical.get("run_id") or "")
                     if not historical_run_id:
@@ -4511,6 +4539,8 @@ class DshMultiAgentRuntime:
                         else "idle_without_final"
                     )
                     historical_evidence = {
+                        **({"terminal_stop_event_id": finished["event_id"]}
+                           if finished else {}),
                         "synthesis_verdict_version": verdict_index.version,
                         "synthesis_candidate_event_id": (
                             historical_verdict.accepted_candidate_event_id
@@ -4552,6 +4582,8 @@ class DshMultiAgentRuntime:
             if current_team.get("runs")
             else {}
         )
+        if not reconcile_lifecycle:
+            return self.store.update_team(task_id, agents=agents, delegations=delegations)
         return self.store.update_team(
             task_id,
             agents=agents,

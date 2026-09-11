@@ -480,14 +480,18 @@
   }
 
   function activeBackgroundWork(task, conversation, actions, checkpoint) {
+    // Modern lifecycle flags describe the live execution snapshot. Historical
+    // AgentRuns/tool observations are not independent background workers.
+    const canonicalExecution = typeof conversation?.execution_running === "boolean";
     const waitingToolNames = new Set(["ask_user_question", "request_user_input"]);
     const waitingForHuman = Boolean(checkpoint?.item);
     const activeActions = actions.filter((action) => {
+      if (canonicalExecution) return false;
       if (!RUNNING_STATUSES.has(normalizedToken(action.status))) return false;
       return !(waitingForHuman && waitingToolNames.has(normalizedToken(action.tool_name)));
     });
     const activeRuns = asArray(conversation?.runs).filter((run) => (
-      isRecord(run) && RUNNING_STATUSES.has(normalizedToken(run.status))
+      !canonicalExecution && isRecord(run) && RUNNING_STATUSES.has(normalizedToken(run.status))
     ));
     const activeTrainingRuns = asArray(conversation?.training_runs).filter((run) => (
       isRecord(run)

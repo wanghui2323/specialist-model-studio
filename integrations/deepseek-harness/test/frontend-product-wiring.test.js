@@ -383,7 +383,7 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(css, /@media\(max-width:720px\)[\s\S]*?\.inspector\{width:100%;z-index:42\}/);
   assert.match(css, /@media\(max-width:720px\)[\s\S]*body\[data-workspace="open"\] \.mobile-view-nav\{display:none\}/);
   for (const asset of ["styles.css", "visual-system.css", "app.js", "conversation-view.js", "interaction-shell.js"]) {
-    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.4\\.9-pc-rc`));
+    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.4\\.10-pc-rc`));
   }
   assert.match(app, /function renderAgentSurfaceState\(conversation, projection\)/);
   assert.doesNotMatch(app, /开始 Agent 会话/);

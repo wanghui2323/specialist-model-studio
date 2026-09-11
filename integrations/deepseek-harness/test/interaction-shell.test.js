@@ -103,6 +103,24 @@ test("a finished background cancellation cannot lock a new native approval", () 
   assert.equal(training.background.training_running, false);
 });
 
+test("canonical idle cannot be overridden by historical AgentRuns or tool observations", () => {
+  const task = { task_id: "task-1" };
+  const conversation = {
+    execution_running: false, running: false, agent_response_running: false,
+    background_action_running: false, interaction_projection: { phase: "idle" },
+    runs: [{ run_id: "old-run", status: "running" }],
+    actions: [action({ status: "running", turn_id: "old-turn" })],
+    background_actions: [{ task_id: "task-1", action_type: "model_binding_analysis", status: "completed", running: false }],
+  };
+  const idle = projection(task, conversation);
+  assert.equal(idle.phase, "idle");
+  assert.equal(idle.background.training_running, false);
+  assert.equal(projection(task, { ...conversation, agent_response_running: true }).phase, "executing");
+  assert.equal(projection(task, { ...conversation, execution_running: true }).phase, "executing");
+  assert.equal(projection(task, { ...conversation, training_runs: [{ task_id: "task-1", run_id: "real-worker", worker_running: true }] }).phase, "executing");
+  assert.equal(projection(task, { ...conversation, items: [{ kind: "approval", event_id: "new", turn_id: "new", status: "pending", rpc_id: "new" }] }).phase, "awaiting_approval");
+});
+
 test("AI turn DOM owns its execution timeline while the user node remains timeline-free", () => {
   const documentRef = new FakeDocument();
   const root = documentRef.createElement("main");
