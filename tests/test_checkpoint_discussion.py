@@ -7,6 +7,7 @@ import test_multi_agent_runtime as fixtures
 from model_harness.agent_bridge import AgentRuntimeError
 from model_harness.multi_agent import (
     DshMultiAgentRuntime, HumanCheckpointConflictError, ComposerRequestConflictError,
+    CONVERSATION_PROJECTOR_REVISION,
 )
 from model_harness.io_utils import read_json
 from model_harness.conversation_actions import classify_conversation_actions
@@ -129,18 +130,26 @@ class CheckpointDiscussionTests(unittest.TestCase):
                     "payload": {"reason": "interrupted"}}
         return team, item, requested, terminal
 
+    def _write_audit(self, *events):
+        for event in events:
+            self.runtime.store.append_event(task_id=self.task_id, event={
+                **event, "type": event["event_type"], "projector_revision": CONVERSATION_PROJECTOR_REVISION,
+                "source_key": f"test-audit-{len(self.runtime.store.list_events(self.task_id))}",
+            })
+
     def test_restart_terminal_precedes_websocket_receipt_but_same_turn_retires_approval(self):
         team, item, requested, terminal = self._persisted_approval()
         # Resumed history no longer exposes the approval; its exact identity
         # remains in the durable RPC audit, alongside an aborted tool result.
         completed = {**requested, "source": "dsh", "event_type": "tool_result"}
-        with patch.object(self.runtime.store, "current_projection_events",
-                          return_value=[requested, completed, terminal]):
-            identity = self.runtime._pending_origin_identity(
-                task_id=self.task_id, session_id=item["session_id"], item=item)
-            self.assertEqual(identity["turn_id"], requested["turn_id"])
-            result = self.runtime._invalidate_pending_after_terminal(
-                task_id=self.task_id, team=team, pending=[{**item, **identity}])
+        self._write_audit(requested, completed, terminal)
+        self.runtime = DshMultiAgentRuntime(workspace_root=self.root, client=self.client,
+                                           events=self.events, cwd=self.root)
+        identity = self.runtime._pending_origin_identity(
+            task_id=self.task_id, session_id=item["session_id"], item=item)
+        self.assertEqual(identity["turn_id"], requested["turn_id"])
+        result = self.runtime._invalidate_pending_after_terminal(
+            task_id=self.task_id, team=team, pending=[{**item, **identity}])
         self.assertEqual(result, [])
         self.assertEqual(self.events.pending_for(item["session_id"]), [])
         resolved = self.runtime.store.list_events(self.task_id)[-1]
@@ -151,10 +160,10 @@ class CheckpointDiscussionTests(unittest.TestCase):
 
     def test_another_turn_terminal_cannot_retire_exact_pending_even_with_later_timestamp(self):
         team, item, requested, terminal = self._persisted_approval()
+        self._write_audit(requested)
         for field in ("agent_run_id", "turn_id", "session_id"):
-            with self.subTest(field=field), patch.object(
-                self.runtime.store, "current_projection_events",
-                return_value=[requested, {**terminal, field: "other", "timestamp_utc": 20}]):
+            self._write_audit({**terminal, field: "other", "timestamp_utc": 20})
+            with self.subTest(field=field):
                 pending = {**item, "agent_run_id": requested["agent_run_id"],
                            "turn_id": requested["turn_id"]}
                 self.assertEqual(self.runtime._invalidate_pending_after_terminal(
@@ -162,19 +171,18 @@ class CheckpointDiscussionTests(unittest.TestCase):
 
     def test_durable_rpc_identity_requires_exact_rpc_approval_call_and_session(self):
         _, item, requested, _ = self._persisted_approval()
-        with patch.object(self.runtime.store, "current_projection_events", return_value=[requested]):
-            for field in ("rpc_id", "approval_id", "call_id", "session_id"):
-                changed = {**item, field: "other"}
-                with self.subTest(field=field):
-                    self.assertEqual(self.runtime._pending_origin_identity(
-                        task_id=self.task_id, session_id=changed["session_id"], item=changed), {})
+        self._write_audit(requested)
+        for field in ("rpc_id", "approval_id", "call_id", "session_id"):
+            changed = {**item, field: "other"}
+            with self.subTest(field=field):
+                self.assertEqual(self.runtime._pending_origin_identity(
+                    task_id=self.task_id, session_id=changed["session_id"], item=changed), {})
 
     def test_ambiguous_durable_rpc_identity_is_not_reassigned_to_latest_invocation(self):
         _, item, requested, _ = self._persisted_approval()
-        with patch.object(self.runtime.store, "current_projection_events",
-                          return_value=[requested, {**requested, "agent_run_id": "other-run"}]):
-            self.assertEqual(self.runtime._pending_origin_identity(
-                task_id=self.task_id, session_id=item["session_id"], item=item), {})
+        self._write_audit(requested, {**requested, "agent_run_id": "other-run"})
+        self.assertEqual(self.runtime._pending_origin_identity(
+            task_id=self.task_id, session_id=item["session_id"], item=item), {})
 
     def test_suspended_action_requires_exact_resolution_identity(self):
         call = tool_call()

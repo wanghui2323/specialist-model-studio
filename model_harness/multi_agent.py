@@ -3833,8 +3833,11 @@ class DshMultiAgentRuntime:
         # A resumed DSH history may omit an interrupted approval and include
         # its aborted tool result. Recover only the exact previously observed
         # RPC identity, never the newest invocation of this root/child session.
-        requested = [event for event in events
+        requested = [event for event in self.store.list_events(task_id)
                      if event.get("source") == "dsh_pending"
+                     and event.get("projector_revision") == CONVERSATION_PROJECTOR_REVISION
+                     and event.get("task_id") == task_id
+                     and event.get("session_id") == session_id
                      and event.get("event_type") == kind
                      and event.get("payload", {}).get("phase") == "requested"
                      and event.get("payload", {}).get("rpc_id") == item.get("rpc_id")
