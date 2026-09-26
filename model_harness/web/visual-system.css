@@ -1149,6 +1149,7 @@ body .recovered-action-evidence > summary {
 
 body .csv-schema-overview {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-3);
@@ -1168,9 +1169,11 @@ body .csv-schema-overview b {
 
 body .csv-schema-overview span,
 body .csv-target-block > small {
+  min-width: 0;
   color: var(--text-tertiary);
   font-size: var(--text-xs);
   line-height: var(--leading-xs);
+  overflow-wrap: anywhere;
 }
 
 body .csv-column-choices {

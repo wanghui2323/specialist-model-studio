@@ -210,7 +210,7 @@ async function invokeComposerRetry() {
   try { await action(); }
   finally { if (!ui.composerRetry.hidden) setButtonBusy(ui.composerRetryButton, false, ""); }
 }
-const COMPOSER_ATTACHMENT_STATUS = { pending: "待核对", validating: "校验中", ready: "已就绪", failed: "失败" };
+const COMPOSER_ATTACHMENT_STATUS = { pending: "待核对", validating: "校验中", ready: "已导入", failed: "失败" };
 function attachmentTypeLabel(file) {
   const extension = String(file?.name || "").split(".").pop()?.toUpperCase();
   if (extension === "CSV" || extension === "ZIP") return extension;
@@ -548,7 +548,7 @@ function workflowStatus(task, conversation = null) {
   if (backgroundCancellationPending(conversation)) return { label: "正在停止", tone: "cancelling" };
   const checkpoint = currentHumanCheckpoint(conversation);
   if (checkpoint?.kind === "question") return { label: "等待你的回答", tone: "needs_confirmation" };
-  if (checkpoint?.kind === "approval") return { label: "等待你的批准", tone: "needs_confirmation" };
+  if (checkpoint?.kind === "approval") return { label: approvalPresentation(checkpoint).header, tone: "needs_confirmation" };
   if (conversationAgentResponseRunning(conversation)) return { label: "AI 正在处理", tone: "running" };
   if (conversationHasBackgroundTraining(conversation)) return { label: "后台操作进行中", tone: "running" };
   if (conversation?.interaction_state === "waiting_for_human") return { label: "等待你的决定", tone: "needs_confirmation" };
@@ -578,7 +578,7 @@ function canonicalInteractionPresentation(conversation = state.conversation) {
     observation_degraded: { label: "需要重新连接", tone: "failed" },
     stopping: { label: "正在停止", tone: "cancelling" },
     waiting_question: { label: "等待你的回答", tone: "needs_confirmation" },
-    waiting_approval: { label: "等待你的批准", tone: "needs_confirmation" },
+    waiting_approval: { label: approvalPresentation(currentHumanCheckpoint(conversation) || {}).header, tone: "needs_confirmation" },
     agent_working: { label: "AI 正在处理", tone: "running" },
     background_working: { label: "后台操作进行中", tone: "running" },
     completed: { label: "本轮结果已就绪", tone: "completed" },
@@ -604,7 +604,7 @@ function interactionPresentation(task, conversation = state.conversation, projec
   if (canonical) return canonical;
   const projectionStatus = projection ? ({
     clarifying: { label: "等待你的回答", tone: "needs_confirmation" },
-    awaiting_approval: { label: "等待你的批准", tone: "needs_confirmation" },
+    awaiting_approval: { label: approvalPresentation(currentHumanCheckpoint(conversation) || {}).header, tone: "needs_confirmation" },
     executing: { label: backgroundCancellationPending(conversation) ? "正在停止" : conversationAgentResponseRunning(conversation) ? "AI 正在处理" : conversationHasBackgroundTraining(conversation) ? "后台操作进行中" : projection.background?.coordinator_reply_complete ? "后台操作进行中" : "AI 正在处理", tone: backgroundCancellationPending(conversation) ? "cancelling" : "running" },
     result_ready: { label: "本轮结果已就绪", tone: "completed" },
     blocked: { label: "任务当前受阻", tone: "failed" },
@@ -2628,7 +2628,7 @@ function hydrateActionTimelineResults(section, actions) {
 function renderRecoveredActionRow(action, target) {
   const row = document.createElement("article"); row.className = "agent-action"; row.dataset.status = "completed"; row.dataset.toolClass = action.tool_class; row.dataset.actionId = action.action_id || "identity-error"; row.dataset.recoveredFailure = "true";
   const mark = document.createElement("i"); mark.setAttribute("aria-hidden", "true"); mark.textContent = "✓";
-  const copy = document.createElement("div"); const meta = document.createElement("span"); meta.className = "agent-action-meta"; const role = document.createElement("b"); role.textContent = roleLabel(action.actor_role); const timing = document.createElement("small"); timing.textContent = "已由后续正确调用完成"; meta.append(role, timing); const title = document.createElement("h4"); title.textContent = actionTitle(action); copy.append(meta, title);
+  const copy = document.createElement("div"); const meta = document.createElement("span"); meta.className = "agent-action-meta"; const role = document.createElement("b"); role.textContent = roleLabel(action.actor_role); const timing = document.createElement("small"); timing.textContent = "已完成"; meta.append(role, timing); const title = document.createElement("h4"); title.textContent = actionTitle(action); copy.append(meta, title);
   const evidence = document.createElement("details"); evidence.className = "recovered-action-evidence"; evidence.dataset.originalStatus = action.status; evidence.dataset.actionId = action.action_id || "identity-error"; const summary = document.createElement("summary"); summary.textContent = "查看初次调用记录"; const error = document.createElement("p"); error.className = "agent-action-error"; error.textContent = action.error?.message || action.error?.code || "初次调用没有完成，后续已由正确角色重新执行。"; evidence.append(summary, error); const refs = document.createElement("div"); refs.className = "agent-action-evidence"; appendObjectRefs(refs, action.object_refs || []); if (action.event_result_ref) { const button = document.createElement("button"); button.type = "button"; button.textContent = "技术详情"; button.addEventListener("click", () => openEventResultRef(action.event_result_ref)); refs.append(button); } if (refs.childElementCount) evidence.append(refs); copy.append(evidence);
   const status = document.createElement("em"); status.textContent = "已处理"; row.append(mark, copy, status); target.append(row);
 }
@@ -2649,8 +2649,8 @@ function renderActionRow(action, target, { waitingForHuman = false, recovered = 
 }
 function renderDelegationGroup(group, groups, target, visited, depth = 0, { waitingForHuman = false, recoveredFailures = new Set() } = {}) {
   if (visited.has(group.id)) return; visited.add(group.id);
-  const details = document.createElement("details"); details.className = "delegation-group"; const hasDeclined = group.actions.some(isUserDeclinedAction); const hasFailure = group.actions.some((action) => ["failed", "identity_error"].includes(action.status) && !recoveredFailures.has(action) && !isUserDeclinedAction(action)); const waitingForAnswer = group.actions.some((action) => isWaitingForAnswerAction(action, waitingForHuman)); const running = group.actions.some((action) => action.status === "running" && !isWaitingForAnswerAction(action, waitingForHuman)); details.open = depth === 0 || running || waitingForAnswer || hasFailure; details.dataset.status = hasFailure ? "failed" : running ? "running" : waitingForAnswer ? "waiting" : hasDeclined ? "declined" : "completed";
-  const summary = document.createElement("summary"); const copy = document.createElement("span"); const title = document.createElement("b"); const first = group.actions[0]; const delegationAction = group.actions.find((action) => action.tool_class === "delegation"); const delegatedRole = delegationAction?.tool_name && ConversationView?.ROLE_LABELS?.[delegationAction.tool_name] ? delegationAction.tool_name : null; const summaryRole = group.root ? "orchestrator" : group.binding?.target_agent_id || delegatedRole || first?.actor_role; title.textContent = group.unverified ? "未能验证归属的运行时观察" : group.root ? "训练协调器" : roleLabel(summaryRole); const counts = document.createElement("small"); const domainCount = group.actions.filter((action) => action.tool_class === "domain").length; const controlCount = group.actions.filter((action) => action.tool_class === "control").length; const objectCount = group.actions.reduce((total, action) => total + (action.object_refs?.length || 0), 0); counts.textContent = `${roleLabel(summaryRole)} · ${domainCount} 个领域动作 · ${controlCount} 个控制动作 · ${objectCount} 个对象`; copy.append(title, counts); const stateLabel = document.createElement("em"); stateLabel.textContent = hasFailure ? "需要处理" : running ? "执行中" : waitingForAnswer ? "等待你的决定" : hasDeclined ? "你选择暂不执行" : "已结束"; summary.append(copy, stateLabel); details.append(summary);
+  const details = document.createElement("details"); details.className = "delegation-group"; const hasDeclined = group.actions.some(isUserDeclinedAction); const hasFailure = group.actions.some((action) => ["failed", "identity_error"].includes(action.status) && !recoveredFailures.has(action) && !isUserDeclinedAction(action)); const waitingForAnswer = group.actions.some((action) => isWaitingForAnswerAction(action, waitingForHuman)); const running = group.actions.some((action) => action.status === "running" && !isWaitingForAnswerAction(action, waitingForHuman)); details.open = hasFailure || running || waitingForAnswer || (!group.unverified && !waitingForHuman && depth === 0); details.dataset.status = hasFailure ? "failed" : running ? "running" : waitingForAnswer ? "waiting" : hasDeclined ? "declined" : "completed";
+  const summary = document.createElement("summary"); const copy = document.createElement("span"); const title = document.createElement("b"); const first = group.actions[0]; const delegationAction = group.actions.find((action) => action.tool_class === "delegation"); const delegatedRole = delegationAction?.tool_name && ConversationView?.ROLE_LABELS?.[delegationAction.tool_name] ? delegationAction.tool_name : null; const summaryRole = group.root ? "orchestrator" : group.binding?.target_agent_id || delegatedRole || first?.actor_role; title.textContent = group.unverified ? "未归属的执行记录" : group.root ? "训练协调器" : roleLabel(summaryRole); const counts = document.createElement("small"); const domainCount = group.actions.filter((action) => action.tool_class === "domain").length; const controlCount = group.actions.filter((action) => action.tool_class === "control").length; const objectCount = group.actions.reduce((total, action) => total + (action.object_refs?.length || 0), 0); counts.textContent = group.unverified ? `${group.actions.length} 项记录 · 不作为当前决定` : `${roleLabel(summaryRole)} · ${domainCount} 个领域动作 · ${controlCount} 个控制动作 · ${objectCount} 个对象`; copy.append(title, counts); const stateLabel = document.createElement("em"); stateLabel.textContent = hasFailure ? "需要处理" : running ? "执行中" : waitingForAnswer ? "等待你的决定" : hasDeclined ? "你选择暂不执行" : "已结束"; summary.append(copy, stateLabel); details.append(summary);
   const list = document.createElement("div"); list.className = "agent-action-list"; group.actions.forEach((action) => renderActionRow(action, list, { waitingForHuman, recovered: recoveredFailures.has(action) }));
   (group.children || []).map((id) => groups.get(id)).filter(Boolean).forEach((child) => renderDelegationGroup(child, groups, list, visited, depth + 1, { waitingForHuman, recoveredFailures })); details.append(list); target.append(details);
 }
@@ -2731,6 +2731,7 @@ function appendInlineMarkdown(container, text) {
     const token = match[0];
     if (token.startsWith("**")) { const strong = document.createElement("strong"); strong.textContent = token.slice(2, -2); container.append(strong); }
     else if (token.startsWith("`")) { const code = document.createElement("code"); code.textContent = token.slice(1, -1); container.append(code); }
+    else if (/^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/.test(token)) container.append(document.createTextNode("结果面板"));
     else { const link = document.createElement("a"); link.href = token; link.target = "_blank"; link.rel = "noreferrer"; link.textContent = token; container.append(link); }
     cursor = match.index + token.length;
   }
@@ -2890,17 +2891,17 @@ function eventStatusLabel(value) { return ({ queued: "排队中", running: "执�
 function approvalPresentation(item) {
   // The approval subject is a typed runtime fact, never inferred from prose.
   const raw = String(item?.tool_name || item?.name || "").toLowerCase();
-  if (raw === "model_harness_bind_model_source") return { title: "确认绑定来源并做静态分析", copy: "批准只会绑定已解析的不可变来源，并读取公开源文件保存静态分析证据；不代表批准下载权重、安装代码或训练。", allow: "确认绑定并分析", reject: "暂不绑定" };
-  if (raw === "model_harness_decide_training_plan") return { title: "确认这版执行计划", copy: "请核对计划版本、资源和安全边界；计划批准不等同于运行或能力注册批准。", allow: "确认当前计划", reject: "返回修改" };
-  if (raw === "model_harness_register_recipe") return { title: "批准注册这份已验证能力", copy: "注册必须匹配本次真实验证证据与摘要，不会自动启动训练。", allow: "批准本次注册", reject: "暂不注册" };
-  if (raw === "model_harness_check_resource_feasibility") return { title: "批准检查本机资源条件", copy: "按当前已批准计划记录机器与隔离环境情况；探测到 GPU 不代表当前执行器能使用它。", allow: "批准资源检查", reject: "暂不检查" };
-  if (["model_harness_authorize_task_run_start", "model_harness_start_task_run"].includes(raw)) return { title: "批准方案并启动本次训练", copy: "批准后，训练协调器只会按当前已冻结的数据与训练合同启动一次真实 Run。", allow: "批准并启动训练", reject: "暂不启动" };
-  if (raw === "model_harness_confirm_contract") return { title: "确认并锁定这版训练合同", copy: "请核对目标、数据、评测门槛和资源限制；批准只对当前版本有效。", allow: "确认并锁定", reject: "返回修改" };
-  if (["model_harness_authorize_sample_inference", "model_harness_run_sample_inference"].includes(raw)) return { title: "批准这次新样本试跑", copy: "批准后只会对当前任务、当前训练结果和这份已上传的新样本执行一次推理；不会重新训练或修改模型。", allow: "批准本次试跑", reject: "暂不试跑" };
-  if (raw === "model_harness_download_artifact_bundle") return { title: "确认下载这个交付包", copy: "批准只允许下载当前任务中这个已核验的 ZIP 一次，并写入你选择的新文件；不会复用构建授权，也不会覆盖已有文件。", allow: "确认并下载", reject: "暂不下载" };
-  if (["model_harness_authorize_artifact_bundle_build", "model_harness_build_artifact_bundle"].includes(raw)) return { title: "构建可下载交付包", copy: "批准后会把本次运行中允许交付的模型、指标与预测结果打包；原始数据和内部路径不会进入交付包。", allow: "批准构建交付包", reject: "暂不打包" };
-  if (raw === "model_harness_import_dataset") return { title: "批准导入并体检这份数据", copy: "系统会按当前任务的数据合同读取文件，并留下可追溯的数据指纹。", allow: "批准并继续", reject: "暂不导入" };
-  return { title: item?.title || "批准关键操作", copy: item?.reason || item?.summary || "协调器请求执行会改变任务状态的操作。", allow: "批准并继续", reject: "暂不执行" };
+  if (raw === "model_harness_bind_model_source") return { header: "等待确认来源", title: "确认绑定来源并做静态分析", copy: "批准只会绑定已解析的不可变来源，并读取公开源文件保存静态分析证据；不代表批准下载权重、安装代码或训练。", allow: "确认绑定并分析", reject: "暂不绑定" };
+  if (raw === "model_harness_decide_training_plan") return { header: "等待确认计划", title: "确认这版执行计划", copy: "请核对计划版本、资源和安全边界；计划批准不等同于运行或能力注册批准。", allow: "确认当前计划", reject: "返回修改" };
+  if (raw === "model_harness_register_recipe") return { header: "等待批准注册", title: "批准注册这份已验证能力", copy: "注册必须匹配本次真实验证证据与摘要，不会自动启动训练。", allow: "批准本次注册", reject: "暂不注册" };
+  if (raw === "model_harness_check_resource_feasibility") return { header: "等待资源检查", title: "批准检查本机资源条件", copy: "按当前已批准计划记录机器与隔离环境情况；探测到 GPU 不代表当前执行器能使用它。", allow: "批准资源检查", reject: "暂不检查" };
+  if (["model_harness_authorize_task_run_start", "model_harness_start_task_run"].includes(raw)) return { header: "等待启动训练", title: "批准方案并启动本次训练", copy: "批准后，训练协调器只会按当前已冻结的数据与训练合同启动一次真实 Run。", allow: "批准并启动训练", reject: "暂不启动" };
+  if (raw === "model_harness_confirm_contract") return { header: "等待锁定合同", title: "确认并锁定这版训练合同", copy: "请核对目标、数据、评测门槛和资源限制；批准只对当前版本有效。", allow: "确认并锁定", reject: "返回修改" };
+  if (["model_harness_authorize_sample_inference", "model_harness_run_sample_inference"].includes(raw)) return { header: "等待批准试跑", title: "批准这次新样本试跑", copy: "批准后只会对当前任务、当前训练结果和这份已上传的新样本执行一次推理；不会重新训练或修改模型。", allow: "批准本次试跑", reject: "暂不试跑" };
+  if (raw === "model_harness_download_artifact_bundle") return { header: "等待确认下载", title: "确认下载这个交付包", copy: "批准只允许下载当前任务中这个已核验的 ZIP 一次，并写入你选择的新文件；不会复用构建授权，也不会覆盖已有文件。", allow: "确认并下载", reject: "暂不下载" };
+  if (["model_harness_authorize_artifact_bundle_build", "model_harness_build_artifact_bundle"].includes(raw)) return { header: "等待构建交付包", title: "构建可下载交付包", copy: "批准后会把本次运行中允许交付的模型、指标与预测结果打包；原始数据和内部路径不会进入交付包。", allow: "批准构建交付包", reject: "暂不打包" };
+  if (raw === "model_harness_import_dataset") return { header: "等待导入数据", title: "批准导入并体检这份数据", copy: "系统会按当前任务的数据合同读取文件，并留下可追溯的数据指纹。", allow: "批准并继续", reject: "暂不导入" };
+  return { header: "等待你的批准", title: item?.title || "批准关键操作", copy: item?.reason || item?.summary || "协调器请求执行会改变任务状态的操作。", allow: "批准并继续", reject: "暂不执行" };
 }
 function appendApprovalScope(card, item) {
   const fields = [
@@ -3130,8 +3131,18 @@ function renderObjectViewerOverview(ref, payload) {
   const note = document.createElement("p"); note.textContent = presentation.note; ui.objectViewerOverview.append(title, list, note);
   if (presentation.files.length) { const heading = document.createElement("h4"); heading.textContent = "包内文件"; const files = document.createElement("ul"); presentation.files.forEach((path) => { const item = document.createElement("li"); item.textContent = path; files.append(item); }); ui.objectViewerOverview.append(heading, files); }
 }
+function objectViewerChrome(ref, stateLabel) {
+  if (stateLabel === "读取中") return { label: "读取中", state: "running" };
+  if (stateLabel === "读取失败" || stateLabel === "身份不匹配" || stateLabel === "暂不支持") return { label: stateLabel, state: "failed" };
+  if (stateLabel !== "读取成功") return { label: stateLabel, state: "recorded" };
+  const type = normalizeObjectRefType(ref?.type);
+  if (type === "blocker") return { label: "阻断证据", state: "blocked" };
+  if (TERMINAL_RESULT_REF_TYPES.has(type)) return { label: "结果证据", state: "recorded" };
+  return { label: "已打开记录", state: "recorded" };
+}
 function setObjectViewerState(ref, { stateLabel, summary, payload = null }) {
-  state.activeObjectPayload = payload; ui.objectViewerState.textContent = stateLabel; ui.objectViewerState.dataset.state = stateLabel === "读取成功" ? "completed" : stateLabel === "读取中" ? "running" : "failed"; ui.objectViewerTitle.textContent = ref.label || `${ref.type || "对象"} · ${shortId(ref.id)}`; ui.objectViewerSummary.textContent = summary; clear(ui.objectViewerIdentity);
+  const chrome = objectViewerChrome(ref, stateLabel);
+  state.activeObjectPayload = payload; ui.objectViewerState.textContent = chrome.label; ui.objectViewerState.dataset.state = chrome.state; ui.objectViewerTitle.textContent = ref.label || `${ref.type || "对象"} · ${shortId(ref.id)}`; ui.objectViewerSummary.textContent = summary; clear(ui.objectViewerIdentity);
   const identity = [["type", ref.type], ["id", ref.id], ["task_id", ref.task_id], ["run_id", ref.run_id], ["revision", ref.revision || ref.base_spec_revision], ["digest", ref.digest || ref.semantic_digest || ref.plan_sha256 || ref.report_sha256 || ref.manifest_sha256]];
   identity.filter(([, value]) => value !== undefined && value !== null && value !== "").forEach(([label, value]) => { const row = document.createElement("div"); const term = document.createElement("dt"); term.textContent = label; const detail = document.createElement("dd"); detail.textContent = String(value); row.append(term, detail); ui.objectViewerIdentity.append(row); });
   renderObjectViewerOverview(ref, payload);
