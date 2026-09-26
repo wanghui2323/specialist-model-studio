@@ -70,6 +70,18 @@ export function publicProjection(value) {
   return typeof value === "string" ? publicText(value) : value;
 }
 
+export function isAcceptedModelTrialReplay(trial, { taskId, trialId, planSha256, sessionId, checkpointId }) {
+  const acceptedStates = new Set(["queued", "starting", "running", "cancel_requested", "succeeded", "failed",
+    "cancelled", "timed_out", "blocked_environment", "observation_degraded"]);
+  const approval = trial?.approval;
+  return Boolean(taskId && trialId && sessionId && checkpointId && /^[0-9a-f]{64}$/.test(planSha256 || "")
+    && trial?.task_id === taskId && trial.trial_id === trialId && trial.plan_sha256 === planSha256
+    && acceptedStates.has(trial.status) && approval?.actor === "user"
+    && approval.verified_by === "agent_bridge_token" && approval.checkpoint_id === checkpointId
+    && approval.scope_sha256 === planSha256 && approval.lineage?.task_id === taskId
+    && approval.lineage?.session_id === sessionId && approval.lineage?.call_id === checkpointId);
+}
+
 export class ModelHarnessClient {
   constructor(
     baseUrl = process.env.MODEL_HARNESS_URL || DEFAULT_BASE_URL,
@@ -716,6 +728,78 @@ export class ModelHarnessClient {
         approval: { actor: "user", checkpoint_id: checkpointId },
       },
     });
+  }
+
+  async listModelTrials(taskId, signal) {
+    if (typeof taskId !== "string" || !taskId.trim()) {
+      throw new Error("ModelTrial list requires an exact task_id");
+    }
+    const result = await this.request(`/tasks/${encodeURIComponent(taskId)}/model-trials`, { signal });
+    const records = result?.model_trials;
+    if (!Array.isArray(records) || records.some((trial) => !trial || trial.task_id !== taskId
+        || typeof trial.trial_id !== "string" || !trial.trial_id.trim())
+        || new Set(records.map((trial) => trial.trial_id)).size !== records.length) {
+      throw new Error("ModelTrial list returned invalid or cross-task records");
+    }
+    return result;
+  }
+
+  getModelTrial(taskId, trialId, signal) {
+    if (!String(taskId || "").trim() || !String(trialId || "").trim()) {
+      throw new Error("ModelTrial lookup requires exact task_id and trial_id");
+    }
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/model-trials/${encodeURIComponent(trialId)}`,
+      { signal },
+    );
+  }
+
+  async executeModelTrial(taskId, trialId, options = {}, signal) {
+    const planSha256 = String(options.expectedPlanSha256 || "").trim();
+    const checkpointId = String(options.approvalCheckpointId || "").trim();
+    const lineage = options.lineage;
+    if (!/^[0-9a-f]{64}$/.test(planSha256) || !checkpointId) {
+      throw new Error("ModelTrial execution requires exact plan SHA-256 and native approval checkpoint");
+    }
+    if (!lineage || lineage.task_id !== taskId || lineage.call_id !== checkpointId
+        || typeof lineage.session_id !== "string" || !lineage.session_id.trim()) {
+      throw new Error("ModelTrial execution requires observed task/session/call lineage");
+    }
+    // These three values are observed by the native tool runtime. The server
+    // resolves agent_run_id/turn_id from the exact authoritative projection;
+    // never invent either identity from a session id or caller arguments.
+    const observedLineage = {
+      task_id: taskId, session_id: lineage.session_id, call_id: checkpointId,
+    };
+    const current = await this.getModelTrial(taskId, trialId, signal);
+    const trial = current?.model_trial;
+    if (!trial || trial.task_id !== taskId || trial.trial_id !== trialId
+        || trial.plan_sha256 !== planSha256) {
+      throw new Error("ModelTrial approval no longer matches the canonical task/trial/plan digest");
+    }
+    if (isAcceptedModelTrialReplay(trial, { taskId, trialId, planSha256,
+      sessionId: observedLineage.session_id, checkpointId })) {
+      return { ...current, idempotent_replay: true, historical_evidence: true, dispatch_performed: false };
+    }
+    if (trial.status !== "pending_approval" || trial.stale !== false) {
+      throw new Error("ModelTrial execution requires a current non-stale pending_approval plan");
+    }
+    const limits = trial.limits;
+    if (!limits || limits.cpus !== 1
+        || !Number.isSafeInteger(limits.memory_bytes) || limits.memory_bytes <= 0 || limits.memory_bytes > 536870912
+        || !Number.isSafeInteger(limits.timeout_seconds) || limits.timeout_seconds <= 0 || limits.timeout_seconds > 30
+        || !Number.isSafeInteger(limits.pids_limit) || limits.pids_limit <= 0 || limits.pids_limit > 128) {
+      throw new Error("ModelTrial exceeds native approval limits: CPU 1, 512 MiB, 30 seconds, 128 processes");
+    }
+    const headers = this.agentBridgeApprovalHeaders();
+    return this.request(
+      `/tasks/${encodeURIComponent(taskId)}/model-trials/${encodeURIComponent(trialId)}/execute`,
+      {
+        method: "POST", signal, headers,
+        body: { expected_plan_sha256: planSha256,
+          approval: { actor: "user", checkpoint_id: checkpointId }, lineage: observedLineage },
+      },
+    );
   }
 
   authorizeTaskRunStart(taskId, options = {}, signal) {

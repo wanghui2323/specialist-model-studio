@@ -458,9 +458,9 @@ class ServerTests(unittest.TestCase):
                 console = client.get("/app")
                 self.assertEqual(console.status_code, 200)
                 self.assertIn("Specialist Model Studio · 专业模型智能工作台", console.text)
-                self.assertIn("想训练一个什么模型？", console.text)
-                self.assertIn("先通过对话把目标说清楚", console.text)
-                self.assertIn("可联网查找开源模型", console.text)
+                self.assertIn("想让模型帮你解决什么问题？", console.text)
+                self.assertIn("先说目标、手头的数据和限制", console.text)
+                self.assertIn("查找开源模型", console.text)
                 self.assertNotIn("Workspace Write", console.text)
 
                 chat = client.post("/chat", json={"message": "有哪些能力"})

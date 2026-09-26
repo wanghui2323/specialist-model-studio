@@ -63,6 +63,8 @@ from .huggingface_catalog import HuggingFaceCatalog
 from .github_source import GitHubSourceProvider
 from .inference_inputs import InferenceInputError, InferenceInputStore
 from .model_assets import ModelAssetError, ModelAssetStore
+from .model_trials import ModelTrialService
+from .oci_jobs import OCIJobConfig, OCIJobExecutor, MAX_PAYLOAD_BYTES
 from .model_source_store import ModelSourceStore, model_search_contains_credentials
 from .model_sources import (
     ModelSourceError,
@@ -503,6 +505,12 @@ class TrainingWorkspace:
         self.repository_analysis_store = RepositoryAnalysisStore(self.root)
         self.binding_analysis_attempt_store = BindingAnalysisAttemptStore(self.root)
         self._lock = RLock()
+        trial_config = OCIJobConfig.from_environment()
+        self.model_trial_executor = OCIJobExecutor(trial_config) if trial_config else None
+        self.model_trials = ModelTrialService(
+            self.root, self.model_trial_executor, self._model_trial_context,
+            self._model_trial_payload, lock=self._lock,
+        )
         self._binding_executor = ThreadPoolExecutor(
             max_workers=2,
             thread_name_prefix="model-binding",
@@ -516,11 +524,72 @@ class TrainingWorkspace:
         self._recover_pending_runs()
 
     def close(self) -> None:
+        self.model_trials.close()
         with self._lock:
             if self._binding_executor_closed:
                 return
             self._binding_executor_closed = True
         self._binding_executor.shutdown(wait=True, cancel_futures=False)
+
+    def _model_trial_context(self, task_id: str) -> dict[str, Any]:
+        """Freeze the actual task-owned legacy ONNX binding, never invent a BYOM ID."""
+        with self._lock:
+            if not self.task_exists(task_id):
+                raise FileNotFoundError("task not found")
+            task = read_json(self._task_path(task_id))
+            binding = task.get("model_asset_binding") or {}
+            asset_id = task.get("selected_model_asset_id")
+            revision = task.get("current_spec_revision")
+            if (not asset_id or asset_id not in task.get("model_asset_ids", [])
+                    or binding.get("asset_id") != asset_id
+                    or binding.get("binding") != "image_classification_onnx_feature_v1"
+                    or binding.get("attached_spec_revision") != revision):
+                raise HarnessError("model_trial_requires_current_verified_onnx_binding")
+            verified = self.model_assets.verify(asset_id)
+            if not verified.ok or verified.asset.manifest_sha256 != binding.get("manifest_sha256"):
+                raise HarnessError("model_trial_asset_integrity_failed")
+            asset = verified.asset
+            records = {item.relative_path: item for item in asset.files}
+            if not {"model.onnx", "config.json"} <= records.keys():
+                raise HarnessError("model_trial_asset_files_missing")
+            return {
+                "task_id": task_id, "spec_revision": revision,
+                "dataset_id": task.get("dataset_id"), "model_asset_id": asset_id,
+                "model_manifest_sha256": asset.manifest_sha256,
+                "model_sha256": records["model.onnx"].sha256,
+                "config_sha256": records["config.json"].sha256,
+                "model_repo_id": asset.repo_id, "resolved_commit": asset.resolved_commit,
+                "binding_sha256": hashlib.sha256(json.dumps(binding, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                "archived": bool(task.get("archived_at_utc")),
+            }
+
+    def _model_trial_payload(self, task_id: str, record: dict[str, Any], input_bytes: bytes) -> bytes:
+        with self._lock:
+            context = self._model_trial_context(task_id)
+            expected = record["context"]
+            if context.get("archived") or any(context.get(key) != value for key, value in expected.items() if key != "archived"):
+                raise HarnessError("model_trial_context_changed")
+            asset_id = context["model_asset_id"]
+            handle = resolve_training_asset(self.model_assets, asset_id, required_files=("model.onnx", "config.json"))
+            blobs = {"sample": base64.b64encode(input_bytes).decode("ascii")}
+            for name, limit in (("model.onnx", 16 * 1024 * 1024), ("config.json", 1024 * 1024)):
+                path = handle.file(name)
+                if path.stat().st_size > limit:
+                    raise HarnessError("model_trial_asset_size_limit")
+                content = path.read_bytes()
+                field = "model_sha256" if name == "model.onnx" else "config_sha256"
+                if hashlib.sha256(content).hexdigest() != context[field]:
+                    raise HarnessError("model_trial_asset_changed")
+                blobs[name] = base64.b64encode(content).decode("ascii")
+            packet = json.dumps({
+                "schema_version": "1.0", "task_id": task_id,
+                "trial_id": record["trial_id"], "plan_sha256": record["plan_sha256"],
+                "input_sha256": record["input"]["sha256"],
+                "asset": handle.asset.to_dict(), "blobs": blobs,
+            }, ensure_ascii=False, separators=(",", ":")).encode()
+            if len(packet) > MAX_PAYLOAD_BYTES:
+                raise HarnessError("model_trial_packet_size_limit")
+            return packet
 
     def create_conversation(
         self,
@@ -1593,14 +1662,41 @@ class TrainingWorkspace:
         """Soft-archive a task while preserving its task and run evidence."""
 
         with self._lock:
-            task = read_json(self._task_path(task_id))
+            task_path = self._task_dir(task_id) / "task.json"
+            task = read_json(task_path)
             if task.get("status") == "running":
                 raise HarnessError("真实训练运行中，暂不能归档任务")
+            if task.get("pending_run"):
+                raise HarnessError("任务仍有待核验的运行请求，暂不能归档任务")
+            # A source read or a cancelling Run can outlive the Agent turn and
+            # even its durable terminal status. Check the actual owned workers
+            # while holding the same lock used to submit domain work.
+            if any(
+                action.get("running") is True
+                or action.get("worker_running") is True
+                or action.get("status") in {"queued", "running", "cancel_requested"}
+                for action in self.task_background_actions(task_id)
+            ):
+                raise HarnessError("任务仍有后台操作或停止请求尚未完成，暂不能归档任务")
             if not task.get("archived_at_utc"):
                 archived_at = _utc_now()
                 task["archived_at_utc"] = archived_at
                 task["updated_at_utc"] = archived_at
-                write_json(self._task_path(task_id), task)
+                write_json(task_path, task)
+        return self.get_task(task_id)
+
+    def restore_task(self, task_id: str) -> dict[str, Any]:
+        """Restore list visibility only; never resume work or issue authority."""
+
+        with self._lock:
+            # Unlike the creation helper, a missing identity must not create an
+            # empty task directory merely because somebody requested restore.
+            task_path = self._task_dir(task_id) / "task.json"
+            task = read_json(task_path)
+            if task.get("archived_at_utc"):
+                task.pop("archived_at_utc")
+                task["updated_at_utc"] = _utc_now()
+                write_json(task_path, task)
         return self.get_task(task_id)
 
     def search_huggingface_models(
@@ -5035,7 +5131,7 @@ class TrainingWorkspace:
         """Return task-owned work whose worker may outlive an Agent response."""
 
         task = read_json(self._task_path(task_id))
-        actions: list[dict[str, Any]] = []
+        actions: list[dict[str, Any]] = list(self.model_trials.background_actions(task_id))
         for run_id in task.get("run_ids", []):
             if not isinstance(run_id, str) or not run_id:
                 continue
@@ -5152,6 +5248,8 @@ class TrainingWorkspace:
                         attempt_id,
                         reason=reason,
                     )
+            elif action.get("action_type") == "model_trial":
+                self.model_trials.cancel(task_id, action["trial_id"])
         return self.task_background_actions(task_id)
 
     def evaluation_report(self, task_id: str, run_id: str) -> dict[str, Any]:
@@ -6647,6 +6745,8 @@ class TrainingWorkspace:
             family = "image_classification"
         elif manifest.plugin_id == "tabular-regression":
             family = "tabular_regression"
+        elif manifest.plugin_id == "tabular-classification":
+            family = "tabular_classification"
         elif manifest.plugin_id == "digit-classification":
             family = "image_classification"
         else:

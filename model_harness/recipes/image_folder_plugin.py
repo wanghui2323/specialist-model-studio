@@ -223,7 +223,9 @@ class ImageFolderClassificationPlugin:
                 )
             )
         current_size = int(options["image_size"])
-        if metrics["clean_test"]["macro_f1"] < 0.90 and current_size < 48:
+        selected = str(metrics["selected_model"])
+        validation_f1 = float(metrics["validation_candidates"][selected]["macro_f1"])
+        if validation_f1 < 0.90 and current_size < 48:
             next_size = 32 if current_size < 32 else 48
             strategies.append(
                 StrategyProposal(
@@ -236,7 +238,7 @@ class ImageFolderClassificationPlugin:
                     risk="medium",
                     requires_approval=True,
                     actionable=True,
-                    evidence={"current_macro_f1": metrics["clean_test"]["macro_f1"], "current_image_size": current_size},
+                    evidence={"validation_macro_f1": validation_f1, "current_image_size": current_size},
                 )
             )
         strategies.append(
@@ -250,7 +252,7 @@ class ImageFolderClassificationPlugin:
                 risk="requires-data-review",
                 requires_approval=True,
                 actionable=False,
-                evidence={"failure_count": metrics["failure_count"], "minimum_class_count": dataset["minimum_class_count"]},
+                evidence={"minimum_class_count": dataset["minimum_class_count"], "imbalance_ratio": dataset["imbalance_ratio"]},
             )
         )
         return strategies

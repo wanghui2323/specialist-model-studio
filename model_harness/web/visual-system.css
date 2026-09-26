@@ -217,6 +217,65 @@ body .task-list {
   gap: 2px;
 }
 
+body .task-list-scopes {
+  display: flex;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+}
+
+body .task-list-scopes button {
+  flex: 1;
+  min-height: 32px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  background: transparent;
+  font-size: var(--text-sm);
+}
+
+body .task-list-scopes button[aria-pressed="true"] {
+  color: var(--text-primary);
+  background: var(--surface);
+  font-weight: var(--weight-semibold);
+}
+
+body .task-archive-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+}
+
+body .task-archive-notice p {
+  margin: var(--space-1) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+
+body .task-archive-notice button { flex-shrink: 0; min-height: 36px; }
+body .agent-surface-state[data-state="archived"] { display: block; }
+body .task-row .task-restore-button { opacity: 1; }
+body .task-restore-button:hover { color: var(--brand); background: var(--brand-soft); }
+
+/* Archive changes availability, never the meaning of existing execution evidence. */
+body[data-task-archived="true"] :is(#composerForm, #composerDelivery, #composerRetry, #agentCheckpoint,
+  #taskSpecQuickReplies, .task-spec-actions, #inspectorDatasetButton, #sampleTrialRunButton,
+  #sampleTrialSelectButton, #buildArtifactBundleButton, #scaffoldRecipeButton,
+  #modelSourceSearchForm, #modelSourceReferenceForm, #modelSourceRetryButton,
+  #bindModelSourceButton, #cancelModelBindingButton, #hfSearchForm, #hfAttachButton,
+  #modelAssetVerifyButton, #applyRepositoryManualMappingButton, #createTrainingPlanButton,
+  #trainingPlanDecisionActions, #checkResourceFeasibilityButton, #confirmContractButton,
+  #approveRunProposalButton, #retryRunButton) { display: none; }
+
 body .task-row {
   grid-template-columns: minmax(0, 1fr) 30px;
 }
@@ -2194,6 +2253,26 @@ body .model-source-card[data-state="active"] {
   border-color: var(--success);
 }
 
+body .model-trial-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); min-width: 0; }
+body .model-trial-section > summary { margin-bottom: 12px; font-size: 14px; line-height: 1.5; font-weight: 600; cursor: pointer; }
+body .model-trial-section p { font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+body .model-trial-sample { color: var(--text); }
+body .model-trial-notice { min-height: 40px; color: var(--text-secondary, #666); }
+body .model-trial-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+body .model-trial-actions button { min-height: 36px; display: inline-flex; align-items: center; justify-content: center; padding: 8px 12px; font-size: 12px; line-height: 1.4; }
+body .model-trial-history { display: grid; gap: 16px; margin-top: 16px; }
+body .model-trial-record { min-width: 0; padding-top: 16px; border-top: 1px solid var(--border); }
+body .model-trial-record header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
+body .model-trial-record header b { font-size: 13px; overflow-wrap: anywhere; min-width: 0; }
+body .model-trial-record header span { font-size: 12px; color: var(--text-secondary, #666); }
+body .model-trial-record[data-status="succeeded"] header span { color: var(--success); }
+body .model-trial-record[data-status="failed"] header span, body .model-trial-record[data-status="timed_out"] header span { color: var(--danger); }
+body .model-trial-record[data-status="observation_degraded"] header span, body .model-trial-record[data-status="blocked_environment"] header span { color: var(--warning); }
+body .model-trial-identity { white-space: pre-line; color: var(--text-secondary, #666); }
+body .model-trial-record details { margin-top: 12px; font-size: 12px; }
+body .model-trial-record summary { cursor: pointer; line-height: 1.6; }
+body .model-trial-record pre { max-height: 340px; overflow: auto; padding: 12px; background: var(--surface-alt, #f5f5f7); font-size: 11px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+
 body .model-asset-card[data-state="warning"],
 body .model-source-card[data-state="pending"] {
   border-color: var(--warning);
@@ -2231,14 +2310,347 @@ body .observation-health button:hover {
   background: var(--warning-soft);
 }
 
-@media (min-width: 1280px) {
-  body[data-workspace="open"] .app-shell {
-    grid-template-columns: var(--sidebar-width) minmax(560px, 1fr) var(--workspace-width);
+/* Direct result document: one reading surface, with evidence available below.
+ * Raw output has no probability bars or invented quality semantics. */
+body .model-trial-report {
+  min-width: 0;
+  padding: var(--space-6) 0 var(--space-8);
+  color: var(--text-primary);
+}
+
+body .model-trial-report[hidden] { display: none; }
+body .model-trial-report [hidden] { display: none; }
+
+body .model-trial-report-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+body .model-trial-report-header > div { min-width: 0; }
+body .model-trial-report-header span {
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+
+body .model-trial-report h2 {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-title);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-title);
+  overflow-wrap: anywhere;
+}
+
+body .model-trial-report h3 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-lg);
+}
+
+body .model-trial-report-header > b {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  background: var(--surface-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-xs);
+}
+
+body .model-trial-report[data-status="succeeded"] .model-trial-report-header > b { color: var(--success); background: var(--success-soft); }
+body .model-trial-report:is([data-status="failed"], [data-status="timed_out"]) .model-trial-report-header > b { color: var(--danger); background: var(--danger-soft); }
+body .model-trial-report:is([data-status="pending_approval"], [data-status="cancel_requested"], [data-status="observation_degraded"], [data-status="blocked_environment"]) .model-trial-report-header > b { color: var(--warning); background: var(--warning-soft); }
+body .model-trial-report:is([data-status="queued"], [data-status="starting"], [data-status="running"]) .model-trial-report-header > b { color: var(--running); background: var(--running-soft); }
+
+body .model-trial-report-summary {
+  margin: 0 0 var(--space-5);
+  color: var(--text-primary);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  overflow-wrap: anywhere;
+}
+
+body .model-trial-report-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4) var(--space-6);
+  margin: 0;
+  padding: var(--space-4) 0 var(--space-5);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+body .model-trial-report-facts > div { min-width: 0; }
+body .model-trial-report-facts dt {
+  margin-bottom: var(--space-1);
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+
+body .model-trial-report-facts dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+  overflow-wrap: anywhere;
+}
+
+body .model-trial-report-output { min-width: 0; padding-top: var(--space-6); }
+body .model-trial-output-list { margin: 0; padding: 0; list-style: none; }
+body .model-trial-output-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(100px, .8fr);
+  align-items: baseline;
+  gap: var(--space-4);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+  overflow-wrap: anywhere;
+}
+
+body .model-trial-output-list li > :last-child {
+  min-width: 0;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--weight-medium);
+}
+
+body .model-trial-report-limits {
+  margin: var(--space-4) 0 0;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-md);
+  overflow-wrap: anywhere;
+}
+
+body .model-trial-report-evidence {
+  min-width: 0;
+  margin-top: var(--space-6);
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-sm);
+}
+
+body .model-trial-report-evidence > summary { padding: var(--space-3) 0; cursor: pointer; }
+body .model-trial-report-evidence dl { min-width: 0; margin: 0 0 var(--space-3); }
+body .model-trial-report-evidence dd { margin: 0 0 var(--space-2); overflow-wrap: anywhere; }
+body .model-trial-report-evidence pre {
+  min-width: 0;
+  max-width: 100%;
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--surface-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  white-space: pre;
+  tab-size: 2;
+}
+
+body .model-trial-report-history {
+  display: grid;
+  gap: 0;
+  margin-top: var(--space-6);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+}
+
+body .model-trial-report-record {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 52px;
+  padding: var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  background: transparent;
+  text-align: left;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  overflow-wrap: anywhere;
+}
+
+body .model-trial-report-record > * { min-width: 0; }
+body .model-trial-report-record:hover { background: var(--surface-subtle); }
+body .model-trial-report-record[aria-pressed="true"] { color: var(--text-primary); border-color: var(--border); background: var(--surface-muted); }
+body .model-trial-report-record:focus-visible,
+body .model-trial-report-evidence > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+body .model-trial-report > .model-trial-actions { margin-top: var(--space-4); }
+body #modelTrialReportRefreshButton { margin-top: var(--space-4); min-height: 36px; padding: 0 var(--space-3); }
+
+/* User-supplied object references remain a separate, inspectable attachment.
+ * Expansion reveals all supplied text; the prose itself is never clipped. */
+body .message-context-reference {
+  min-width: 0;
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-sm);
+}
+
+body .message-context-reference > summary { cursor: pointer; color: var(--text-secondary); }
+body .message-context-reference > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+body .message-context-reference pre {
+  min-width: 0;
+  max-width: 100%;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  background: var(--surface-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+}
+
+/* PC workbench: conversation and result stay adjacent, independently readable.
+ * At 1280 / 1440 / 1920 the center/result tracks are 528/512, 624/576,
+ * and 920/760. No fixed minimum may force the center beyond the viewport. */
+@media (min-width: 900px) {
+  body {
+    --canvas: #f6f6f7;
+    --surface-subtle: #fafafb;
+    --surface-muted: #f1f1f3;
+    --surface-strong: #e8e8ec;
+    --border: #e6e6e9;
+    --border-strong: #d3d3da;
+    --sidebar-width: 240px;
+    --conversation-width: 920px;
+    --workspace-width: clamp(400px, 40vw, 760px);
   }
 
-  body .inspector {
-    box-shadow: none;
+  body[data-workspace="open"] .app-shell {
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--workspace-width);
   }
+
+  body .app-shell { transition: none; }
+  body .app-shell { height: 100dvh; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+  body .conversation-main { height: 100dvh; min-height: 0; overflow: hidden; }
+  body .conversation { min-height: 0; flex: 1 1 0; overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; }
+  body .conversation-main > .composer-wrap { flex: 0 0 auto; position: relative; bottom: auto; z-index: 8; }
+  body .sidebar { background: #f7f7f8; }
+  body .brand { gap: var(--space-2); padding-bottom: var(--space-4); }
+  body .brand strong { font-size: var(--text-md); letter-spacing: 0; }
+  body .new-task-button { min-height: 40px; justify-content: flex-start; padding: 0 var(--space-3); border-color: transparent; border-radius: 8px; background: transparent; font-weight: var(--weight-medium); }
+  body .new-task-button:hover { border-color: transparent; background: var(--surface-muted); }
+  body .sidebar-title { min-height: 40px; }
+  body .task-list-scopes { border-color: transparent; padding: 2px; }
+  body .task-item { min-height: 56px; padding: var(--space-2) 10px; border-radius: 8px; }
+  body .task-item[aria-current="true"] { background: var(--surface-strong); }
+  body .sidebar .runtime-pill { background: transparent; padding-left: var(--space-2); }
+  body .local-note { padding-top: var(--space-3); }
+
+  body .topbar { min-height: 56px; flex: none; padding: var(--space-2) var(--space-5); gap: var(--space-3); background: var(--surface); backdrop-filter: none; }
+  body .topbar-title { flex: 1; min-width: 0; }
+  body .topbar-title > div { min-width: 0; gap: var(--space-2); }
+  body .topbar h1 { font-size: var(--text-lg); letter-spacing: 0; }
+  body .authoritative-status { flex: none; font-weight: var(--weight-medium) !important; }
+  body .workspace-toggle { flex: none; min-height: 36px; padding: 0 var(--space-3); border-radius: 8px; box-shadow: none; }
+
+  body[data-view="home"] .empty-state { justify-content: flex-start; padding-top: var(--space-12); }
+  body[data-view="home"] .empty-state h2 { font-size: 28px; line-height: 38px; letter-spacing: 0; }
+  body[data-view="home"] .empty-state > p { max-width: 620px; font-size: var(--text-md); }
+  body[data-view="home"] .empty-kicker { letter-spacing: 0; }
+  body .home-proof { margin-top: var(--space-2); }
+  body .starter-grid button { min-height: 60px; border-color: transparent; background: var(--surface-subtle); }
+  body .starter-grid button:hover { border-color: var(--border-strong); background: var(--surface-muted); }
+
+  body .conversation { padding-top: var(--space-5); padding-bottom: var(--space-4); scroll-padding-bottom: var(--space-6); }
+  body .conversation,
+  body .composer-wrap { padding-right: max(var(--space-6), calc((100% - var(--conversation-width)) / 2)); padding-left: max(var(--space-6), calc((100% - var(--conversation-width)) / 2)); }
+  body[data-workspace="open"] .conversation,
+  body[data-workspace="open"] .composer-wrap { padding-right: var(--space-5); padding-left: var(--space-5); }
+  body .message-list { gap: var(--space-5); padding-top: var(--space-3); }
+  body .message-body { max-width: min(820px, 94%); }
+  body .message-copy { color: #41414b; line-height: 25px; }
+  body .message[data-role="user"] .message-avatar { display: none; }
+  body .message[data-role="user"] .message-copy { padding: var(--space-3) var(--space-4); border-radius: 14px; background: var(--surface-muted); }
+  body .rich-message h2,
+  body .rich-message h3,
+  body .rich-message h4 { margin-top: var(--space-4); margin-bottom: var(--space-2); }
+  /* The turn identity occupies its own header; prose shares the composer's
+   * left edge instead of inheriting an extra avatar-width indentation. */
+  body .ai-turn { row-gap: var(--space-2); }
+  body .ai-turn-main { display: contents; }
+  body .ai-turn-header { min-height: 28px; grid-column: 2; }
+  body .ai-turn-content { grid-column: 1 / -1; gap: var(--space-2); }
+  body .ai-turn-status b { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+  body .agent-checkpoint { margin-top: var(--space-3); margin-bottom: var(--space-2); }
+  body .checkpoint-workspace-button { width: 100%; min-height: 54px; border-radius: var(--radius-xs); background: var(--surface-subtle); }
+  /* This kind is a read-only navigation shortcut, never an approval card.
+   * Its file/status copy is rendered inside the button by syncAgentCheckpoint. */
+  body .agent-checkpoint[data-kind="model-trial-summary"] { margin: var(--space-3) 0; padding: 0; border: 0; background: transparent; }
+  body .agent-checkpoint[data-kind="model-trial-summary"] > .agent-checkpoint-header,
+  body .agent-checkpoint[data-kind="model-trial-summary"] > .agent-checkpoint-body { display: none; }
+  body .agent-checkpoint[data-kind="model-trial-summary"][data-read-error="false"] > #agentCheckpointSummary { display: none; }
+  body .agent-checkpoint[data-kind="model-trial-summary"][data-read-error="true"] > #agentCheckpointSummary { margin: 0 0 var(--space-2); padding-left: var(--space-3); border-left: 2px solid var(--warning); color: var(--warning); }
+  body .agent-checkpoint[data-kind="model-trial-summary"] .agent-checkpoint-actions { margin-top: 0; }
+  body .agent-checkpoint[data-kind="model-trial-summary"] .checkpoint-workspace-button { min-height: 48px; padding: var(--space-2) var(--space-3); }
+  body .agent-checkpoint[data-kind="model-trial-summary"] .checkpoint-workspace-button > span { min-width: 0; }
+  body .agent-checkpoint[data-kind="model-trial-summary"] .checkpoint-workspace-button small { white-space: normal; overflow-wrap: anywhere; }
+  body[data-workspace="open"] .agent-checkpoint[data-kind="model-trial-summary"][data-read-error="false"] { display: none; }
+  body .turn-result-card { border-color: var(--border); background: var(--surface-subtle); box-shadow: none; }
+
+  body .composer-wrap { padding-top: var(--space-2); padding-bottom: var(--space-2); background: var(--surface); }
+  body .composer { min-height: 104px; padding: var(--space-3); border-radius: 14px; box-shadow: 0 2px 10px rgba(24, 28, 40, .04); }
+  body .composer:focus-within { border-color: var(--brand); box-shadow: 0 0 0 2px var(--brand-soft); }
+  body .composer textarea { min-height: 48px; }
+  body .composer-actions { min-height: 36px; gap: var(--space-2); }
+  body .composer-hint { min-width: 0; font-size: 11px; }
+  /* Connection is already visible in the task rail. Keep connecting and
+   * unavailable states here; omit only the duplicate healthy indicator. */
+  body .composer-mode[data-state="agent"] { display: none; }
+  body .send-button { width: 36px; height: 36px; flex: none; }
+  body .product-boundary { margin-top: var(--space-1); font-size: 11px; }
+  body[data-view="task"] .product-boundary,
+  body[data-view="conversation"] .product-boundary { display: none; }
+  body .composer-delivery { grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); align-items: center; padding: var(--space-2) 10px; border-color: var(--border); color: var(--text-secondary); background: var(--surface-subtle); }
+  body .composer-delivery[hidden] { display: none; }
+  body .composer-delivery-copy { min-width: 0; display: grid; gap: 2px; overflow-wrap: anywhere; }
+  body .composer-delivery-copy b { color: var(--text-primary); font-weight: var(--weight-medium); }
+  body .composer-delivery-copy span { color: var(--text-secondary); line-height: var(--leading-xs); }
+  body .composer-stop-modify { min-height: 34px; padding: 0 var(--space-3); border: 1px solid var(--border-strong); border-radius: var(--radius-xs); color: var(--text-primary); background: var(--surface); font-size: var(--text-xs); white-space: nowrap; }
+  body .composer-stop-modify:hover:not(:disabled) { border-color: var(--brand); background: var(--brand-soft); }
+  body .composer-stop-modify:disabled { color: var(--text-tertiary); border-color: var(--border); background: var(--surface-muted); cursor: not-allowed; }
+  body .composer-delivery[data-state="stopping"] { border-left: 2px solid var(--warning); }
+  body .composer-delivery[data-state="unavailable"] { border-left: 2px solid var(--border-strong); }
+
+  body .inspector { min-width: 0; width: auto; padding: 0 var(--space-6) var(--space-6); background: var(--surface); box-shadow: none; overscroll-behavior-y: contain; scrollbar-gutter: stable; }
+  body .inspector-sheet-bar { min-height: 56px; gap: var(--space-3); margin: 0 calc(-1 * var(--space-6)); padding: 0 var(--space-6); background: var(--surface); }
+  body .inspector-sheet-bar > span { min-width: 0; font-size: var(--text-md); font-weight: var(--weight-semibold); overflow-wrap: anywhere; }
+  body .inspector-sheet-bar .icon-button { flex: none; width: 36px; height: 36px; }
+  body .context-tabs { background: var(--surface); }
+  body .workspace-experience { gap: var(--space-5); }
+  body .workspace-experience > header span,
+  body .workspace-section-heading span,
+  body .object-viewer > header span { letter-spacing: 0; }
 }
 
 @media (max-width: 1279px) {
@@ -2255,6 +2667,26 @@ body .observation-health button:hover {
     padding-right: max(var(--space-5), calc((100% - var(--conversation-width)) / 2));
     padding-left: max(var(--space-5), calc((100% - var(--conversation-width)) / 2));
   }
+}
+
+/* A compact desktop window is still a working conversation, not a modal
+ * report reader. Reserve the footer and split only the remaining width. */
+@media (min-width: 900px) and (max-width: 1279px) {
+  body[data-workspace="open"] .app-shell { grid-template-columns: minmax(0, 1fr) clamp(340px, 40vw, 480px); }
+  body .inspector { display: none; position: relative; inset: auto; grid-column: 2; width: auto; min-width: 0; height: 100dvh; padding: 0 var(--space-5) var(--space-5); overflow: auto; transform: none; box-shadow: none; background: var(--surface); scrollbar-gutter: stable; }
+  body[data-workspace="open"] .inspector { display: block; visibility: visible; pointer-events: auto; transform: none; }
+  body .inspector-scrim:not([hidden]) { display: none !important; }
+  body[data-workspace="open"] .conversation,
+  body[data-workspace="open"] .composer-wrap { padding-right: var(--space-4); padding-left: var(--space-4); }
+  body .topbar { min-height: 56px; flex: none; gap: var(--space-2); padding-right: var(--space-4); padding-left: var(--space-4); }
+  body .topbar-title { flex: 1; min-width: 0; }
+  body .topbar-title > div { min-width: 0; }
+  body .topbar h1 { font-size: var(--text-md); }
+  body .workspace-toggle { flex: none; }
+  body .composer-hint { font-size: 10px; }
+  body .composer-mode[data-state="agent"],
+  body[data-view="task"] .product-boundary,
+  body[data-view="conversation"] .product-boundary { display: none; }
 }
 
 @media (max-width: 899px) {

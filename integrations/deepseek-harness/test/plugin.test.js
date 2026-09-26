@@ -25,6 +25,32 @@ const BUNDLE_PATCH_SOURCE = readFileSync(
   "utf8",
 );
 
+// Frozen fixture of the shipped descriptor, independent of the current
+// exported allowlist so the continuity checks catch permission drift.
+const LEGACY_RESEARCH_SOURCE_PROFILE = Object.freeze([
+  "model_harness_list_tasks",
+  "model_harness_get_task",
+  "model_harness_list_model_source_providers",
+  "model_harness_search_model_sources",
+  "model_harness_list_model_source_searches",
+  "model_harness_select_model_source_candidate",
+  "model_harness_resolve_model_source",
+  "model_harness_list_model_source_resolutions",
+  "model_harness_bind_model_source",
+  "model_harness_list_model_bindings",
+  "model_harness_get_repository_analysis",
+  "model_harness_hf_capability",
+  "model_harness_hf_search",
+  "model_harness_hf_card",
+  "model_harness_hf_attach",
+  "model_harness_hf_verify",
+]);
+const ROOT_SOURCE_APPROVAL_TOOLS = Object.freeze([
+  "model_harness_select_model_source_candidate",
+  "model_harness_bind_model_source",
+  "model_harness_hf_attach",
+]);
+
 test("bundle links only the credential provider to the launcher-selected store", () => {
   assert.match(BUNDLE_PATCH_SOURCE, /^- id: credentials$/m);
   assert.match(
@@ -351,7 +377,7 @@ test("plugin registers the complete conversation-first model-training toolchain"
   const mounted = mountPlugin();
   assert.deepEqual(inject, ["tools", "systemPrompt"]);
   const names = new Set(mounted.tools.map((tool) => tool.name));
-  assert.equal(names.size, 55);
+  assert.equal(names.size, 58);
   for (const required of [
     "model_harness_list_tasks",
     "model_harness_list_data_adapters",
@@ -360,6 +386,9 @@ test("plugin registers the complete conversation-first model-training toolchain"
     "model_harness_promote_conversation",
     "model_harness_update_task_spec",
     "model_harness_get_task",
+    "model_harness_list_model_trials",
+    "model_harness_get_model_trial",
+    "model_harness_execute_model_trial",
     "model_harness_clarify_task_spec",
     "model_harness_list_model_source_providers",
     "model_harness_search_model_sources",
@@ -807,6 +836,150 @@ test("coordinator prompt keeps vague forecasting and data collection human-nativ
   assert.match(prompt, /submit the data_upload answer only after model_harness_import_dataset has actually succeeded/);
   assert.match(prompt, /Other checkpoints use stable ids such as target_column/);
   assert.match(prompt, /first address that message in natural language/);
+});
+
+test("ModelTrial tools stay root-only and use exact-scope native approval without widening any role", async () => {
+  const mounted = mountPlugin();
+  const listener = mounted.listeners.get("tools/pre-execute");
+  const args = { task_id: "task-trial-1", trial_id: "trial-1", expected_plan_sha256: "c".repeat(64) };
+  const approve = await listener({ name: "model_harness_execute_model_trial", arguments: args, agent: rootAgent() },
+    async () => ({ kind: "allow" }));
+  assert.equal(approve.kind, "ask");
+  for (const value of [args.task_id, args.trial_id, args.expected_plan_sha256, "CPU 1", "512 MiB", "30 秒", "无网络", "不是训练"]) {
+    assert.ok(approve.reason.includes(value), value);
+  }
+  assert.deepEqual(await listener({ name: "model_harness_get_model_trial", agent: rootAgent() },
+    async () => ({ kind: "allow" })), { kind: "allow" });
+  const denial = { kind: "deny", reason: "upstream policy" };
+  assert.deepEqual(await listener({ name: "model_harness_execute_model_trial", agent: rootAgent() }, async () => denial), denial);
+  for (const role of Object.keys(ROLE_TOOL_ALLOWLISTS)) {
+    for (const name of ["model_harness_list_model_trials", "model_harness_get_model_trial", "model_harness_execute_model_trial"]) {
+      assert.equal(ROLE_TOOL_ALLOWLISTS[role].includes(name), false);
+      const decision = await listener({ name, agent: specialistAgent(role), arguments: args }, async () => ({ kind: "allow" }));
+      assert.equal(decision.kind, "deny", role + ":" + name);
+      const tool = mounted.tools.find((item) => item.name === name);
+      await assert.rejects(() => tool.execute(args, { callId: "child-call", agent: specialistAgent(role) }), /Only the root/);
+    }
+  }
+  for (const delegate of parseDelegateBlocks(PRESET_SOURCE)) {
+    assert.equal(delegate.allow.includes("model_harness_list_model_trials"), false);
+    assert.equal(delegate.allow.includes("model_harness_execute_model_trial"), false);
+    assert.equal(delegate.allow.includes("model_harness_get_model_trial"), false);
+  }
+  assert.match(PRESET_SOURCE, /All ModelTrial tools are root-only/);
+  assert.match(mounted.sections[0].text, /trial success into task completion or business quality acceptance/);
+  for (const source of [PRESET_SOURCE, mounted.sections[0].text]) {
+    assert.match(source, /lead with the observed records and conclusion/);
+    assert.match(source, /at most one necessary next step/);
+    assert.match(source, /Match the user's language in both progress updates and the answer/);
+    assert.match(source, /default to 2–3 short paragraphs/);
+    assert.match(source, /120–200 Chinese characters/);
+    assert.match(source, /Never ask users to copy task\/trial\/hash identifiers/);
+    assert.match(source, /or repeat a full safety disclaimer/);
+  }
+});
+
+test("ModelTrial list tool reads true empty or populated evidence and rejects cross-task records", async () => {
+  const mounted = mountPlugin();
+  const tool = mounted.tools.find((item) => item.name === "model_harness_list_model_trials");
+  const listener = mounted.listeners.get("tools/pre-execute");
+  assert.deepEqual(await listener({ name: tool.name, agent: rootAgent() }, async () => ({ kind: "allow" })), { kind: "allow" });
+  const originalFetch = globalThis.fetch;
+  let records = [];
+  const requests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url: new URL(url).pathname, method: options.method || "GET" });
+    return jsonResponse({ model_trials: records });
+  };
+  try {
+    const empty = await tool.execute({ task_id: "task-trial-1" }, { agent: rootAgent() });
+    assert.deepEqual(empty.model_trials, []);
+    records = [{ task_id: "task-trial-1", trial_id: "trial-1", status: "pending_approval", plan_sha256: "c".repeat(64) }];
+    const populated = await tool.execute({ task_id: "task-trial-1" }, { agent: rootAgent() });
+    assert.deepEqual(populated.model_trials, records);
+    assert.equal(populated.object_refs, undefined);
+    records = [{ ...records[0], task_id: "other-task" }];
+    await assert.rejects(() => tool.execute({ task_id: "task-trial-1" }, { agent: rootAgent() }), /invalid or cross-task/);
+    assert.ok(requests.every(({ url, method }) => url === "/tasks/task-trial-1/model-trials" && method === "GET"));
+    assert.match(mounted.sections[0].text, /first calls model_harness_list_model_trials/);
+    assert.match(mounted.sections[0].text, /Never infer that no ModelTrial exists because get_task has no TrainingRun/);
+    assert.match(mounted.sections[0].text, /never ask the user to copy an internal trial id or digest/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("ModelTrial same native call replays only saved evidence without another approval or dispatch", async () => {
+  const mounted = mountPlugin();
+  const tool = mounted.tools.find((item) => item.name === "model_harness_execute_model_trial");
+  const listener = mounted.listeners.get("tools/pre-execute");
+  const args = { task_id: "task-trial-1", trial_id: "trial-1", expected_plan_sha256: "c".repeat(64) };
+  const execution = { name: tool.name, arguments: args, callId: "native-replay-call", agent: rootAgent() };
+  const trial = { task_id: args.task_id, trial_id: args.trial_id, plan_sha256: args.expected_plan_sha256,
+    status: "succeeded", stale: true, approval: { actor: "user", verified_by: "agent_bridge_token",
+      checkpoint_id: execution.callId, scope_sha256: args.expected_plan_sha256,
+      lineage: { task_id: args.task_id, session_id: "root-session", call_id: execution.callId } } };
+  const requests = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ method: options.method || "GET", url: new URL(url).pathname });
+    return jsonResponse({ model_trial: trial });
+  };
+  try {
+    assert.deepEqual(await listener(execution, async () => ({ kind: "allow" })), { kind: "allow" });
+    const result = await tool.execute(args, execution);
+    assert.equal(result.idempotent_replay, true);
+    assert.equal(result.historical_evidence, true);
+    assert.equal(result.dispatch_performed, false);
+    assert.deepEqual(requests.map(({ method }) => method), ["GET", "GET"]);
+    assert.equal((await listener({ ...execution, callId: "different-call" }, async () => ({ kind: "allow" }))).kind, "deny");
+    trial.status = "pending_approval";
+    trial.stale = false;
+    trial.approval = null;
+    assert.equal((await listener(execution, async () => ({ kind: "allow" }))).kind, "ask");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("ModelTrial native execution re-reads exact plan and sends no invented lineage or ObjectRef", async () => {
+  const mounted = mountPlugin();
+  const read = mounted.tools.find((item) => item.name === "model_harness_get_model_trial");
+  const execute = mounted.tools.find((item) => item.name === "model_harness_execute_model_trial");
+  const args = { task_id: "task-trial-1", trial_id: "trial-1", expected_plan_sha256: "c".repeat(64) };
+  let trial = { task_id: args.task_id, trial_id: args.trial_id, plan_sha256: args.expected_plan_sha256,
+    status: "pending_approval", stale: false, limits: { cpus: 1, memory_bytes: 536870912, timeout_seconds: 30, pids_limit: 128 } };
+  const requests = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url: new URL(url).pathname, method: options.method || "GET",
+      headers: Object.fromEntries(new Headers(options.headers || {}).entries()), body: options.body ? JSON.parse(options.body) : null });
+    return jsonResponse({ model_trial: (options.method || "GET") === "GET" ? trial : { ...trial, status: "starting" } });
+  };
+  try {
+    await assert.rejects(() => execute.execute(args, { agent: rootAgent() }), /verifiable DSH tool call id/);
+    await assert.rejects(() => execute.execute(args, { callId: "unbound-call" }), /verifiable root DSH session/);
+    assert.equal(requests.length, 0);
+    const output = await execute.execute(args, { callId: "trial-native-call", agent: rootAgent() });
+    assert.equal(output.model_trial.status, "starting");
+    assert.equal(output.object_refs, undefined);
+    assert.equal(output.completed, undefined);
+    assert.deepEqual(requests.map(({ method }) => method), ["GET", "POST"]);
+    assert.equal(requests[1].headers["x-model-harness-agent-token"], "bridge-test-token");
+    assert.deepEqual(requests[1].body, {
+      expected_plan_sha256: args.expected_plan_sha256,
+      approval: { actor: "user", checkpoint_id: "trial-native-call" },
+      lineage: { task_id: args.task_id, session_id: "root-session", call_id: "trial-native-call" },
+    });
+    requests.length = 0;
+    trial = { ...trial, stale: true };
+    await assert.rejects(() => execute.execute(args, { callId: "trial-stale-call", agent: rootAgent() }), /non-stale pending_approval/);
+    assert.deepEqual(requests.map(({ method }) => method), ["GET"]);
+    trial = { ...trial, task_id: "other-task" };
+    await assert.rejects(() => read.execute(args, { agent: rootAgent() }), /different task or trial/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 
@@ -1537,6 +1710,19 @@ test("model-training preset registers five continuable role delegates", () => {
   }
 });
 
+test("new research descriptors expose evidence work without root-only source approvals", () => {
+  const research = parseDelegateBlocks(PRESET_SOURCE)
+    .find((delegate) => delegate.toolName === "research_source");
+  const expected = LEGACY_RESEARCH_SOURCE_PROFILE.filter(
+    (name) => !ROOT_SOURCE_APPROVAL_TOOLS.includes(name),
+  );
+  assert.deepEqual(ROLE_TOOL_ALLOWLISTS.research_source, expected);
+  assert.deepEqual(research.allow, expected);
+  assert.match(research.persona, /Source selection, binding and asset attachment belong to the root's native approval/);
+  assert.match(research.persona, /do not call or retry those protected actions in this child session/);
+  assert.match(PRESET_SOURCE, /Source selection, source binding and HF asset attachment are root-only native approvals/);
+});
+
 
 test("role delegates expose only domain facts and no shell or generic tools", () => {
   const delegates = parseDelegateBlocks(PRESET_SOURCE);
@@ -1852,15 +2038,67 @@ test("root Training Orchestrator must delegate domain work to the owning special
 
 test("source binding approvals return to the root instead of a never-approval child", async () => {
   const listener = mountPlugin().listeners.get("tools/pre-execute");
-  for (const name of ["model_harness_select_model_source_candidate", "model_harness_bind_model_source", "model_harness_hf_attach"]) {
-    const child = await listener({ name, agent: specialistAgent("research_source") }, async () => ({ kind: "allow" }));
-    assert.equal(child.kind, "deny");
-    assert.match(child.reason, /根训练协调器直接发起原生审批/);
-    assert.match(child.reason, /不要在子会话重试/);
+  for (const name of ROOT_SOURCE_APPROVAL_TOOLS) {
+    for (const allow of [ROLE_TOOL_ALLOWLISTS.research_source, LEGACY_RESEARCH_SOURCE_PROFILE]) {
+      const child = await listener({ name, agent: specialistAgent("research_source", { allow }) }, async () => ({ kind: "allow" }));
+      assert.equal(child.kind, "deny");
+      assert.match(child.reason, /根训练协调器直接发起原生审批/);
+      assert.match(child.reason, /不要在子会话重试/);
+    }
     const root = await listener({ name, agent: rootAgent() }, async () => ({ kind: "allow" }));
     assert.equal(root.kind, "ask");
   }
   assert.deepEqual(await listener({ name: "model_harness_resolve_model_source", agent: specialistAgent("research_source") }, async () => ({ kind: "allow" })), { kind: "allow" });
+});
+
+test("exact legacy research sessions retain current evidence tools but gain no other permission", async () => {
+  const listener = mountPlugin().listeners.get("tools/pre-execute");
+  for (const allow of [LEGACY_RESEARCH_SOURCE_PROFILE, [...LEGACY_RESEARCH_SOURCE_PROFILE].reverse()]) {
+    const agent = specialistAgent("research_source", { allow });
+    for (const name of ROLE_TOOL_ALLOWLISTS.research_source) {
+      assert.deepEqual(
+        await listener({ name, agent }, async () => ({ kind: "allow" })),
+        { kind: "allow" },
+        `${name} remains available in the exact legacy research profile`,
+      );
+    }
+    for (const name of ["model_harness_import_dataset", "model_harness_confirm_contract", "model_harness_start_task_run", "model_harness_build_artifact_bundle"]) {
+      const decision = await listener({ name, agent }, async () => ({ kind: "allow" }));
+      assert.equal(decision.kind, "deny");
+      assert.match(decision.reason, /不在该 profile allowlist/);
+    }
+  }
+});
+
+test("research continuity rejects partial, widened, malformed and inherited legacy profiles", async () => {
+  const listener = mountPlugin().listeners.get("tools/pre-execute");
+  const profiles = [
+    [...ROLE_TOOL_ALLOWLISTS.research_source, ROOT_SOURCE_APPROVAL_TOOLS[0]],
+    [...ROLE_TOOL_ALLOWLISTS.research_source, ...ROOT_SOURCE_APPROVAL_TOOLS.slice(0, 2)],
+    LEGACY_RESEARCH_SOURCE_PROFILE.filter((name) => name !== "model_harness_hf_verify"),
+    [...LEGACY_RESEARCH_SOURCE_PROFILE, "model_harness_cancel_run"],
+    [...LEGACY_RESEARCH_SOURCE_PROFILE.slice(1), LEGACY_RESEARCH_SOURCE_PROFILE[1]],
+    [...LEGACY_RESEARCH_SOURCE_PROFILE.slice(1), null],
+  ];
+  for (const allow of profiles) {
+    const decision = await listener(
+      { name: "model_harness_get_task", agent: specialistAgent("research_source", { allow }) },
+      async () => ({ kind: "allow" }),
+    );
+    assert.equal(decision.kind, "deny");
+    assert.match(decision.reason, /无法从 DSH 子会话/);
+  }
+  const inherited = specialistAgent("research_source", { allow: profiles[0], seedLength: 1 });
+  inherited.session.events[0] = {
+    type: "subagent/descriptor",
+    data: { version: 2, mode: "continuable", provider: "spawn", toolFilter: { allow: LEGACY_RESEARCH_SOURCE_PROFILE } },
+  };
+  const decision = await listener(
+    { name: "model_harness_get_task", agent: inherited },
+    async () => ({ kind: "allow" }),
+  );
+  assert.equal(decision.kind, "deny");
+  assert.match(decision.reason, /无法从 DSH 子会话/);
 });
 
 test("root orchestrator keeps clarification, canonical reads and human checkpoint control", async () => {

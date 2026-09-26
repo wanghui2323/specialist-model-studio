@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import errno
 import fcntl
 import hashlib
@@ -279,6 +281,20 @@ def create_app(
     conversation_streams = TaskConversationStreamBroker(conversations)
     runs_workspace_lease = _RunsWorkspaceLease(resolved_runs_dir)
 
+    def submit_active_conversation_message(
+        owner_id: str, title: str, message: str, **kwargs: Any,
+    ) -> dict[str, Any]:
+        # Archive and message submission share the runtime's mutation lock so
+        # an old browser tab cannot queue new work after the archive check.
+        with conversations._lock:
+            owner = conversations.store.load_task(owner_id)
+            if owner.get("archived_at_utc"):
+                raise HTTPException(
+                    status_code=409,
+                    detail="归档任务为只读，请先恢复任务再继续对话",
+                )
+            return conversations.submit_message(owner_id, title, message, **kwargs)
+
     @asynccontextmanager
     async def lifespan(_app: Any) -> Any:
         lease_acquired = False
@@ -286,6 +302,7 @@ def create_app(
         try:
             runs_workspace_lease.acquire()
             lease_acquired = True
+            workspace.model_trials.start()
             conversation_streams.start()
             conversations.start()
             conversations_started = True
@@ -333,10 +350,187 @@ def create_app(
         ).hexdigest()
     app.state.run_service = service
     app.state.training_workspace = workspace
+
+    def trial_error(exc: Exception) -> HTTPException:
+        missing = isinstance(exc, FileNotFoundError) or getattr(exc, "error_code", None) in {"task_not_found", "trial_not_found"}
+        return HTTPException(status_code=404 if missing else 409, detail=str(exc))
+
+    def trial_call_scope_matches(value: Any, expected: dict[str, Any]) -> bool:
+        # DSH persists the original JSON argument string, not the parsed object
+        # passed to execute(). Accept both observed forms, but no ambiguous JSON.
+        if isinstance(value, str):
+            if len(value) > 16384:
+                return False
+            def unique_pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+                result: dict[str, Any] = {}
+                for key, item in items:
+                    if key in result:
+                        raise ValueError("duplicate_trial_argument")
+                    result[key] = item
+                return result
+            try:
+                value = json.loads(value, object_pairs_hook=unique_pairs)
+            except (ValueError, TypeError, RecursionError):
+                return False
+        return isinstance(value, dict) and value == expected
+
+    @app.get("/model-trials/capability")
+    def model_trial_capability() -> dict[str, Any]:
+        executor = workspace.model_trial_executor
+        if executor is None:
+            return {"available": False, "reason": "未配置已验证的本地隔离试跑环境", "runtime_digest": None, "backend": "oci_cpu"}
+        return executor.capability()
+
+    @app.get("/tasks/{task_id}/model-trials")
+    def list_model_trials(task_id: str) -> dict[str, Any]:
+        try:
+            if not workspace.task_exists(task_id):
+                raise FileNotFoundError("task not found")
+            return {"model_trials": workspace.model_trials.list(task_id)}
+        except (FileNotFoundError, HarnessError, ValueError) as exc:
+            raise trial_error(exc) from exc
+
+    @app.post("/tasks/{task_id}/model-trials")
+    async def create_model_trial(task_id: str, request: Request) -> dict[str, Any]:
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > 6 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="单张试跑图片不得超过 4 MiB")
+        try:
+            body = json.loads(raw)
+            if not isinstance(body, dict) or set(body) != {"filename", "input_base64", "request_id"}:
+                raise ValueError("invalid_model_trial_request")
+            if not isinstance(body["input_base64"], str):
+                raise ValueError("invalid_input_base64")
+            content = base64.b64decode(body["input_base64"], validate=True)
+            return {"model_trial": workspace.model_trials.create(task_id, filename=body["filename"], input_bytes=content, request_id=body["request_id"])}
+        except (FileNotFoundError, HarnessError, ValueError, binascii.Error) as exc:
+            raise trial_error(exc) from exc
+
+    @app.get("/tasks/{task_id}/model-trials/{trial_id}")
+    def get_model_trial(task_id: str, trial_id: str) -> dict[str, Any]:
+        try:
+            return {"model_trial": workspace.model_trials.get(task_id, trial_id)}
+        except (FileNotFoundError, HarnessError, ValueError) as exc:
+            raise trial_error(exc) from exc
+
+    @app.post("/tasks/{task_id}/model-trials/{trial_id}/execute")
+    def execute_model_trial(
+        task_id: str, trial_id: str, body: dict[str, Any] = Body(...),
+        x_model_harness_agent_token: str | None = Header(default=None, alias="X-Model-Harness-Agent-Token"),
+    ) -> dict[str, Any]:
+        token_hash = require_agent_bridge_approval_token(x_model_harness_agent_token)
+        try:
+            approval = body.get("approval")
+            if not isinstance(approval, dict) or approval.get("actor") != "user":
+                raise ValueError("native_user_approval_required")
+            scope = body.get("expected_plan_sha256")
+            proof = {
+                "actor": "user", "checkpoint_id": approval.get("checkpoint_id"),
+                "verified_by": "agent_bridge_token", "bridge_token_sha256": token_hash,
+                "scope_sha256": scope,
+            }
+            lineage = body.get("lineage")
+            if (not isinstance(lineage, dict) or lineage.get("task_id") != task_id
+                    or not lineage.get("session_id") or lineage.get("call_id") != approval.get("checkpoint_id")
+                    or lineage.get("session_id") != conversations.session_for(task_id)):
+                raise ValueError("trial_root_lineage_required")
+            observed = [event for event in conversations.store.current_projection_events(task_id)
+                        if event.get("task_id") == task_id
+                        and event.get("session_id") == lineage["session_id"]
+                        and event.get("call_id") == lineage["call_id"]
+                        and event.get("agent_run_id") and event.get("turn_id")
+                        and event.get("event_type") == "tool_call"
+                        and event.get("actor_role") == "orchestrator"
+                        and not event.get("delegation_id") and not event.get("parent_delegation_id")
+                        and event.get("payload", {}).get("tool_name") == "model_harness_execute_model_trial"
+                        and trial_call_scope_matches(event.get("payload", {}).get("arguments"), {
+                            "task_id": task_id, "trial_id": trial_id, "expected_plan_sha256": scope})]
+            identities = {(event["agent_run_id"], event["turn_id"]) for event in observed}
+            if len(identities) != 1:
+                raise ValueError("trial_approval_lineage_not_uniquely_observed")
+            agent_run_id, turn_id = next(iter(identities))
+            if any(lineage.get(key) not in (None, value) for key, value in (("agent_run_id", agent_run_id), ("turn_id", turn_id))):
+                raise ValueError("trial_approval_lineage_mismatch")
+            proof["lineage"] = {"task_id": task_id, "session_id": lineage["session_id"], "call_id": lineage["call_id"], "agent_run_id": agent_run_id, "turn_id": turn_id}
+            return {"model_trial": workspace.model_trials.approve_and_start(task_id, trial_id, expected_plan_sha256=scope, approval=proof)}
+        except (FileNotFoundError, HarnessError, ValueError) as exc:
+            raise trial_error(exc) from exc
+
+    @app.post("/tasks/{task_id}/model-trials/{trial_id}/cancel")
+    def cancel_model_trial(task_id: str, trial_id: str) -> dict[str, Any]:
+        try:
+            return {"model_trial": workspace.model_trials.cancel(task_id, trial_id)}
+        except (FileNotFoundError, HarnessError, ValueError) as exc:
+            raise trial_error(exc) from exc
+
+    @app.post("/tasks/{task_id}/model-trials/{trial_id}/retry")
+    def retry_model_trial(task_id: str, trial_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        try:
+            old = workspace.model_trials.get(task_id, trial_id)
+            if old["status"] not in {"failed", "cancelled", "timed_out", "blocked_environment"}:
+                raise ValueError("trial_retry_requires_confirmed_terminal_state")
+            return {"model_trial": workspace.model_trials.create(task_id, filename=old["input"]["filename"], input_bytes=workspace.model_trials.read_input(task_id, trial_id), request_id=body.get("request_id"), parent_trial_id=trial_id)}
+        except (FileNotFoundError, HarnessError, ValueError) as exc:
+            raise trial_error(exc) from exc
+
+    @app.post("/tasks/{task_id}/model-trials/{trial_id}/reconcile")
+    def reconcile_model_trial(task_id: str, trial_id: str) -> dict[str, Any]:
+        try:
+            return {"model_trial": workspace.model_trials.reconcile(task_id, trial_id)}
+        except (FileNotFoundError, HarnessError, ValueError) as exc:
+            raise trial_error(exc) from exc
     app.state.conversation_runtime = conversations
     app.state.conversation_streams = conversation_streams
     app.state.runs_workspace_lease = runs_workspace_lease
     app.mount("/app/static", StaticFiles(directory=web_dir), name="app-static")
+
+    task_mutation_lock = threading.Lock()
+    task_mutations_in_flight: dict[str, int] = {}
+    task_archives_in_flight: set[str] = set()
+
+    @app.middleware("http")
+    async def protect_archived_task_mutations(request: Request, call_next: Any) -> Any:
+        # All public task writes, including the conversation alias and plugin
+        # HTTP calls, share one archive admission boundary. Never hold a thread
+        # lock across await: sync endpoints execute in different worker threads.
+        parts = request.url.path.strip("/").split("/")
+        if (
+            request.method not in {"POST", "PUT", "PATCH", "DELETE"}
+            or len(parts) < 3
+            or parts[0] not in {"tasks", "conversations"}
+        ):
+            return await call_next(request)
+        task_id = parts[1]
+        try:
+            task_exists = workspace.task_exists(task_id)
+        except HarnessError:
+            task_exists = False  # Let the canonical route reject invalid IDs.
+        if not task_exists:
+            return await call_next(request)
+        action = parts[2] if parts[0] == "tasks" and len(parts) == 3 else None
+        if action in {"archive", "restore"}:
+            return await call_next(request)
+        with task_mutation_lock:
+            if task_id in task_archives_in_flight:
+                return JSONResponse(status_code=409, content={"detail": "任务正在归档，请等待完成后再操作"})
+            try:
+                owner = conversations.store.load_task(task_id)
+            except (AgentRuntimeError, OSError, ValueError):
+                return JSONResponse(status_code=409, content={"detail": "无法核验任务归档状态，请刷新后再操作"})
+            if owner.get("archived_at_utc"):
+                return JSONResponse(status_code=409, content={"detail": "归档任务为只读，请先恢复任务再继续操作"})
+            task_mutations_in_flight[task_id] = task_mutations_in_flight.get(task_id, 0) + 1
+        try:
+            return await call_next(request)
+        finally:
+            with task_mutation_lock:
+                remaining = task_mutations_in_flight.get(task_id, 1) - 1
+                if remaining:
+                    task_mutations_in_flight[task_id] = remaining
+                else:
+                    task_mutations_in_flight.pop(task_id, None)
 
     @app.middleware("http")
     async def project_remote_agent_response(request: Request, call_next: Any) -> Any:
@@ -1242,7 +1436,7 @@ def create_app(
         assert isinstance(initial_message, str)
         assert isinstance(message_request_id, str)
         try:
-            submission = conversations.submit_message(
+            submission = submit_active_conversation_message(
                 conversation_id,
                 str(conversation.get("title") or "新对话"),
                 initial_message,
@@ -1427,7 +1621,7 @@ def create_app(
             raise HTTPException(status_code=422, detail="request_id must be text")
         try:
             record = workspace.get_conversation(conversation_id)
-            submission = conversations.submit_message(
+            submission = submit_active_conversation_message(
                 conversation_id,
                 str(record.get("title") or "新对话"),
                 message,
@@ -1736,7 +1930,7 @@ def create_app(
             raise HTTPException(status_code=422, detail="request_id must be text")
         try:
             task = workspace.get_task(task_id)
-            submission = conversations.submit_message(
+            submission = submit_active_conversation_message(
                 task_id,
                 task["name"],
                 message,
@@ -1976,7 +2170,7 @@ def create_app(
                     },
                 )
             try:
-                submission = conversations.submit_message(
+                submission = submit_active_conversation_message(
                     deterministic_task_id,
                     str(task["name"]),
                     initial_message,
@@ -2077,7 +2271,54 @@ def create_app(
     @app.post("/tasks/{task_id}/archive")
     def archive_task(task_id: str) -> dict[str, Any]:
         try:
-            return {"task": workspace.archive_task(task_id)}
+            with conversations._lock:
+                if not workspace.task_exists(task_id):
+                    raise FileNotFoundError(f"task not found: {task_id}")
+                owner = conversations.store.load_task(task_id)
+                if not owner.get("archived_at_utc") and conversations.store.load_team(task_id):
+                    observed = conversations.conversation(task_id)
+                    health = observed.get("projection_health")
+                    if isinstance(health, dict):
+                        health = health.get("status")
+                    if health != "healthy":
+                        raise HarnessError("无法核验 Agent 当前状态，请重新连接后再归档任务")
+                    if (
+                        observed.get("execution_running") is True
+                        or observed.get("agent_response_running") is True
+                        or observed.get("pending")
+                        or observed.get("interaction_state") in {"working", "waiting_for_human", "cancelling"}
+                        or any(
+                            run.get("status") in {"queued", "running", "waiting_for_human", "cancel_requested"}
+                            for run in observed.get("runs", [])
+                        )
+                    ):
+                        raise HarnessError("Agent 仍在执行、排队或等待决定，请先停止或完成当前工作再归档任务")
+                # Reserve only after proving the Agent idle. A rejected archive
+                # must not make a still-running Agent's next HTTP tool fail.
+                with task_mutation_lock:
+                    if task_mutations_in_flight.get(task_id, 0):
+                        raise HarnessError("任务仍有操作正在处理，暂不能归档任务")
+                    task_archives_in_flight.add(task_id)
+                try:
+                    return {"task": workspace.archive_task(task_id)}
+                finally:
+                    with task_mutation_lock:
+                        task_archives_in_flight.discard(task_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except AgentRuntimeError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="无法核验 Agent 当前状态，请重新连接后再归档任务",
+            ) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/restore")
+    def restore_task(task_id: str) -> dict[str, Any]:
+        try:
+            with conversations._lock:
+                return {"task": workspace.restore_task(task_id)}
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except HarnessError as exc:

@@ -11,7 +11,12 @@ class PluginRegistryTests(unittest.TestCase):
         registry = PluginRegistry()
         self.assertEqual(
             registry.recipe_ids(),
-            ["digit-classification", "image-folder-classification", "tabular-regression"],
+            [
+                "digit-classification",
+                "image-folder-classification",
+                "tabular-classification",
+                "tabular-regression",
+            ],
         )
         manifest = registry.get_recipe("digit-classification").manifest.to_dict()
         self.assertEqual(manifest["version"], "0.2.0")

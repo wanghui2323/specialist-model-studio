@@ -313,8 +313,8 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
     assert.doesNotMatch(app, new RegExp(retired));
     assert.doesNotMatch(css, new RegExp(retired));
   }
-  assert.match(html, /想训练一个什么模型？/);
-  assert.match(html, /id="inspectorSheetTitle">方案与证据</);
+  assert.match(html, /想让模型帮你解决什么问题？/);
+  assert.match(html, /id="inspectorSheetTitle">成果与证据</);
   assert.match(html, /data-context="plan"[^>]*>方案</);
   assert.match(html, /data-context="data" hidden>数据</);
   assert.match(html, /data-context="run" hidden>运行</);
@@ -374,16 +374,17 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(css, /--sidebar-width:\s*264px/);
   assert.match(css, /body \.app-shell\s*\{[^}]*grid-template-columns:\s*var\(--sidebar-width\) minmax\(0, 1fr\)/);
   assert.match(css, /\.context-tabs\{grid-template-columns:repeat\(var\(--visible-context-count,1\),minmax\(0,1fr\)\)/);
-  assert.match(app, /dockedWorkspaceMedia = window\.matchMedia\("\(min-width:1280px\)"\)/);
-  assert.match(css, /@media \(min-width: 1280px\)[\s\S]*body\[data-workspace="open"\] \.app-shell\s*\{[^}]*grid-template-columns:\s*var\(--sidebar-width\) minmax\(560px, 1fr\) var\(--workspace-width\)/);
-  assert.match(css, /@media\(min-width:1280px\)[\s\S]*\.inspector\{display:none;[^}]*grid-column:auto[^}]*\}/);
-  assert.match(css, /@media\(min-width:1280px\)[\s\S]*body\[data-workspace="open"\] \.inspector\{display:block;grid-column:3;/);
-  assert.match(css, /@media\(min-width:1280px\)[\s\S]*\.inspector-scrim:not\(\[hidden\]\)\{display:none!important\}/);
+  assert.match(app, /dockedWorkspaceMedia = window\.matchMedia\("\(min-width:900px\)"\)/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body\[data-workspace="open"\] \.app-shell\s*\{[^}]*grid-template-columns:\s*var\(--sidebar-width\) minmax\(0, 1fr\) var\(--workspace-width\)/);
+  assert.match(css, /@media \(min-width: 900px\) and \(max-width: 1279px\)[\s\S]*body \.inspector\s*\{\s*display: none;[^}]*grid-column: 2;/);
+  assert.match(css, /@media \(min-width: 900px\) and \(max-width: 1279px\)[\s\S]*body\[data-workspace="open"\] \.inspector\s*\{\s*display: block;/);
+  assert.match(css, /@media \(min-width: 900px\) and \(max-width: 1279px\)[\s\S]*body \.inspector-scrim:not\(\[hidden\]\)\s*\{\s*display: none !important;/);
   assert.match(css, /\.inspector\[data-open="true"\]\{[^}]*visibility:visible[^}]*pointer-events:auto[^}]*transform:translateX\(0\)/);
   assert.match(css, /@media\(max-width:720px\)[\s\S]*?\.inspector\{width:100%;z-index:42\}/);
   assert.match(css, /@media\(max-width:720px\)[\s\S]*body\[data-workspace="open"\] \.mobile-view-nav\{display:none\}/);
   for (const asset of ["styles.css", "visual-system.css", "app.js", "conversation-view.js", "interaction-shell.js"]) {
-    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.4\\.10-pc-rc`));
+    const revision = ["visual-system.css", "app.js", "conversation-view.js"].includes(asset) ? "workbuddy-pc-20260912-r3" : "vnext-m1-archive";
+    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=${revision}`));
   }
   assert.match(app, /function renderAgentSurfaceState\(conversation, projection\)/);
   assert.doesNotMatch(app, /开始 Agent 会话/);
@@ -427,8 +428,8 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(app, /指标只来自当前 Run 的真实评测；发布、回滚或继续优化仍需人工确认/);
   assert.match(css, /\.workspace-comparison-flow/);
   assert.match(css, /\.workspace-decision-gate/);
-  assert.match(app, /if \(!dockedWorkspaceMedia\.matches \|\| !autoOpen\)/);
-  assert.match(app, /openInspector\(workspaceContextForProjection\(projection\), \{ presentation: projection\.workspace\?\.presentation \|\| "experience", auto: true \}\)/);
+  assert.match(app, /maybeAutoOpenWorkspace\(task, projection\); syncWorkspaceToggle\(\)/);
+  assert.match(app, /workspacePreference\(\) !== "closed"/);
   assert.match(app, /ui\.workspaceTechnicalButton\.addEventListener\("click"/);
   assert.match(css, /\.inspector\[data-presentation="experience"\] #inspectorContent\{display:none\}/);
   assert.match(css, /\.inspector\[data-presentation="technical"\] \.workspace-experience\{display:none\}/);
@@ -519,7 +520,7 @@ test("runtime failure stops conversation instead of impersonating an Agent with 
   assert.match(app, /providerMissing \? "请先在本机配置模型服务，再开始训练任务"/);
   assert.doesNotMatch(app, /DEEPSEEK_API_KEY/);
   assert.match(app, /error\.status === 503\)[^\n]*renderRuntimeMode\("local"\)/);
-  assert.match(app, /ui\.messageInput\.disabled = false; ui\.sendButton\.disabled = !ready/);
+  assert.match(app, /ui\.messageInput\.disabled = Boolean\(state\.task\?\.archived_at_utc\); ui\.sendButton\.disabled = !ready \|\| Boolean\(state\.task\?\.archived_at_utc\)/);
   assert.match(app, /request\("\/runtime", \{ timeoutMs: 8_000 \}\)/);
   assert.match(app, /request\("\/agent\/runtime", \{ timeoutMs: 6_000 \}\)/);
   assert.match(app, /state\.runtimeRetryTimer = window\.setTimeout\(\(\) => loadRuntime\(\), delay\)/);
@@ -538,7 +539,7 @@ test("fresh empty workspace enters the shared home composer state", async () => 
   const { html, app } = await sources();
   assert.match(html, /id="homeComposerSlot"/);
   assert.match(html, /id="homeBoundary"/);
-  assert.match(html, /AI 会和你一起澄清目标、查找开源模型，并在每个关键决定前停下来确认/);
+  assert.match(html, /先说目标、手头的数据和限制。我们一起核对可执行方案，需要补充信息或授权时再请你决定/);
   assert.doesNotMatch(html, /匹配开源模型、准备数据、训练和评测/);
   assert.match(app, /function enterHomeState\(\{ focusComposer = true \} = \{\}\)/);
   assert.match(app, /ui\.homeComposerSlot\.append\(ui\.composerWrap\)/);
@@ -1041,7 +1042,7 @@ test("sample-inference and expert handoff actions use product language", async (
 
 test("warm editorial visual system keeps dialogue primary and controls consistent", async () => {
   const { html, css, visualCss } = await sources();
-  assert.match(html, /MODEL TRAINING AGENT/);
+  assert.match(html, /从一个真实问题开始/);
   assert.match(html, /本地优先 · 关键操作需确认 · 结果可追溯/);
   assert.match(visualCss, /--font-sans:\s*-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC"/);
   assert.match(visualCss, /--brand:\s*#5a4fd6/);
@@ -1061,8 +1062,8 @@ test("new-task home stays conversation-led while verified specialists appear onl
   const { html, app } = await sources();
   const home = html.slice(html.indexOf('<section class="empty-state"'), html.indexOf('<section class="conversation"'));
   assert.doesNotMatch(home, /专家|Hugging Face|GitHub/);
-  assert.match(home, /先通过对话把目标说清楚/);
-  assert.match(home, /可联网查找开源模型/);
+  assert.match(home, /对话明确目标/);
+  assert.match(home, /查找开源模型/);
   assert.doesNotMatch(app, /个专家已参与本轮/);
   assert.match(app, /const workItems = projectionWorkItems\(projection\)/);
   assert.match(app, /const activeSpecialists = activeProjectionSpecialists\(projection\)/);
@@ -1138,7 +1139,10 @@ test("composer queues stable idempotent messages and cancellation stays explicit
   assert.match(html, /id="composerDelivery" hidden role="status" aria-live="polite"/);
   assert.match(html, /id="composerDeliveryLabel">将在本轮结束后继续/);
   assert.match(app, /const DEFAULT_CONVERSATION_MESSAGE_MODE = "queue_after_turn"/);
-  assert.match(app, /const OPTIONAL_CONVERSATION_MESSAGE_MODES = \["intervene_current", "stop_and_replace"\]/);
+  assert.match(html, /id="composerStopModifyButton"[^>]*type="button"[^>]*>先停止，再修改/);
+  assert.match(app, /composerStopModifyButton\?\.addEventListener\("click", stopBeforeComposerChange\)/);
+  assert.match(app, /function composerStopSnapshotConfirmed\(snapshot, taskId\)/);
+  assert.match(app, /snapshot\.projection_health !== "healthy"/);
   assert.match(app, /Array\.isArray\(conversation\?\.supported_modes\)/);
   assert.match(app, /Array\.isArray\(state\.productRuntime\?\.agent\?\.supported_modes\)/);
   assert.match(app, /const agentQueued = Boolean\(state\.runtimeReady && state\.selectedTaskId && !checkpoint && conversationAgentResponseRunning\(conversation\)\)/);

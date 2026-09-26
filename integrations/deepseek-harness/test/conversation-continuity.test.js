@@ -166,6 +166,7 @@ for (const [kind, id, message] of [
       clearComposerRetry() {}, hideNotice() {}, clearDraft() {}, resizeComposer() {},
       showTransientNotice() {}, refreshSelected() {},
       backgroundCancellationPending: () => false,
+      composerCancellationPending: () => false, syncComposerDelivery() {},
       currentHumanCheckpoint: () => ({ kind, rpc_id: "rpc-1", questions: [{ id }] }),
       conversationAgentResponseRunning: () => true,
       postQueuedConversationMessage: async (task, text) => sent.push({ task, text }),
@@ -190,6 +191,7 @@ test("ambiguous send retry preserves both message identity and checkpoint identi
     renderConversation() {},
     conversationTransportPath: (task, suffix) => `/tasks/${task}/conversation/${suffix}`,
     DEFAULT_CONVERSATION_MESSAGE_MODE: "queue_after_turn",
+    composerStopPending: () => false, backgroundCancellationPending: () => false,
     runtimeStatusToken: (v) => v,
     request: async (url, options) => {
       requests.push(JSON.parse(JSON.stringify({ url, body: options.json })));

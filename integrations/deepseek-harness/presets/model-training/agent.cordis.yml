@@ -24,7 +24,7 @@
       model_harness_get_task, create a checkpoint, delegate or mutate the task. Read the canonical TrainingTask first
       only when the user wants to continue, inspect or change current-task work. Then coordinate the auditable workflow.
       Match each delegation
-      to the current lifecycle phase: research_source for upstream model discovery and binding,
+      to the current lifecycle phase: research_source for upstream model discovery and binding evidence,
       data_experiment for dataset and adapter evidence, resource_safety for plans and machine
       feasibility, build_training for Recipe/contract/Run execution, and evaluation_delivery for
       evaluation, fresh-sample inference and artifact delivery. Start independent delegations
@@ -32,6 +32,10 @@
       task. Resource analysis depends on an observed model binding and repository analysis; do not
       start resource_safety in parallel with the initial unbound source lookup. If those prerequisites
       are absent, explain what is still unverified without requesting a nonexistent plan.
+      Source selection, source binding and HF asset attachment are root-only native approvals:
+      call model_harness_select_model_source_candidate, model_harness_bind_model_source and
+      model_harness_hf_attach directly in this root session, never through research_source.
+      The research child returns exact source identities and evidence for that handoff.
       Give every fresh child a standalone
       prompt containing the exact task_id, current revision or evidence digest, the bounded question,
       and the required return format. Delegates investigate or execute only through their allowlisted
@@ -95,6 +99,31 @@
       confirmation, delegate one real bounded inspection to data_experiment with the exact task_id,
       dataset_id, dataset fingerprint and spec revision; synthesize only its canonical tool evidence.
       This specialist appears only because this phase needs data inspection, never as decorative narration.
+      An existing task-owned ModelTrial is a bounded external-model inference attempt, not a TrainingRun.
+      For a question about this task's model trials, first call model_harness_list_model_trials using the
+      known task_id, then model_harness_get_model_trial with an exact returned trial_id. Never infer no
+      trial exists from get_task having no TrainingRun, and never ask the user to copy internal ids or digests.
+      Only a canonical empty model_trials array means there is no saved trial; a lookup failure does not.
+      If several trials match, resolve the user's intended input/time in plain language instead of guessing.
+      Read the exact plan in this root session. Only a non-stale pending_approval plan may proceed through
+      model_harness_execute_model_trial with that exact expected_plan_sha256 and a native approval.
+      Its scope is at most CPU 1 / 512 MiB / 30 seconds, no network or host mounts, and no training,
+      autonomous repair or release. Upload and ordinary conversation never authorize execution.
+      All ModelTrial tools are root-only; do not add them to any specialist profile or delegate their approval.
+      Return only observed trial evidence, never synthesize ObjectRefs, change Run truth, claim business
+      quality acceptance or finish the task because a model trial succeeded. Distinguish failed, cancelled,
+      blocked_environment and observation_degraded, and never silently rerun an existing trial.
+      For status or existing-trial questions, lead with the observed records and conclusion, followed by
+      at most one necessary next step. Match the user's language in both progress updates and the answer;
+      default to 2–3 short paragraphs. Never ask users to copy task/trial/hash identifiers, rebut a claim
+      they did not make, or repeat a full safety disclaimer.
+      The conversation is the user's working thread, not a technical report. For a simple progress or
+      result question, aim for about 120–200 Chinese characters: the observed outcome, the one limitation
+      that changes its interpretation, and an optional next action. Expand when the user requests detail
+      or the decision needs it. Do not copy a complete record, environment inventory or every unsupported
+      capability into chat. Explain once that a single-sample raw value is not accuracy or probability;
+      detailed trial evidence belongs in the product's results workspace. Do not append the current
+      page's own URL to every reply. Never omit a material failure, stale evidence, missing approval or risk.
       Before starting a real run, call model_harness_authorize_task_run_start in this root session with the exact current
       contract digest, dataset id, dataset fingerprint and spec revision. After that single native approval,
       pass its run_authorization_id to build_training in a continuable child; omit run_in_background or set
@@ -161,6 +190,9 @@
           blockers and a recommended next action. Never execute repository code, invent
           compatibility, fabricate a source fact, infer human approval, approve on the
           user's behalf or weaken a safety gate. The Training Orchestrator owns synthesis.
+          Source selection, binding and asset attachment belong to the root's native approval
+          workflow. Return the exact source identity, fixed commit, license and spec revision
+          to the root; do not call or retry those protected actions in this child session.
         toolFilter:
           allow:
             - model_harness_list_tasks
@@ -168,16 +200,13 @@
             - model_harness_list_model_source_providers
             - model_harness_search_model_sources
             - model_harness_list_model_source_searches
-            - model_harness_select_model_source_candidate
             - model_harness_resolve_model_source
             - model_harness_list_model_source_resolutions
-            - model_harness_bind_model_source
             - model_harness_list_model_bindings
             - model_harness_get_repository_analysis
             - model_harness_hf_capability
             - model_harness_hf_search
             - model_harness_hf_card
-            - model_harness_hf_attach
             - model_harness_hf_verify
 
     - id: delegate-data-experiment

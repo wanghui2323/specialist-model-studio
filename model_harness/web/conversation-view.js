@@ -61,6 +61,9 @@
     model_harness_create_task: "创建训练任务",
     model_harness_promote_conversation: "建立模型任务",
     model_harness_get_task: "了解当前任务",
+    model_harness_list_model_trials: "查看已有模型试跑",
+    model_harness_get_model_trial: "读取这次试跑结果",
+    model_harness_execute_model_trial: "执行本次模型试跑",
     model_harness_update_task_spec: "确认任务理解",
     model_harness_clarify_task_spec: "补充任务理解",
     model_harness_import_dataset: "导入并体检数据",
@@ -135,6 +138,20 @@
     if (category === "approval" || category === "question") return category;
     if (category === "agent_status") return "specialist_status";
     return aliased;
+  }
+
+  function trialRequestPresentation(text, taskId) {
+    // Presentation only: the exact submitted message remains intact in the
+    // event store and in the expandable reference. Never parse an authority
+    // or construct an ObjectRef from prose.
+    const message = String(text || "");
+    const prefix = "请核对这次模型试跑计划，说明用途和资源范围，并向我申请执行批准。";
+    const separator = "\n\n关联的试跑计划：\n";
+    if (!message.startsWith(prefix + separator) || !taskId) return null;
+    const referenceText = message.slice((prefix + separator).length);
+    const match = /^task_id=(task-[a-zA-Z0-9_-]+)\ntrial_id=(trial-[a-zA-Z0-9_-]+)\nplan_sha256=([0-9a-f]{64})$/.exec(referenceText);
+    if (!match || match[1] !== taskId) return null;
+    return { text: prefix, referenceText };
   }
 
   function displayValue(value) {
@@ -664,6 +681,7 @@
     ACTIVE_EVENT_TYPES,
     ROLE_LABELS,
     TOOL_LABELS,
+    trialRequestPresentation,
     eventType,
     isV2Conversation,
     trainingCapabilityProjection,

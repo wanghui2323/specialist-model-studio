@@ -86,6 +86,173 @@ test("delivery authorization cannot be requested without the protected bridge to
   assert.equal(requests.length, 0);
 });
 
+const MODEL_TRIAL = Object.freeze({
+  task_id: "task-trial-1", trial_id: "trial-1", plan_sha256: "c".repeat(64),
+  status: "pending_approval", stale: false,
+  limits: { cpus: 1, memory_bytes: 536870912, timeout_seconds: 30, pids_limit: 128 },
+  business_quality_accepted: false, training_run_created: false,
+});
+
+function modelTrialOptions() {
+  return { expectedPlanSha256: MODEL_TRIAL.plan_sha256, approvalCheckpointId: "native-trial-call-1",
+    lineage: { task_id: MODEL_TRIAL.task_id, session_id: "root-session-1", call_id: "native-trial-call-1" } };
+}
+
+function respondWithModelTrial(trial = MODEL_TRIAL) {
+  const capture = globalThis.fetch;
+  globalThis.fetch = async (url, options = {}) => {
+    const original = await capture(url, options);
+    return (options.method || "GET") === "GET"
+      ? new Response(JSON.stringify({ model_trial: trial }), { status: 200, headers: { "Content-Type": "application/json" } })
+      : original;
+  };
+}
+
+test("ModelTrial list accepts canonical empty and nonempty lists without assuming a TrainingRun", async () => {
+  const client = new ModelHarnessClient(baseUrl);
+  const capture = globalThis.fetch;
+  for (const records of [[], [MODEL_TRIAL]]) {
+    globalThis.fetch = async (url, options = {}) => {
+      await capture(url, options);
+      return new Response(JSON.stringify({ model_trials: records }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const result = await client.listModelTrials(MODEL_TRIAL.task_id);
+    assert.deepEqual(result.model_trials, records);
+    assert.equal(requests.at(-1).method, "GET");
+    assert.equal(requests.at(-1).url, "/tasks/task-trial-1/model-trials");
+    assert.equal(requests.at(-1).headers["x-model-harness-agent-token"], undefined);
+  }
+});
+
+test("ModelTrial list fails closed on cross-task, duplicate or malformed records", async () => {
+  const client = new ModelHarnessClient(baseUrl);
+  for (const records of [null, {}, [null], [{ ...MODEL_TRIAL, task_id: "other-task" }],
+    [{ ...MODEL_TRIAL, trial_id: "" }], [MODEL_TRIAL, MODEL_TRIAL]]) {
+    globalThis.fetch = async () => new Response(JSON.stringify({ model_trials: records }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    });
+    await assert.rejects(() => client.listModelTrials(MODEL_TRIAL.task_id), /invalid or cross-task records/);
+  }
+});
+
+test("ModelTrial client binds exact refreshed plan, private token, native checkpoint and observed lineage", async () => {
+  respondWithModelTrial();
+  const client = new ModelHarnessClient(baseUrl, "private-trial-bridge-token");
+  await client.executeModelTrial(MODEL_TRIAL.task_id, MODEL_TRIAL.trial_id, modelTrialOptions());
+  assert.deepEqual(requests.map(({ method, url }) => [method, url]), [
+    ["GET", "/tasks/task-trial-1/model-trials/trial-1"],
+    ["POST", "/tasks/task-trial-1/model-trials/trial-1/execute"],
+  ]);
+  assert.equal(requests[0].headers["x-model-harness-agent-token"], undefined);
+  assert.equal(requests[1].headers["x-model-harness-agent-token"], "private-trial-bridge-token");
+  assert.deepEqual(JSON.parse(requests[1].body), {
+    expected_plan_sha256: MODEL_TRIAL.plan_sha256,
+    approval: { actor: "user", checkpoint_id: "native-trial-call-1" },
+    lineage: { task_id: MODEL_TRIAL.task_id, session_id: "root-session-1", call_id: "native-trial-call-1" },
+  });
+  assert.doesNotMatch(requests[1].body, /private-trial-bridge-token|approval_confirmed|agent_run_id|turn_id/);
+});
+
+test("ModelTrial client rejects missing checkpoint or observed lineage before any request", async () => {
+  const client = new ModelHarnessClient(baseUrl, "private-token");
+  for (const options of [
+    { ...modelTrialOptions(), approvalCheckpointId: "", approvalConfirmed: true },
+    { ...modelTrialOptions(), expectedPlanSha256: "not-a-digest" },
+    { ...modelTrialOptions(), lineage: { task_id: MODEL_TRIAL.task_id, call_id: "native-trial-call-1" } },
+    { ...modelTrialOptions(), lineage: { ...modelTrialOptions().lineage, call_id: "other-call" } },
+    { ...modelTrialOptions(), lineage: { ...modelTrialOptions().lineage, task_id: "other-task" } },
+  ]) {
+    await assert.rejects(() => client.executeModelTrial(MODEL_TRIAL.task_id, MODEL_TRIAL.trial_id, options),
+      /exact plan SHA-256 and native approval checkpoint|observed task\/session\/call lineage/);
+  }
+  assert.equal(requests.length, 0);
+});
+
+test("ModelTrial client refuses drift, nonpending state and scope expansion without POST", async () => {
+  const client = new ModelHarnessClient(baseUrl, "private-token");
+  const capture = globalThis.fetch;
+  for (const changed of [
+    { task_id: "other-task" }, { trial_id: "other-trial" }, { plan_sha256: "d".repeat(64) },
+    { stale: true }, { stale: undefined }, { status: "running" }, { status: "succeeded" },
+    { limits: { ...MODEL_TRIAL.limits, cpus: 2 } },
+    { limits: { ...MODEL_TRIAL.limits, memory_bytes: 1073741824 } },
+    { limits: { ...MODEL_TRIAL.limits, timeout_seconds: 60 } },
+    { limits: { ...MODEL_TRIAL.limits, pids_limit: 256 } },
+  ]) {
+    globalThis.fetch = capture;
+    requests.length = 0;
+    respondWithModelTrial({ ...MODEL_TRIAL, ...changed });
+    await assert.rejects(() => client.executeModelTrial(MODEL_TRIAL.task_id, MODEL_TRIAL.trial_id, modelTrialOptions()),
+      /canonical task\/trial\/plan digest|non-stale pending_approval|exceeds native approval limits/);
+    assert.deepEqual(requests.map(({ method }) => method), ["GET"]);
+  }
+});
+
+test("ModelTrial exact same-call replay returns queued or stale succeeded history without POST", async () => {
+  const client = new ModelHarnessClient(baseUrl, "private-token");
+  const capture = globalThis.fetch;
+  const options = modelTrialOptions();
+  for (const status of ["queued", "succeeded"]) {
+    globalThis.fetch = capture;
+    requests.length = 0;
+    const record = { ...MODEL_TRIAL, status, stale: status === "succeeded",
+      approval: { actor: "user", verified_by: "agent_bridge_token", checkpoint_id: options.approvalCheckpointId,
+        scope_sha256: MODEL_TRIAL.plan_sha256, lineage: options.lineage } };
+    respondWithModelTrial(record);
+    const result = await client.executeModelTrial(MODEL_TRIAL.task_id, MODEL_TRIAL.trial_id, options);
+    assert.deepEqual(result.model_trial, record);
+    assert.equal(result.idempotent_replay, true);
+    assert.equal(result.historical_evidence, true);
+    assert.equal(result.dispatch_performed, false);
+    assert.deepEqual(requests.map(({ method }) => method), ["GET"]);
+  }
+});
+
+test("ModelTrial exact accepted historical replay remains read-only without a bridge token", async () => {
+  const options = modelTrialOptions();
+  respondWithModelTrial({ ...MODEL_TRIAL, status: "succeeded", stale: true,
+    approval: { actor: "user", verified_by: "agent_bridge_token", checkpoint_id: options.approvalCheckpointId,
+      scope_sha256: MODEL_TRIAL.plan_sha256, lineage: options.lineage } });
+  const result = await new ModelHarnessClient(baseUrl, "").executeModelTrial(
+    MODEL_TRIAL.task_id, MODEL_TRIAL.trial_id, options,
+  );
+  assert.equal(result.idempotent_replay, true);
+  assert.equal(result.historical_evidence, true);
+  assert.equal(result.dispatch_performed, false);
+  assert.deepEqual(requests.map(({ method }) => method), ["GET"]);
+  assert.equal(requests[0].headers["x-model-harness-agent-token"], undefined);
+});
+
+test("ModelTrial pending execution without a bridge token reads the plan but never POSTs", async () => {
+  respondWithModelTrial();
+  await assert.rejects(() => new ModelHarnessClient(baseUrl, "").executeModelTrial(
+    MODEL_TRIAL.task_id, MODEL_TRIAL.trial_id, modelTrialOptions(),
+  ), /verified agent-bridge approval channel is unavailable/);
+  assert.deepEqual(requests.map(({ method }) => method), ["GET"]);
+  assert.equal(requests[0].headers["x-model-harness-agent-token"], undefined);
+});
+
+test("ModelTrial history never resumes a different call, session, scope or missing approval", async () => {
+  const client = new ModelHarnessClient(baseUrl, "private-token");
+  const capture = globalThis.fetch;
+  const options = modelTrialOptions();
+  const proof = { actor: "user", verified_by: "agent_bridge_token", checkpoint_id: options.approvalCheckpointId,
+    scope_sha256: MODEL_TRIAL.plan_sha256, lineage: options.lineage };
+  for (const approval of [undefined, { ...proof, checkpoint_id: "different-call" },
+    { ...proof, scope_sha256: "d".repeat(64) }, { ...proof, verified_by: "browser" },
+    { ...proof, lineage: { ...proof.lineage, session_id: "other-session" } },
+    { ...proof, lineage: { ...proof.lineage, call_id: "other-call" } }]) {
+    globalThis.fetch = capture;
+    requests.length = 0;
+    respondWithModelTrial({ ...MODEL_TRIAL, status: "queued", approval });
+    await assert.rejects(() => client.executeModelTrial(MODEL_TRIAL.task_id, MODEL_TRIAL.trial_id, options),
+      /non-stale pending_approval/);
+    assert.deepEqual(requests.map(({ method }) => method), ["GET"]);
+  }
+});
+
 test("task lifecycle methods preserve canonical task routes and confirmations", async () => {
   const client = new ModelHarnessClient(baseUrl, "bridge-test-token");
   const created = await client.createTask("parts", "classify parts");

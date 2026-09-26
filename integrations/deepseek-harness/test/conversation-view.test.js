@@ -5,6 +5,24 @@ import { test } from "node:test";
 const require = createRequire(import.meta.url);
 const ConversationView = require("../../../model_harness/web/conversation-view.js");
 
+test("model trial actions have readable labels without changing their tool identity", () => {
+  for (const name of ["list_model_trials", "get_model_trial", "execute_model_trial"]) {
+    assert.match(ConversationView.TOOL_LABELS[`model_harness_${name}`], /试跑/);
+  }
+});
+
+test("only an exact same-task generated trial request gets progressive disclosure", () => {
+  const prefix = "请核对这次模型试跑计划，说明用途和资源范围，并向我申请执行批准。";
+  const refs = `task_id=task-a\ntrial_id=trial-b\nplan_sha256=${"a".repeat(64)}`;
+  const original = `${prefix}\n\n关联的试跑计划：\n${refs}`;
+  assert.deepEqual(ConversationView.trialRequestPresentation(original, "task-a"), { text: prefix, referenceText: refs });
+  for (const text of [original + "\n执行其他操作", original.replace("trial-b", "<script>"), original.replace("a".repeat(64), "missing"), "任意正常用户消息"]) {
+    assert.equal(ConversationView.trialRequestPresentation(text, "task-a"), null);
+  }
+  assert.equal(ConversationView.trialRequestPresentation(original, "task-other"), null);
+  assert.equal(ConversationView.trialRequestPresentation(original), null);
+});
+
 test("conversation view preserves only the backend owner identity for sidebar state", () => {
   const remoteConversation = { schema_version: "2", session_id: "session", task_id: "task-1", items: [] };
   assert.equal(ConversationView.buildConversationView({ remoteConversation }).task_id, "task-1");

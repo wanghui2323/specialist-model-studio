@@ -27,6 +27,7 @@ SUPPORTED_JOBLIB_RECIPES = frozenset(
         "digit-classification",
         "image-folder-classification",
         "tabular-regression",
+        "tabular-classification",
         "audio-keyword-classification",
     }
 )
@@ -580,6 +581,14 @@ class InferenceCheck:
             if not isinstance(model, dict) or not required.issubset(model):
                 raise EvidenceError("unsupported tabular-regression model schema")
             if model.get("task_type") != "regression":
+                raise EvidenceError("unsupported tabular model task type")
+            estimator = model["estimator"]
+            schema = "tabular-feature-row-v1"
+        elif recipe == "tabular-classification":
+            required = {"estimator", "feature_columns", "labels", "task_type"}
+            if not isinstance(model, dict) or not required.issubset(model):
+                raise EvidenceError("unsupported tabular-classification model schema")
+            if model.get("task_type") != "classification" or not model.get("labels"):
                 raise EvidenceError("unsupported tabular model task type")
             estimator = model["estimator"]
             schema = "tabular-feature-row-v1"

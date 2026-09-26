@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { defineTool } from "@deepseek-ai/dsh-tools";
 
-import { ModelHarnessClient } from "./client.js";
+import { isAcceptedModelTrialReplay, ModelHarnessClient } from "./client.js";
 
 export const name = "specialist-model-studio-tools";
 export const inject = ["tools", "systemPrompt"];
@@ -32,16 +32,13 @@ export const ROLE_TOOL_ALLOWLISTS = Object.freeze({
     "model_harness_list_model_source_providers",
     "model_harness_search_model_sources",
     "model_harness_list_model_source_searches",
-    "model_harness_select_model_source_candidate",
     "model_harness_resolve_model_source",
     "model_harness_list_model_source_resolutions",
-    "model_harness_bind_model_source",
     "model_harness_list_model_bindings",
     "model_harness_get_repository_analysis",
     "model_harness_hf_capability",
     "model_harness_hf_search",
     "model_harness_hf_card",
-    "model_harness_hf_attach",
     "model_harness_hf_verify",
   ]),
   data_experiment: Object.freeze([
@@ -94,6 +91,29 @@ export const ROLE_TOOL_ALLOWLISTS = Object.freeze({
   ]),
 });
 
+// Recognition-only snapshot of the shipped research descriptor. Existing
+// continuable sessions retain this exact profile, but execution always uses
+// the current allowlist and root-only approval guard. Do not derive this from
+// the current profile: future tool changes must not widen legacy recognition.
+const LEGACY_RESEARCH_SOURCE_TOOL_PROFILE = Object.freeze([
+  "model_harness_list_tasks",
+  "model_harness_get_task",
+  "model_harness_list_model_source_providers",
+  "model_harness_search_model_sources",
+  "model_harness_list_model_source_searches",
+  "model_harness_select_model_source_candidate",
+  "model_harness_resolve_model_source",
+  "model_harness_list_model_source_resolutions",
+  "model_harness_bind_model_source",
+  "model_harness_list_model_bindings",
+  "model_harness_get_repository_analysis",
+  "model_harness_hf_capability",
+  "model_harness_hf_search",
+  "model_harness_hf_card",
+  "model_harness_hf_attach",
+  "model_harness_hf_verify",
+]);
+
 const ROLE_LABELS = Object.freeze({
   research_source: "research_source（研究与来源）",
   data_experiment: "data_experiment（数据与实验）",
@@ -121,6 +141,9 @@ const ORCHESTRATOR_TASK_CONTROL_TOOLS = new Set([
   "model_harness_configure_contract",
   "model_harness_confirm_contract",
   "model_harness_authorize_task_run_start",
+  "model_harness_list_model_trials",
+  "model_harness_get_model_trial",
+  "model_harness_execute_model_trial",
   "model_harness_authorize_sample_inference",
   "model_harness_authorize_artifact_bundle_build",
   "model_harness_apply_task_strategy",
@@ -165,9 +188,11 @@ function specialistRoleFromAgent(agent) {
   ) return undefined;
   const allow = descriptor?.toolFilter?.allow;
   return Object.entries(ROLE_TOOL_ALLOWLISTS).find(
-    // Recognize the exact prior data profile for session continuity, but use
-    // the current allowlist below to deny its removed import permission.
+    // Recognize prior profiles only for session continuity; removed tools
+    // remain denied by the current execution policy below.
     ([role, expected]) => sameToolProfile(allow, expected)
+      || (role === "research_source"
+        && sameToolProfile(allow, LEGACY_RESEARCH_SOURCE_TOOL_PROFILE))
       || (role === "data_experiment" && sameToolProfile(allow,
         [...expected, "model_harness_import_dataset"])),
   )?.[0];
@@ -1119,6 +1144,7 @@ const APPROVAL_REQUIRED_TOOLS = new Set([
   "model_harness_scaffold_recipe",
   "model_harness_configure_contract",
   "model_harness_confirm_contract",
+  "model_harness_execute_model_trial",
   "model_harness_authorize_task_run_start",
   "model_harness_authorize_sample_inference",
   "model_harness_authorize_artifact_bundle_build",
@@ -1494,6 +1520,9 @@ export function apply(ctx) {
     text: `This is the Specialist Model Studio multi-agent training system for people who do not train models professionally. The user experiences one thoughtful AI training partner. Internally, the root session coordinates specialist work, but internal topology is not a product headline. A role-scoped child must follow its specialist persona, remain inside that role and return evidence to the root rather than impersonating the user-facing assistant.
 Match delegation to the current lifecycle phase: research_source owns upstream model and source evidence; data_experiment owns dataset and adapter evidence; resource_safety owns plan, isolation and machine-fit evidence; build_training owns trusted Recipe, contract and TrainingRun execution; evaluation_delivery owns EvaluationReport, fresh-sample inference and artifact evidence. Delegate independent bounded questions in parallel, but keep dependent or approval-mutating phases ordered. Give a fresh child a standalone prompt with the exact task_id, current revision or digest and required return format. The Training Orchestrator must synthesize canonical records into the final user-facing conclusion; a delegate's prose is not a replacement for a model_harness_* fact.
 For specialist-model training requests, use the model_harness_* tools as the only source of task, dataset, run, metric, artifact, lineage, and approval facts. Do not use shell commands or generic coding tools to bypass the domain lifecycle.
+An existing task-owned ModelTrial is a separate bounded external-model inference attempt, not a TrainingRun. For any question about this task's model trials, the root first calls model_harness_list_model_trials with the known task_id, then model_harness_get_model_trial with the exact returned trial_id to inspect its plan/evidence. Never infer that no ModelTrial exists because get_task has no TrainingRun, and never ask the user to copy an internal trial id or digest. A canonical empty model_trials array means this task has no saved trial; a failed lookup does not. If several trials exist, use the user's referenced trial or ask one human-readable choice between their inputs/times rather than inventing an identity. Only a non-stale pending_approval plan may proceed through model_harness_execute_model_trial with that exact expected_plan_sha256 and one native approval. This authorizes at most CPU 1, 512 MiB, 30 seconds, no network, no host mounts and no training or release. A sample upload or conversational assent is not execution approval. Do not delegate any ModelTrial tool to a specialist, invent a checkpoint or identity, broaden model support, synthesize ObjectRefs, or turn trial success into task completion or business quality acceptance. Return only the observed trial state and evidence; failed, cancelled, blocked_environment and observation_degraded remain distinct.
+For status or existing-trial questions, lead with the observed records and conclusion, followed by at most one necessary next step. Match the user's language in both progress updates and the answer; default to 2–3 short paragraphs. Never ask users to copy task/trial/hash identifiers, rebut a claim they did not make, or repeat a full safety disclaimer.
+The conversation is the user's working thread, not a technical report. For a simple progress or result question, aim for a short answer of about 120–200 Chinese characters: the observed outcome, the one limitation that changes its interpretation, and an optional next action. Expand only when the user asks for detail or the decision needs it. Do not copy a complete record, environment inventory or list of all unsupported capabilities into the answer. A single-sample raw value is not accuracy or a probability; say that once, without repeating every release gate. Detailed trial evidence is available in the product's results workspace. Do not append the current page's own URL to every reply. This communication guidance never permits omitting a material failure, stale evidence, missing approval or safety risk.
 Conversation and training-task lifecycles are separate. An unbound conversation is an intake space, not a TrainingTask. Resolve an ambiguous business outcome first through ordinary conversation in intake mode. Greet a greeting naturally and answer capability, product or process questions directly. For greetings, capability questions and vague model requests, do not call any model_harness_* tool, create a structured checkpoint, delegate a specialist or imply that training has started. Reflect a vague request and ask one concise natural-language question that changes the route; natural intake clarification must not use ask_user_question. The sole model_harness_* exception in intake is model_harness_promote_conversation, and it is allowed only when the user's message provides a concrete desired outcome with enough input/output meaning to become a real training work item. Call it once with the exact conversation id, a short faithful name and a business_goal written in the user's terms. Do not infer that goal from a greeting, task title or earlier unrelated task. Only after promotion succeeds may you call model_harness_get_task, create structured checkpoints, match capabilities or delegate specialists. Never use model_harness_create_task inside an already-created conversation.
 In task-bound mode, first decide whether the current message actually advances, queries or changes the bound task. A greeting or general product, capability, method or process question that does not depend on current task facts gets a natural direct answer; do not call model_harness_get_task, create a checkpoint, delegate a specialist, mutate the task or imply that work started. Only for current-task work, read task.control and task.capability_decision before using their facts, then ask exactly one high-impact clarification question at a time. Before capability matching, source search or specialist delegation, separate the user's desired outcome from the implementation method. If “train” or “build” may mean “make this work locally,” clarify the implementation path conversationally. Before recommending an action, check current executable capabilities. Arbitrary external models support discovery, static analysis, planning and resource checks only; do not recommend immediate pretrained inference or adaptation training as an available button. Real training and fresh-sample trials require a registered verified Recipe, matching Data Adapter and their normal evidence and approval gates. Use model_harness_clarify_task_spec when the user answers in their own words, and model_harness_update_task_spec only after the user's business outcome identifies one exact output family. Do not expose a full field checklist unless the user asks to edit advanced details.
 Use a human conversation contract, not an operator log. Before each clarification, briefly reflect the outcome you heard in the user's own vocabulary and name the one uncertainty that changes the route. Keep that reflection to one or two short sentences, then ask the question. Do not open with tool activity or internal state such as “I read the task”, “the backend cannot determine”, “the task is in clarification”, or “no capability/Recipe/dataset has been selected”. Do not make the user learn TrainingTask, TaskSpec, Recipe, Data Adapter, ObjectRef, family enum, blocker code, repository revision, workspace path or other implementation vocabulary. Keep raw tool output, ids, digests and detailed risk tables in attached evidence objects rather than the main conversation.
@@ -1508,7 +1537,7 @@ For the three validated built-in capabilities, import and explain the inspection
 For artifact downloads, interpret “workspace default location” as one new ZIP filename only; the runtime resolves it inside its configured workspace exports directory. Use an absolute ZIP destination only when the user explicitly selected it through the host UI, and never infer a destination from the process working directory.
 For an image-classification task, Hugging Face is an optional fixed feature extractor, not arbitrary fine-tuning: inspect capability, search and the model card; require an exact 40-character commit; attach only after native approval and approval_confirmed=true; then verify the local asset before training. Never ask for or transmit a Hugging Face token through chat tools.
 After a completed task-owned Run, read the EvaluationReport dimensions before making a release claim. A user-uploaded raw image, WAV or one-row JSON/CSV may be tried only through the task-bound inference_input_id plus the root-approved one-shot sample-inference grant; never accept a local path and never substitute training or test data. Build an Artifact Bundle only from trusted evidence, and download it only to a user-selected new .zip path after native approval. Treat integrity, metric gates, evidence sufficiency and release conclusion as separate facts.
-Work like an execution agent, not a form wizard: ask only for information that the tools cannot discover, say what is happening before a meaningful tool call, and after each phase summarize the evidence, the unresolved decision, and the next action. Never reveal private chain-of-thought, hidden reasoning tokens or a fabricated thinking transcript; show only concise action intent, actual tool/delegation status, observed evidence and the resulting decision. Never put a persistent “which agent is handling this” announcement in conversational prose. Mention a specialist role only inside the real action item produced by an actual DSH child. When a requested training capability has no verified Recipe or matching Data Adapter, do not end with a technical inventory dump. Say in plain language that real training is unavailable in the current engine, distinguish that from available source diagnosis, and offer concrete next paths: research candidates, record a capability-build request, or inspect the technical evidence. Pretrained inference and adaptation for arbitrary repositories are not implemented execution paths; never imply otherwise. When a tool returns workbench_url, include it as the evidence view for that same task_id.
+Work like an execution agent, not a form wizard: ask only for information that the tools cannot discover, say what is happening before a meaningful tool call, and after each phase summarize the evidence, the unresolved decision, and the next action. Never reveal private chain-of-thought, hidden reasoning tokens or a fabricated thinking transcript; show only concise action intent, actual tool/delegation status, observed evidence and the resulting decision. Never put a persistent “which agent is handling this” announcement in conversational prose. Mention a specialist role only inside the real action item produced by an actual DSH child. When a requested training capability has no verified Recipe or matching Data Adapter, do not end with a technical inventory dump. Say in plain language that real training is unavailable in the current engine, distinguish that from available source diagnosis, and offer concrete next paths: research candidates, record a capability-build request, or inspect the technical evidence. Pretrained inference and adaptation for arbitrary repositories are not implemented execution paths; never imply otherwise. When the user needs an evidence location, use only the observed workbench_url for that same task_id; do not routinely append the current page's own link.
 Never use the teaching digit run as a substitute for a user's OCR, speech, forecasting, or industrial vision task. Neither the Training Orchestrator nor a specialist child may invent progress, metrics, approvals, files, compatibility, blockers or completed work. Never approve on the user's behalf, treat a delegate statement as approval, weaken a human gate, or describe a queued or running job as completed. A returned workbench_url is an evidence view for the same task_id, not a separate source of truth.`,
   });
 
@@ -1672,6 +1701,68 @@ Never use the teaching digit run as a substitute for a user's OCR, speech, forec
           taskBlockerRefs(result, args.task_id),
           args.task_id,
         );
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_list_model_trials",
+      description: "Root-only list of existing task-owned ModelTrials. Use this first for trial questions, then read an exact returned trial_id. An empty list is evidence of no saved trial; no TrainingRun is not. Never ask users to copy internal trial ids.",
+      parameters: { task_id: { type: "string", required: true } },
+      output: jsonOutput,
+      presentCall: (args) => ({ card: "generic", title: `查看已有模型试跑 · ${args.task_id}` }),
+      async execute(args, exec) {
+        requireRootSessionId(exec);
+        const result = await client.listModelTrials(args.task_id, exec.signal);
+        return { ...result, workbench_url: client.workbenchUrl(args.task_id) };
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_get_model_trial",
+      description: "Root-only read of one canonical task-owned ModelTrial plan and evidence. This is a bounded external-model inference attempt, not training or business-quality acceptance.",
+      parameters: {
+        task_id: { type: "string", required: true },
+        trial_id: { type: "string", required: true },
+      },
+      output: jsonOutput,
+      presentCall: (args) => ({ card: "generic", title: `读取模型试跑计划 · ${args.trial_id}` }),
+      async execute(args, exec) {
+        requireRootSessionId(exec);
+        const result = await client.getModelTrial(args.task_id, args.trial_id, exec.signal);
+        const trial = result?.model_trial;
+        if (!trial || trial.task_id !== args.task_id || trial.trial_id !== args.trial_id) {
+          throw new Error("ModelTrial lookup returned a different task or trial");
+        }
+        return { ...result, workbench_url: client.workbenchUrl(args.task_id) };
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "model_harness_execute_model_trial",
+      description: "Root-only native approval for one exact current ModelTrial plan: at most CPU 1, 512 MiB, 30 seconds, no network or host mounts. Executes inference only, never creates a TrainingRun or grants training, release, repair-code or business-quality acceptance.",
+      parameters: {
+        task_id: { type: "string", required: true },
+        trial_id: { type: "string", required: true },
+        expected_plan_sha256: { type: "string", required: true, description: "Exact plan_sha256 observed from the current non-stale pending_approval ModelTrial." },
+      },
+      output: jsonOutput,
+      presentCall: (args) => ({ card: "generic", title: `批准一次隔离 CPU 模型试跑 · ${args.trial_id}`,
+        rawInput: JSON.stringify({ task_id: args.task_id, trial_id: args.trial_id,
+          expected_plan_sha256: args.expected_plan_sha256, scope: "CPU 1 / 512 MiB / 30 秒 / 无网络 / 非训练" }) }),
+      async execute(args, exec) {
+        const sessionId = requireRootSessionId(exec);
+        const checkpointId = requireCallId(exec);
+        const result = await client.executeModelTrial(args.task_id, args.trial_id, {
+          expectedPlanSha256: args.expected_plan_sha256, approvalCheckpointId: checkpointId,
+          lineage: { task_id: args.task_id, session_id: sessionId, call_id: checkpointId },
+        }, exec.signal);
+        return { ...result, workbench_url: client.workbenchUrl(args.task_id) };
       },
     }),
   );
@@ -2906,6 +2997,32 @@ Never use the teaching digit run as a substitute for a user's OCR, speech, forec
       return artifactBundleAuthorizationBroker.reserve(exec);
     }
     if (!APPROVAL_REQUIRED_TOOLS.has(exec.name)) return decision;
+    if (exec.name === "model_harness_execute_model_trial") {
+      // A transport replay of an already accepted exact native checkpoint is
+      // a historical read, not a request for another human decision or job.
+      // The tool body re-reads the record and makes the same strict check.
+      if (exec.callId && exec.agent?.session?.header?.id) {
+        try {
+          const sessionId = requireRootSessionId(exec);
+          const checkpointId = requireCallId(exec);
+          const args = exec.arguments || {};
+          const observed = await client.getModelTrial(args.task_id, args.trial_id, exec.signal);
+          const trial = observed?.model_trial;
+          if (isAcceptedModelTrialReplay(trial, { taskId: args.task_id, trialId: args.trial_id,
+            planSha256: args.expected_plan_sha256, sessionId, checkpointId })) {
+            return { kind: "allow" };
+          }
+          if (!trial || trial.task_id !== args.task_id || trial.trial_id !== args.trial_id
+              || trial.plan_sha256 !== args.expected_plan_sha256 || trial.status !== "pending_approval"
+              || trial.stale !== false) {
+            return { kind: "deny", reason: "试跑计划已变化或已受理，不能以另一调用重放审批；请读取已有试跑证据。" };
+          }
+        } catch {
+          return { kind: "deny", reason: "无法核验当前试跑计划与根会话调用身份，未申请批准或执行。请重新读取试跑证据。" };
+        }
+      }
+      return { kind: "ask", reason: `确认后，仅允许根协调器按 task=${exec.arguments?.task_id || "未提供"}、trial=${exec.arguments?.trial_id || "未提供"}、plan_sha256=${exec.arguments?.expected_plan_sha256 || "未提供"} 执行一次隔离模型推理。上限 CPU 1 / 512 MiB / 30 秒，无网络、无宿主挂载；不是训练，不授权自动修复、发布或业务质量验收。` };
+    }
     if (exec.name === "model_harness_bind_model_source") {
       return { kind: "ask", reason: `确认后绑定固定版本 ${exec.arguments?.expected_resolved_commit || "未提供"} 并读取公开源文件做静态分析；不下载权重、不安装或执行第三方代码、不启动训练。` };
     }

@@ -6,8 +6,8 @@
     <meta name="description" content="Specialist Model Studio：从需求与证据到可验收的专业模型" />
     <title>Specialist Model Studio · 专业模型智能工作台</title>
     <link rel="icon" href="/app/static/model-harness-mark.svg?v=2.2-one-product" type="image/svg+xml" />
-    <link rel="stylesheet" href="/app/static/styles.css?v=2.4.10-pc-rc" />
-    <link rel="stylesheet" href="/app/static/visual-system.css?v=2.4.10-pc-rc" />
+    <link rel="stylesheet" href="/app/static/styles.css?v=vnext-m1-archive" />
+    <link rel="stylesheet" href="/app/static/visual-system.css?v=workbuddy-pc-20260912-r3" />
   </head>
   <body data-view="home">
     <a class="skip-link" href="#conversationMain">跳到对话区</a>
@@ -17,10 +17,14 @@
           <img class="brand-mark" src="/app/static/model-harness-mark.svg?v=2.2-one-product" alt="" />
           <div><strong>Specialist Model Studio</strong><span>专业模型智能工作台</span></div>
         </div>
-        <button class="primary-button new-task-button" id="newTaskButton" type="button"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#plus"></use></svg>开始新任务</button>
-        <div class="sidebar-title"><span>模型任务</span><button class="icon-button" id="refreshButton" type="button" aria-label="刷新任务"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#refresh"></use></svg></button></div>
+        <button class="primary-button new-task-button" id="newTaskButton" type="button"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#plus"></use></svg>新建任务</button>
+        <div class="sidebar-title"><span>我的任务</span><button class="icon-button" id="refreshButton" type="button" aria-label="刷新任务"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#refresh"></use></svg></button></div>
+        <div class="task-list-scopes" role="group" aria-label="任务范围">
+          <button id="activeTasksButton" type="button" aria-pressed="true" aria-controls="taskList">当前任务</button>
+          <button id="archivedTasksButton" type="button" aria-pressed="false" aria-controls="taskList">已归档</button>
+        </div>
         <nav class="task-list" id="taskList" aria-label="任务列表"></nav>
-        <div class="local-note"><span class="local-dot" aria-hidden="true"></span><div><b>本地工作区</b><small>数据、模型和运行证据留在本机</small></div></div>
+        <div class="local-note"><span class="local-dot" aria-hidden="true"></span><div><b>本地工作区</b><small>数据与运行记录保存在本机</small></div></div>
         <div class="runtime-pill" id="runtimePill" data-state="checking"><i></i><span>正在连接 AI 服务</span></div>
       </aside>
 
@@ -28,7 +32,7 @@
         <header class="topbar">
           <div class="topbar-title">
             <button class="menu-button" id="menuButton" type="button" aria-label="打开任务列表"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#menu"></use></svg></button>
-            <div><span class="authoritative-status" id="taskEyebrow" role="status" aria-live="polite">SPECIALIST MODEL STUDIO</span><h1 id="taskTitle">开始一个模型任务</h1></div>
+            <div><span class="authoritative-status" id="taskEyebrow" role="status" aria-live="polite">SPECIALIST MODEL STUDIO</span><h1 id="taskTitle">新任务</h1></div>
           </div>
           <button class="workspace-toggle" id="workspaceToggleButton" type="button" aria-label="打开任务证据" aria-controls="inspector" aria-expanded="false" hidden>
             <svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#panel"></use></svg><span>任务证据</span>
@@ -37,14 +41,14 @@
 
         <section class="empty-state" id="emptyState">
           <div class="empty-orbit" aria-hidden="true"><span></span><i></i><i></i><i></i></div>
-          <span class="empty-kicker">MODEL TRAINING AGENT</span>
-          <h2>想训练一个什么模型？</h2>
-          <p id="homeBoundary">说清楚你想解决的问题就够了。AI 会和你一起澄清目标、查找开源模型，并在每个关键决定前停下来确认。</p>
+          <span class="empty-kicker">从一个真实问题开始</span>
+          <h2>想让模型帮你解决什么问题？</h2>
+          <p id="homeBoundary">先说目标、手头的数据和限制。我们一起核对可执行方案，需要补充信息或授权时再请你决定。</p>
           <div class="home-proof" aria-label="产品能力">
-            <span><i aria-hidden="true"></i>先通过对话把目标说清楚</span>
-            <span><i aria-hidden="true"></i>可联网查找开源模型</span>
-            <span id="homeTrainingProof"><i aria-hidden="true"></i>确认方案后才执行</span>
-            <span><i aria-hidden="true"></i>结果和证据随时可回看</span>
+            <span><i aria-hidden="true"></i>对话明确目标</span>
+            <span><i aria-hidden="true"></i>查找开源模型</span>
+            <span id="homeTrainingProof"><i aria-hidden="true"></i>执行范围单独批准</span>
+            <span><i aria-hidden="true"></i>结果随时回看</span>
           </div>
           <div class="home-composer-slot" id="homeComposerSlot"></div>
           <div class="starter-grid" aria-label="示例模型任务">
@@ -105,13 +109,20 @@
 
         <footer class="composer-wrap" id="composerWrap">
           <div class="composer-notice" id="composerNotice" role="status" aria-live="polite" hidden></div>
+          <div class="task-archive-notice" id="taskArchiveNotice" hidden>
+            <div><b>此任务已归档</b><p>对话、数据和运行证据仍保留。恢复后可继续操作，不会自动启动执行。</p></div>
+            <button class="secondary-button" id="restoreTaskButton" type="button">恢复任务</button>
+          </div>
           <div class="composer-retry" id="composerRetry" hidden>
             <span id="composerRetryHint">请求没有完成。</span>
             <button id="composerRetryButton" type="button">重试发送</button>
           </div>
           <div class="composer-delivery" id="composerDelivery" hidden role="status" aria-live="polite">
-            <b id="composerDeliveryLabel">将在本轮结束后继续</b>
-            <span id="composerDeliveryDetail">当前消息只会排队，不会改变正在执行的本轮。</span>
+            <div class="composer-delivery-copy">
+              <b id="composerDeliveryLabel">将在本轮结束后继续</b>
+              <span id="composerDeliveryDetail">当前消息只会排队，不会改变正在执行的本轮。</span>
+            </div>
+            <button class="composer-stop-modify" id="composerStopModifyButton" type="button" aria-describedby="composerDeliveryDetail">先停止，再修改</button>
           </div>
           <form class="composer" id="composerForm">
             <div class="composer-attachment" id="composerAttachment" data-state="pending" role="group" aria-label="所选文件" hidden>
@@ -137,16 +148,16 @@
 
       <aside class="inspector" id="inspector" aria-label="任务证据与产物" hidden>
         <div class="inspector-sheet-bar">
-          <span id="inspectorSheetTitle">方案与证据</span>
+          <span id="inspectorSheetTitle">成果与证据</span>
           <button class="icon-button" id="closeInspectorButton" type="button" aria-label="关闭工作区"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#close"></use></svg></button>
         </div>
-        <div class="inspector-empty" id="inspectorEmpty"><span>任务进展会出现在这里</span><p>创建任务后，你可以随时查看方案、数据、运行和验收证据。</p></div>
+        <div class="inspector-empty" id="inspectorEmpty"><span>在这里查看任务成果</span><p>打开方案、数据或运行结果，与左侧对话对照阅读。</p></div>
         <section class="workspace-experience" id="workspaceExperience" data-phase="idle" hidden aria-live="polite">
           <header>
             <div><span id="workspaceEyebrow">当前任务</span><h2 id="workspaceTitle">AI 正在理解你的目标</h2></div>
             <b id="workspacePhaseBadge">准备中</b>
           </header>
-          <p id="workspaceSummary">需要执行或产生结果时，这里会展开对应的协作过程和可视化结果。</p>
+          <p id="workspaceSummary">在这里查看本轮已记录的进展与结果，对话仍保留在左侧。</p>
           <section class="workspace-team" id="workspaceTeam" hidden aria-labelledby="workspaceTeamTitle">
             <div class="workspace-section-heading"><div><span>真实协作</span><h3 id="workspaceTeamTitle">本轮智能体分工</h3></div><b id="workspaceTeamCount">0 位专家</b></div>
             <div class="workspace-team-list" id="workspaceTeamList"></div>
@@ -159,6 +170,20 @@
             <button class="secondary-button" id="workspaceTechnicalButton" type="button">查看训练详情</button>
             <small id="workspaceTruthNote">这里只展示后端已记录的动作、委派和结果。</small>
           </div>
+        </section>
+        <section class="model-trial-report" id="modelTrialReport" hidden aria-live="polite" aria-labelledby="modelTrialReportTitle">
+          <header class="model-trial-report-header">
+            <div><h2 id="modelTrialReportTitle">这次图片试跑</h2></div>
+            <b id="modelTrialReportState">正在读取</b>
+          </header>
+          <p class="model-trial-report-summary" id="modelTrialReportSummary"></p>
+          <dl class="model-trial-report-facts" id="modelTrialReportFacts"></dl>
+          <section class="model-trial-report-output" id="modelTrialReportOutput" aria-label="实际模型输出"></section>
+          <p class="model-trial-report-limits" id="modelTrialReportLimits"></p>
+          <div class="model-trial-actions" id="modelTrialReportActions"></div>
+          <nav class="model-trial-report-history" id="modelTrialReportHistory" aria-label="选择试跑记录"></nav>
+          <button class="secondary-button" id="modelTrialReportRefreshButton" type="button">刷新试跑状态</button>
+          <details class="model-trial-report-evidence" id="modelTrialReportEvidence"><summary>技术身份与原始证据</summary><pre id="modelTrialReportJson" tabindex="0"></pre></details>
         </section>
         <section class="object-viewer" id="objectViewer" hidden aria-live="polite">
           <header>
@@ -316,6 +341,17 @@
                 <div class="inline-status" id="modelAssetVerifyStatus" data-state="neutral">尚未执行完整性复核</div>
                 <button class="secondary-button full-button" id="modelAssetVerifyButton" type="button">复核本地资产</button>
               </div>
+              <details class="model-trial-section" id="modelTrialSection" hidden open>
+                <summary id="modelTrialTitle">现成模型试跑</summary>
+                <div class="card-heading"><span>固定计划 · 独立证据</span><button class="text-button" id="modelTrialRefreshButton" type="button">刷新记录</button></div>
+                <p class="capability-note" id="modelTrialCapability">正在核验隔离运行能力…</p>
+                <p>使用当前固定 ONNX 资产提取单张图片的原始输出。不会训练模型，也不作准确率或发布判断。</p>
+                <input id="modelTrialInput" type="file" accept="image/png,image/jpeg,image/webp,image/bmp" hidden />
+                <p class="model-trial-sample" id="modelTrialSample">选择一张未参与训练的新图片，最大 4 MiB。</p>
+                <div class="model-trial-actions"><button class="secondary-button" id="modelTrialSelectButton" type="button">选择新图片</button><button class="primary-button" id="modelTrialPrepareButton" type="button" disabled>保存样本并准备计划</button></div>
+                <p class="model-trial-notice" id="modelTrialNotice" role="status" aria-live="polite"></p>
+                <div class="model-trial-history" id="modelTrialHistory"></div>
+              </details>
               <details class="asset-discovery" id="hfDiscovery">
                 <summary>查找 Hugging Face 模型</summary>
                 <p class="capability-note" id="hfCapabilityStatus">正在检查官方 Hugging Face 能力…</p>
@@ -440,8 +476,8 @@
       </form>
     </dialog>
     <script src="/app/static/draft-store.js?v=1.0-agent-native-2" defer></script>
-    <script src="/app/static/conversation-view.js?v=2.4.10-pc-rc" defer></script>
-    <script src="/app/static/interaction-shell.js?v=2.4.10-pc-rc" defer></script>
-    <script src="/app/static/app.js?v=2.4.10-pc-rc" defer></script>
+    <script src="/app/static/conversation-view.js?v=workbuddy-pc-20260912-r3" defer></script>
+    <script src="/app/static/interaction-shell.js?v=vnext-m1-archive" defer></script>
+    <script src="/app/static/app.js?v=workbuddy-pc-20260912-r3" defer></script>
   </body>
 </html>
