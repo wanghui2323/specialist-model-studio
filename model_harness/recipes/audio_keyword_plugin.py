@@ -259,7 +259,29 @@ class AudioKeywordClassificationPlugin:
     def propose_strategies(
         self, metrics: dict[str, Any], contract: dict[str, Any]
     ) -> list[StrategyProposal]:
-        return [
+        selected = str(metrics["selected_model"])
+        validation = metrics["validation_candidates"][selected]
+        current = int(contract["recipe_options"]["extra_trees_estimators"])
+        strategies = []
+        if current < 80 or (float(validation["macro_f1"]) < 0.98 and current < 120):
+            strategies.append(
+                StrategyProposal(
+                    strategy_id="increase-extra-trees",
+                    title="增加关键词树模型容量",
+                    hypothesis="验证集仍有类别混淆，当前树数量可能不够。",
+                    changes=(f"extra_trees_estimators从{current}调整为120",),
+                    expected_effect="可能提高验证 Macro-F1，同时增加训练时间和模型大小。",
+                    estimated_cost="medium",
+                    risk="medium",
+                    requires_approval=True,
+                    actionable=True,
+                    evidence={
+                        "validation_macro_f1": validation["macro_f1"],
+                        "current_estimators": current,
+                    },
+                )
+            )
+        strategies.append(
             StrategyProposal(
                 strategy_id="collect-device-and-noise-slices",
                 title="补充真实设备与环境切片",
@@ -276,18 +298,23 @@ class AudioKeywordClassificationPlugin:
                 requires_approval=True,
                 actionable=False,
                 evidence={
-                    "test_macro_f1": metrics["clean_test"]["macro_f1"],
+                    "validation_macro_f1": validation["macro_f1"],
                     "speaker_split_disjoint": metrics["speaker_split"]["disjoint"],
                 },
             )
-        ]
+        )
+        return strategies
 
     def apply_strategy(
         self, contract: dict[str, Any], strategy_id: str
     ) -> dict[str, Any]:
-        raise ContractError(
-            f"strategy requires reviewed external audio and is not automatic: {strategy_id}"
-        )
+        if strategy_id != "increase-extra-trees":
+            raise ContractError(
+                f"strategy requires reviewed external audio and is not automatic: {strategy_id}"
+            )
+        updated = deepcopy(contract)
+        updated["recipe_options"]["extra_trees_estimators"] = 120
+        return updated
 
     def learning_report(
         self,

@@ -6647,6 +6647,8 @@ class TrainingWorkspace:
             family = "image_classification"
         elif manifest.plugin_id == "tabular-regression":
             family = "tabular_regression"
+        elif manifest.plugin_id == "tabular-classification":
+            family = "tabular_classification"
         elif manifest.plugin_id == "digit-classification":
             family = "image_classification"
         else:

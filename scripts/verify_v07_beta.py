@@ -745,6 +745,7 @@ def probe_registry() -> tuple[str, dict[str, Any], list[str]]:
         expected_recipes = [
             "digit-classification",
             "image-folder-classification",
+            "tabular-classification",
             "tabular-regression",
         ]
         expected_adapters = ["image-folder-zip", "tabular-csv"]

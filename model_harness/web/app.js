@@ -1966,7 +1966,7 @@ function renderRunHistory(task, result) {
   if (!runIds.length) { appendEmpty(ui.runHistoryList, "尚无训练运行。"); return; }
   runIds.forEach((runId, index) => { const decision = history.find((item) => item.parent_run_id === runId); const current = runId === task.current_run_id; const row = document.createElement("div"); row.className = "run-history-row"; const order = document.createElement("i"); order.textContent = index + 1; const copy = document.createElement("span"); const title = document.createElement("b"); title.textContent = shortId(runId); title.title = runId; const detail = document.createElement("small"); detail.textContent = decision ? `已批准策略 ${decision.strategy_id}${decision.test_contaminated ? " · 测试证据污染" : " · 验证证据驱动"}` : current ? `当前 Run · ${result.status}` : "历史 Run"; const status = document.createElement("em"); status.dataset.state = current ? "current" : "history"; status.textContent = current ? "当前" : "历史"; copy.append(title, detail); row.append(order, copy, status); ui.runHistoryList.append(row); });
 }
-function sampleTypeForRecipe(recipe) { return { "image-folder-classification": "image", "audio-keyword-classification": "audio", "tabular-regression": "tabular" }[recipe] || null; }
+function sampleTypeForRecipe(recipe) { return { "image-folder-classification": "image", "audio-keyword-classification": "audio", "tabular-regression": "tabular", "tabular-classification": "tabular" }[recipe] || null; }
 function renderSampleTrials(result) {
   const sampleType = sampleTypeForRecipe(result.recipe); const unavailable = state.evidenceErrors.samples === "capability_unavailable"; const ready = result.status === "completed" && Boolean(sampleType) && !unavailable; clear(ui.sampleInferenceList);
   if (!ui.sampleTrialRunButton.dataset.busy) ui.sampleTrialRunButton.textContent = "交给协调器试跑";
@@ -2574,7 +2574,7 @@ function actionResultSummary(action, payload) {
   }
   const task = result?.task || (result?.task_id && result?.status ? result : null);
   if (task) {
-    const status = STATUS_LABELS[task.status] || task.status || "状态未知"; const revision = task.current_spec_revision ? ` · 任务理解第 ${task.current_spec_revision} 版` : ""; const recipe = ({ "tabular-regression": "表格数值回归", "image-folder-classification": "图片分类", "digit-classification": "数字分类" })[task.recipe_id] || task.recipe_id; const recipeLabel = recipe ? ` · ${recipe}方案` : "";
+    const status = STATUS_LABELS[task.status] || task.status || "状态未知"; const revision = task.current_spec_revision ? ` · 任务理解第 ${task.current_spec_revision} 版` : ""; const recipe = ({ "tabular-regression": "表格数值回归", "tabular-classification": "表格分类", "image-folder-classification": "图片分类", "digit-classification": "数字分类", "audio-keyword-classification": "音频关键词分类" })[task.recipe_id] || task.recipe_id; const recipeLabel = recipe ? ` · ${recipe}方案` : "";
     return { state: "completed", text: `当前：${status}${revision}${recipeLabel}` };
   }
   const answers = Array.isArray(result?.answers) ? result.answers.flatMap((answer) => [...(Array.isArray(answer.selected) ? answer.selected : []), ...(answer.custom ? [answer.custom] : [])]).filter(Boolean) : [];

@@ -42,7 +42,7 @@ class RepositoryTruthTests(unittest.TestCase):
     def test_readme_distinguishes_builtin_and_dynamic_recipes(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-        self.assertIn("两个内置的用户数据 Recipe", readme)
+        self.assertIn("三个内置的用户数据 Recipe", readme)
         self.assertIn("音频关键词分类（动态注册）", readme)
         self.assertIn(".[server,test]", readme)
         self.assertIn("npm ci --prefix integrations/deepseek-harness", readme)
