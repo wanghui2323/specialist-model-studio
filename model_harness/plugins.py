@@ -17,10 +17,14 @@ class PluginRegistry:
         if include_builtins:
             from .recipes.digit_plugin import PLUGIN
             from .recipes.image_folder_plugin import PLUGIN as IMAGE_FOLDER_PLUGIN
+            from .recipes.tabular_classification_plugin import (
+                PLUGIN as TABULAR_CLASSIFICATION_PLUGIN,
+            )
             from .recipes.tabular_regression_plugin import PLUGIN as TABULAR_REGRESSION_PLUGIN
 
             self.register_recipe(PLUGIN)
             self.register_recipe(IMAGE_FOLDER_PLUGIN)
+            self.register_recipe(TABULAR_CLASSIFICATION_PLUGIN)
             self.register_recipe(TABULAR_REGRESSION_PLUGIN)
 
     def register_recipe(self, plugin: RecipePlugin) -> None:

@@ -351,19 +351,22 @@ class TabularRegressionPlugin:
     def propose_strategies(self, metrics: dict[str, Any], contract: dict[str, Any]) -> list[StrategyProposal]:
         strategies: list[StrategyProposal] = []
         current = int(contract["recipe_options"]["forest_estimators"])
-        if metrics["clean_test"]["r2"] < 0.65 and current < 320:
+        selected = str(metrics["selected_model"])
+        validation = metrics["validation_candidates"][selected]
+        if current < 80 or (float(validation["r2"]) < 0.65 and current < 320):
+            target_estimators = 160 if current < 80 else 320
             strategies.append(
                 StrategyProposal(
                     strategy_id="increase-forest-capacity",
                     title="增加树模型容量",
                     hypothesis="当前验证误差可能来自树模型容量不足。",
-                    changes=(f"forest_estimators从{current}调整为320",),
+                    changes=(f"forest_estimators从{current}调整为{target_estimators}",),
                     expected_effect="可能降低非线性数据的MAE，但增加训练时间和模型大小。",
                     estimated_cost="medium",
                     risk="medium",
                     requires_approval=True,
                     actionable=True,
-                    evidence={"current_r2": metrics["clean_test"]["r2"], "current_estimators": current},
+                    evidence={"validation_r2": validation["r2"], "current_estimators": current},
                 )
             )
         strategies.append(
@@ -377,7 +380,7 @@ class TabularRegressionPlugin:
                 risk="requires-data-review",
                 requires_approval=True,
                 actionable=False,
-                evidence={"failure_count": metrics["failure_count"], "test_mae": metrics["clean_test"]["mae"]},
+                evidence={"validation_mae": validation["mae"], "row_count": metrics["dataset"]["row_count"]},
             )
         )
         return strategies
@@ -386,7 +389,8 @@ class TabularRegressionPlugin:
         if strategy_id != "increase-forest-capacity":
             raise ContractError(f"strategy is not automatically actionable: {strategy_id}")
         updated = deepcopy(contract)
-        updated["recipe_options"]["forest_estimators"] = 320
+        current = int(updated["recipe_options"]["forest_estimators"])
+        updated["recipe_options"]["forest_estimators"] = 160 if current < 80 else 320
         return updated
 
     def learning_report(self, contract: dict[str, Any], metrics: dict[str, Any], strategies: list[StrategyProposal]) -> str:

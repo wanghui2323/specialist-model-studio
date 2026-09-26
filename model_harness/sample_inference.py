@@ -36,6 +36,7 @@ _RECIPE_SAMPLE_TYPES = {
     "image-folder-classification": "image",
     "audio-keyword-classification": "audio",
     "tabular-regression": "tabular",
+    "tabular-classification": "tabular",
 }
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 _IMAGE_FORMATS = {"JPEG", "PNG", "WEBP", "BMP"}
@@ -348,8 +349,11 @@ class SampleInference:
                 raise EvidenceError("audio preprocessing metadata does not match contract")
             if model.get("sample_rate") != 16_000:
                 raise EvidenceError("raw sample inference currently requires a 16 kHz model")
-        elif recipe == "tabular-regression":
-            if model.get("task_type") != "regression":
+        elif recipe in {"tabular-regression", "tabular-classification"}:
+            expected_task = (
+                "regression" if recipe == "tabular-regression" else "classification"
+            )
+            if model.get("task_type") != expected_task:
                 raise EvidenceError("unsupported tabular model task type")
             columns = model.get("feature_columns")
             dataset = contract.get("dataset", {})
