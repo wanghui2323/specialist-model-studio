@@ -328,6 +328,62 @@ class CapabilityFamilyMigrationTests(unittest.TestCase):
 
 
 @unittest.skipIf(TestClient is None, "server extra is not installed")
+class CapabilityAdapterNameTests(unittest.TestCase):
+    def test_unregistered_adapter_name_does_not_hide_registered_recipe(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with TestClient(create_app(Path(temp_dir) / "runs")) as client:
+                response = client.post("/tasks", json={
+                    "name": "设备剩余寿命预测",
+                    "business_goal": "每条记录是一次独立评估，目标列是剩余寿命，采用表格回归。",
+                    "capability_request": {
+                        "modality": "tabular",
+                        "objective": "regression",
+                        "target_kind": "numeric",
+                        "data_adapter": "csv_regression",
+                    },
+                })
+                self.assertEqual(response.status_code, 201, response.text)
+                task = response.json()["task"]
+                self.assertEqual(task["capability_status"], "matched")
+                self.assertEqual(task["recipe_id"], "tabular-regression")
+
+    def test_undeclared_target_kind_does_not_hide_registered_recipe(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with TestClient(create_app(Path(temp_dir) / "runs")) as client:
+                response = client.post("/tasks", json={
+                    "name": "葡萄酒品种判定",
+                    "business_goal": "每瓶一行 13 项化验指标，判断属于三个品种中的哪一个。",
+                    "capability_request": {
+                        "modality": "tabular",
+                        "objective": "classification",
+                        "target_kind": "categorical",
+                    },
+                })
+                self.assertEqual(response.status_code, 201, response.text)
+                task = response.json()["task"]
+                self.assertEqual(task["capability_status"], "matched")
+                self.assertEqual(task["recipe_id"], "tabular-classification")
+
+    def test_registered_but_mismatched_adapter_still_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with TestClient(create_app(Path(temp_dir) / "runs")) as client:
+                response = client.post("/tasks", json={
+                    "name": "设备剩余寿命预测",
+                    "business_goal": "每条记录是一次独立评估，目标列是剩余寿命，采用表格回归。",
+                    "capability_request": {
+                        "modality": "tabular",
+                        "objective": "regression",
+                        "target_kind": "numeric",
+                        "data_adapter": "image-folder-zip",
+                    },
+                })
+                self.assertEqual(response.status_code, 201, response.text)
+                task = response.json()["task"]
+                self.assertNotEqual(task["capability_status"], "matched")
+                self.assertIsNone(task["recipe_id"])
+
+
+@unittest.skipIf(TestClient is None, "server extra is not installed")
 class TaskSpecRevisionTests(unittest.TestCase):
     def test_temporal_exclusion_survives_repeated_revision_and_keeps_goal(self) -> None:
         goal = "每行独立房屋 CSV 用面积预测价格，不是时间序列，不使用历史序列、也不需要未来的时间窗口。"

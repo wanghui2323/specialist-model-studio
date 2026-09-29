@@ -1147,11 +1147,11 @@ class DshConversationV2Projector:
         defaults = {
             "blocked": (
                 "TURN_BLOCKED",
-                "DSH 在进入模型步骤前阻止了本轮执行。",
+                "AI 运行环境在进入模型步骤前阻止了本轮执行。",
             ),
             "interrupted": (
                 "TURN_INTERRUPTED",
-                "DSH 会话在本轮完成前被中断。",
+                "本轮在完成前被中断（常见于服务重启）；已完成的数据、训练和交付包都已保留，可以直接在对话里让 AI 继续。",
             ),
             "max-tokens": (
                 "MAX_TOKENS",

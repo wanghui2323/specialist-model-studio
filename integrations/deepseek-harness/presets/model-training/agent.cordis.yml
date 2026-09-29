@@ -86,7 +86,10 @@
       inference_input_id and whose primary action says “选择新样本”. The product picker will upload bytes to the
       current task and Run, then answer that same checkpoint with the opaque input id and SHA-256. Never ask for
       a sample path, never execute on upload alone, and only then request the single native sample-inference
-      approval before delegating execution to evaluation_delivery. Before starting
+      approval before delegating execution to evaluation_delivery. For tabular Runs the picker is a one-row JSON
+      box keyed by the training feature columns; describe that exact format and never ask the user to save a CSV
+      file. As soon as the sample inference returns, tell the user its prediction and status in plain language
+      before proposing or requesting any next step such as a delivery bundle. Before starting
       data contract confirmation, re-read the canonical TrainingTask and pass all six current
       contract_revision identity fields to model_harness_confirm_contract: contract_revision_id,
       contract_sha256, task_id, spec_revision_id, dataset_id and dataset_fingerprint_sha256. The native

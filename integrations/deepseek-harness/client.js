@@ -74,7 +74,10 @@ export class ModelHarnessClient {
   constructor(
     baseUrl = process.env.MODEL_HARNESS_URL || DEFAULT_BASE_URL,
     agentBridgeToken = process.env.MODEL_HARNESS_AGENT_BRIDGE_TOKEN || "",
-    artifactExportDir = process.env.MODEL_HARNESS_ARTIFACT_EXPORT_DIR || "",
+    artifactExportDir = process.env.MODEL_HARNESS_ARTIFACT_EXPORT_DIR
+      || (process.env.MODEL_HARNESS_RUNS_DIR
+        ? resolve(process.env.MODEL_HARNESS_RUNS_DIR, "_workspace", "exports")
+        : ""),
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.agentBridgeToken = String(agentBridgeToken || "").trim();

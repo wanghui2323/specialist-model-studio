@@ -629,6 +629,40 @@ body .rich-table-wrap {
   border-radius: var(--radius-sm);
 }
 
+body .rich-message .inline-panel-link {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--brand, #5b4fd6);
+  font: inherit;
+  cursor: pointer;
+}
+
+body .rich-message .inline-panel-link:hover {
+  text-decoration: underline;
+}
+
+body .rich-message pre.rich-code {
+  max-width: 100%;
+  margin: 8px 0 14px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #f7f7f9;
+}
+
+body .rich-message pre.rich-code code {
+  padding: 0;
+  color: var(--ink, #1f2328);
+  background: none;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
 /* A conversation turn is the visible owner of narration, tools and decisions.
  * Keep it light like an AI response, instead of presenting another dashboard. */
 body .ai-turn {

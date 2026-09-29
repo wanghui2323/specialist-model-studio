@@ -18,7 +18,7 @@ const EVENT_LABELS = {
 const ui = Object.fromEntries([
   "sidebar", "sidebarScrim", "menuButton", "newTaskButton", "refreshButton", "taskList", "taskEyebrow", "taskTitle", "runtimePill", "conversationMain",
   "emptyState", "conversation", "conversationIntro", "messageList",
-  "workspaceToggleButton", "workspaceExperience", "workspaceEyebrow", "workspaceTitle", "workspacePhaseBadge", "workspaceSummary", "workspaceTeam", "workspaceTeamTitle", "workspaceTeamCount", "workspaceTeamList", "workspaceResults", "workspaceResultsTitle", "workspaceResultCount", "workspaceResultList", "workspaceTechnicalButton", "workspaceTruthNote", "agentCheckpoint", "agentCheckpointStage", "agentCheckpointTitle", "agentCheckpointState", "agentCheckpointSummary", "agentCheckpointBody", "agentCheckpointActions", "agentCheckpointWorkspaceButton", "agentCheckpointWorkspaceLabel", "agentCheckpointWorkspaceHint", "homeComposerSlot", "homeBoundary", "homeTrainingProof", "composerWrap",
+  "workspaceToggleButton", "workspaceExperience", "workspaceEyebrow", "workspaceTitle", "workspacePhaseBadge", "workspaceSummary", "workspaceTeam", "workspaceTeamTitle", "workspaceTeamCount", "workspaceTeamList", "workspaceResults", "workspaceResultsTitle", "workspaceResultCount", "workspaceResultList", "workspaceTechnicalButton", "workspaceTruthNote", "agentCheckpoint", "agentCheckpointStage", "agentCheckpointTitle", "agentCheckpointState", "agentCheckpointSummary", "agentCheckpointBody", "agentCheckpointActions", "agentCheckpointWorkspaceButton", "agentCheckpointWorkspaceLabel", "agentCheckpointWorkspaceHint", "homeComposerSlot", "homeBoundary", "composerWrap",
   "agentWorking", "agentWorkingLabel", "cancelAgentButton", "composerForm", "composerNotice", "composerRetry", "composerRetryHint", "composerRetryButton", "composerDelivery", "composerDeliveryLabel", "composerDeliveryDetail", "messageInput", "sendButton", "composerMode", "composerModeLabel",
   "composerAttachment", "attachmentType", "attachmentName", "attachmentMeta", "attachmentStatus", "retryAttachmentButton", "removeAttachmentButton", "datasetButton", "datasetButtonLabel", "datasetInput", "recipeSampleInput", "inspectorDatasetButton", "inspectorEmpty", "inspectorContent", "objectViewer", "objectViewerTitle", "objectViewerState", "objectViewerSummary", "objectViewerOverview", "objectViewerIdentity", "objectViewerJson", "taskStatus", "contextTabs",
   "capabilityState", "capabilitySummary", "capabilityFacts", "capabilityAxes", "diagnosticCapabilityState", "diagnosticCapabilityReason", "trainingCapabilityState", "trainingCapabilityReason", "capabilityRecovery", "capabilityNonAction", "datasetCard", "datasetCount", "datasetSummary", "contractCard", "contractState",
@@ -601,6 +601,7 @@ function interactionPresentation(task, conversation = state.conversation, projec
     return { label: "等待你的消息", tone: "idle", phase: "idle", reason_code: "conversation_idle", can_cancel: false };
   }
   const canonical = canonicalInteractionPresentation(conversation);
+  if (canonical?.phase === "blocked" && completedTaskOutranksStaleBlock(task, conversation)) return { label: "本轮已完成", tone: "completed", phase: "completed", reason_code: "task_completed", can_cancel: false };
   if (canonical) return canonical;
   const projectionStatus = projection ? ({
     clarifying: { label: "等待你的回答", tone: "needs_confirmation" },
@@ -617,6 +618,13 @@ function interactionPresentation(task, conversation = state.conversation, projec
     reason_code: projection?.reason_code || null,
     can_cancel: conversation?.can_cancel_agent === true && !backgroundCancellationPending(conversation),
   };
+}
+function completedTaskOutranksStaleBlock(task, conversation) {
+  if (task?.status !== "completed") return false;
+  if ((task.control?.blocked_by || []).length) return false;
+  if (currentHumanCheckpoint(conversation)) return false;
+  if (conversationAgentResponseRunning(conversation) || conversationHasBackgroundTraining(conversation)) return false;
+  return true;
 }
 function taskListStatus(task, conversation = null) {
   // The selected task owns the only hydrated conversation in this view. Its
@@ -662,8 +670,12 @@ function resetModelSourceDiscovery({ clearTokens = true } = {}) {
   clear(ui.modelSourceCandidates); clear(ui.modelSourceCheckpointCandidates); ui.modelSourceCheckpointCard.hidden = true; ui.modelSourceSearchInput.value = ""; ui.modelSourceReferenceInput.value = ""; ui.modelSourceRevisionInput.value = ""; ui.manualEntrypointInput.value = ""; ui.baseImageDigestInput.value = ""; ui.repositoryManualEntrypointInput.value = ""; ui.repositoryDatasetArgumentInput.value = "";
   if (clearTokens) clearModelSourceTokens();
 }
+const EVIDENCE_REFRESH_MS = 5000;
+function runEvidenceSignature() {
+  return JSON.stringify([state.evaluationReport?.report_id || state.evaluationReport?.created_at || null, state.sampleInferences.map((item) => item.check_id), state.artifactBundles.map((item) => item.bundle_id), state.evidenceErrors]);
+}
 function resetRunEvidence(runId = null) {
-  state.evidenceRunId = runId; state.evidenceLoaded = false; state.evaluationReport = null; state.sampleInferences = []; state.artifactBundles = []; state.evidenceErrors = {};
+  state.evidenceRunId = runId; state.evidenceLoaded = false; state.evidenceLoadedAt = 0; state.evaluationReport = null; state.sampleInferences = []; state.artifactBundles = []; state.evidenceErrors = {};
   ui.sampleTrialInput.value = ""; ui.sampleTrialJson.value = "";
 }
 function draftId(taskId = state.selectedTaskId) { return taskId || DraftStore?.NEW_TASK || "__new__"; }
@@ -737,11 +749,8 @@ function runtimeDisplayMode() { return state.runtimeReady ? "agent" : state.runt
 function renderProductBoundary() {
   const byomExecutionAvailable = state.productRuntime?.byom_execution_available === true;
   if (ui.homeBoundary) ui.homeBoundary.textContent = byomExecutionAvailable
-    ? "说清楚你想解决的问题就够了。AI 会和你一起澄清目标、查找开源模型，并在确认后进入可验证的训练与评测。"
-    : "说清楚你想解决的问题就够了。AI 会和你一起澄清目标、查找开源模型，并在每个关键决定前停下来确认。";
-  if (ui.homeTrainingProof) {
-    ui.homeTrainingProof.lastChild.textContent = byomExecutionAvailable ? "确认后进入真实训练" : "确认方案后才执行";
-  }
+    ? "说说你想解决的问题。确认后可以开始训练。"
+    : "说说你想解决的问题。";
 }
 async function loadRuntime() {
   if (state.runtimeRetryTimer) window.clearTimeout(state.runtimeRetryTimer);
@@ -810,7 +819,7 @@ async function loadTaskSpecFamilies() {
 }
 async function loadTasks({ selectFromUrl = false } = {}) {
   let payload;
-  try { payload = await request("/tasks", { timeoutMs: 12_000 }); state.homeTasksReachable = true; }
+  try { payload = await request("/tasks", { timeoutMs: 12_000 }); state.homeTasksReachable = true; if (state.runtimeReady) clearConnectionNotice(); }
   catch (error) { state.homeTasksReachable = false; throw error; }
   state.tasks = payload.tasks || []; renderTaskList();
   if (selectFromUrl && !state.selectedTaskId) {
@@ -972,7 +981,7 @@ async function refreshSelected({ force = false, token = state.selectionToken, in
       }
       else state.runEvents = [];
       renderTask(response.task);
-      if (response.task.current_result?.status === "completed" && (force || !state.evidenceLoaded)) {
+      if (response.task.current_result?.status === "completed" && (force || !state.evidenceLoaded || Date.now() - (state.evidenceLoadedAt || 0) > EVIDENCE_REFRESH_MS)) {
         await loadRunEvidence(response.task);
         if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
       }
@@ -1991,10 +2000,13 @@ async function loadRunEvidence(task) {
   const base = `/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}`;
   const [evaluation, samples, bundles] = await Promise.allSettled([request(`${base}/evaluation-report`), request(`${base}/sample-inferences`), request(`${base}/artifact-bundles`)]);
   if (state.selectedTaskId !== taskId || state.evidenceRunId !== runId) return;
+  const previousSignature = state.evidenceLoaded ? runEvidenceSignature() : null;
   if (evaluation.status === "fulfilled") { state.evaluationReport = evaluation.value.evaluation_report; delete state.evidenceErrors.evaluation; } else state.evidenceErrors.evaluation = [404, 405].includes(evaluation.reason.status) ? "capability_unavailable" : evaluation.reason.message;
   if (samples.status === "fulfilled") { state.sampleInferences = samples.value.sample_inferences || []; delete state.evidenceErrors.samples; } else state.evidenceErrors.samples = [404, 405].includes(samples.reason.status) ? "capability_unavailable" : samples.reason.message;
   if (bundles.status === "fulfilled") { state.artifactBundles = bundles.value.artifact_bundles || []; delete state.evidenceErrors.bundles; } else state.evidenceErrors.bundles = [404, 405].includes(bundles.reason.status) ? "capability_unavailable" : bundles.reason.message;
-  state.evidenceLoaded = true; if (state.task) { renderResult(state.task); renderConversation(true); }
+  state.evidenceLoaded = true; state.evidenceLoadedAt = Date.now();
+  if (previousSignature === runEvidenceSignature()) return;
+  if (state.task) { renderResult(state.task); renderConversation(true); }
 }
 async function refreshEvaluation() {
   const taskId = state.selectedTaskId; const runId = state.task?.current_run_id; if (!taskId || !runId) return; setButtonBusy(ui.refreshEvaluationButton, true, "正在复核");
@@ -2026,6 +2038,7 @@ async function continueWithInferenceInput(inferenceInput, checkpoint = currentHu
 async function runSampleTrial() {
   const taskId = state.selectedTaskId; const result = state.task?.current_result; const runId = result?.run_id; const sampleType = sampleTypeForRecipe(result?.recipe); if (!taskId || !runId || result.status !== "completed" || !sampleType) return;
   let body; let filename; let contentType;
+  if (sampleType === "tabular" && !ui.sampleTrialJson.value.trim()) { showNotice("请先填入一行新样本，字段名与训练时的特征列一致。"); return; }
   if (sampleType === "tabular") { try { const value = JSON.parse(ui.sampleTrialJson.value); if (!value || Array.isArray(value) || typeof value !== "object") throw new Error("JSON 必须是一行对象"); body = JSON.stringify(value); filename = "new-sample.json"; contentType = "application/json"; } catch (error) { showNotice(`请输入有效的一行 JSON：${error.message}`); return; } }
   else { const file = ui.sampleTrialInput.files?.[0]; if (!file) { showNotice("请先选择一份新的图片或 WAV 音频样本。"); return; } body = file; filename = file.name; contentType = file.type || (sampleType === "audio" ? "audio/wav" : "application/octet-stream"); }
   setButtonBusy(ui.sampleTrialRunButton, true, "正在安全暂存");
@@ -2387,7 +2400,7 @@ function renderConversation(force = false) {
   else if (agentResponseRunning && !conversation.active_event) ui.agentWorkingLabel.textContent = "AI 正在处理";
   else ui.agentWorkingLabel.textContent = agentActivityLabel(conversation.active_event);
   syncCancelRequestUi(conversation);
-  if (force || nearBottom) requestAnimationFrame(() => { ui.conversation.scrollTop = ui.conversation.scrollHeight; });
+  if (nearBottom || optimistic) requestAnimationFrame(() => { ui.conversation.scrollTop = ui.conversation.scrollHeight; });
 }
 function actionsForTurn(turn, projection) {
   const agentRunIds = new Set(turn.agent_run_ids || []); if (turn.agent_run_id) agentRunIds.add(turn.agent_run_id);
@@ -2413,9 +2426,10 @@ function aiTurnPresentation(turn, projection, conversation, actions) {
   }
   const failed = InteractionShell.turnHasActiveFailure(turn, actions, conversation.risks);
   const cancelled = (turn.items || []).some((item) => item.kind === "turn_cancelled" && terminalEventScope(item) === "root");
+  const answered = (turn.items || []).some((item) => ["coordinator_note", "final_synthesis"].includes(item.kind) && (item.text || item.summary));
   const blocked = (turn.items || []).some((item) => item.kind === "blocker");
   if (failed || blocked) return { label: "本轮需要处理", tone: "failed", current: false, can_cancel: false };
-  if (cancelled) return { label: "本轮已停止", tone: "cancelled", current: false, can_cancel: false };
+  if (cancelled && !answered) return { label: "本轮已停止", tone: "cancelled", current: false, can_cancel: false };
   return { label: "本轮已处理", tone: "completed", current: false, can_cancel: false };
 }
 function createAiTurnContainer(turn, projection, conversation, actions) {
@@ -2527,13 +2541,24 @@ function actionTitle(action) {
   if (action.tool_class === "delegation" && ConversationView?.ROLE_LABELS?.[action.tool_name]) return `委派给${ConversationView.ROLE_LABELS[action.tool_name]}`;
   return ConversationView?.TOOL_LABELS?.[action.tool_name] || (action.tool_name || "未知工具").replace(/^model_harness_/u, "").replaceAll("_", " ");
 }
+function isProbeMiss(action) {
+  const message = `${action?.error?.message || ""} ${action?.error?.code || ""}`;
+  return /run not found|recipe build not found|no such file or directory/i.test(message);
+}
+function readableActionText(message) {
+  const text = String(message || "").replace(/\s+/g, " ").trim();
+  if (/^started subagent\s+[0-9a-f-]{8,}/i.test(text)) return "已交给对应专家继续处理。";
+  if (/run not found/i.test(text)) return "没有找到对应的训练运行，这一步没有改变任务。";
+  if (/recipe build not found/i.test(text)) return "没有找到能力构建记录，这一步没有改变任务。";
+  return text.slice(0, 220);
+}
 function formatActionDuration(action) {
-  if (!Number.isFinite(action.duration_ms)) return action.status === "running" ? "仍在执行" : "未记录耗时";
+  if (!Number.isFinite(action.duration_ms)) return action.status === "running" ? "仍在执行" : "";
   if (action.duration_ms < 1000) return `${Math.round(action.duration_ms)} ms`;
   return `${(action.duration_ms / 1000).toFixed(action.duration_ms < 10_000 ? 1 : 0)} s`;
 }
 function actionTimelineGlance(actions, waitingForHuman, working, recoveredFailures = new Set()) {
-  const failed = actions.find((action) => ["failed", "identity_error"].includes(action.status) && !recoveredFailures.has(action) && !isUserDeclinedAction(action));
+  const failed = actions.find((action) => ["failed", "identity_error"].includes(action.status) && !recoveredFailures.has(action) && !isUserDeclinedAction(action) && !isProbeMiss(action));
   if (failed) return `需要处理：${actionTitle(failed)}`;
   if (waitingForHuman) return "当前有待确认事项；你可以回答、批准，也可以先继续讨论";
   if (actions.length && actions.every((action) => action.status === "cancelled")) return "检查点已暂缓，正在继续讨论";
@@ -2561,7 +2586,7 @@ function actionResultSummary(action, payload) {
   const event = payload?.event || payload || {}; const body = event.payload || {};
   if (body.is_error === true || event.status === "failed") {
     const error = body.error?.message || body.error || body.message || body.result_preview || "工具返回失败，但没有可读原因。";
-    return { state: "failed", text: String(error).replace(/\s+/g, " ").slice(0, 220) };
+    return { state: "failed", text: readableActionText(error) };
   }
   const result = parseActionResultValue(body.result ?? body.result_preview ?? body.summary ?? body.message);
   if (action?.tool_name === "model_harness_download_artifact_bundle") {
@@ -2599,7 +2624,8 @@ function actionResultSummary(action, payload) {
   const collections = [[result?.matches, "能力匹配"], [result?.recipes, "训练方案"], [result?.adapters, "数据适配器"]];
   const collection = collections.find(([items]) => Array.isArray(items));
   if (collection) return { state: "completed", text: `${collection[1]}返回 ${collection[0].length} 项结果` };
-  if (typeof result === "string" && result) return { state: "completed", text: result.replace(/\s+/g, " ").slice(0, 220) };
+  if (typeof result === "string" && /^report accepted by the agent that started you\b/i.test(result.trim())) return { state: "completed", text: "专家结论已交回训练协调器。" };
+  if (typeof result === "string" && result) return { state: "completed", text: readableActionText(result) };
   return { state: "completed", text: "工具已返回脱敏结果，可继续查看完整内容。" };
 }
 function actionResultKey(action) {
@@ -2637,7 +2663,7 @@ function renderActionRow(action, target, { waitingForHuman = false, recovered = 
   const waitingForAnswer = isWaitingForAnswerAction(action, waitingForHuman); const displayStatus = actionDisplayStatus(action, waitingForHuman);
   const row = document.createElement("article"); row.className = "agent-action"; row.dataset.status = displayStatus; row.dataset.toolClass = action.tool_class; row.dataset.actionId = action.action_id || "identity-error";
   const mark = document.createElement("i"); mark.setAttribute("aria-hidden", "true"); mark.textContent = displayStatus === "failed" || displayStatus === "identity_error" ? "!" : ["declined", "suspended", "cancelled"].includes(displayStatus) ? "—" : displayStatus === "waiting" ? "…" : displayStatus === "running" ? "→" : "✓";
-  const copy = document.createElement("div"); const meta = document.createElement("span"); meta.className = "agent-action-meta"; const role = document.createElement("b"); role.textContent = roleLabel(action.actor_role); const timing = document.createElement("small"); const startedAt = action.started_at || action.created_at || action.time; const heartbeatAt = action.last_heartbeat_at || action.updated_at || action.finished_at; const timingParts = [waitingForAnswer || displayStatus === "suspended" ? actionStatusLabel(action, { waitingForHuman }) : formatActionDuration(action)]; if (startedAt) timingParts.push(`开始 ${formatTime(startedAt)}`); if (displayStatus === "running" && heartbeatAt) timingParts.push(`最近事件 ${formatRelativeTime(heartbeatAt)}`); if (action.tool_class === "control") timingParts.push("控制动作"); timing.textContent = timingParts.join(" · "); meta.append(role, timing);
+  const copy = document.createElement("div"); const meta = document.createElement("span"); meta.className = "agent-action-meta"; const role = document.createElement("b"); role.textContent = roleLabel(action.actor_role); const timing = document.createElement("small"); const startedAt = action.started_at || action.created_at || action.time; const heartbeatAt = action.last_heartbeat_at || action.updated_at || action.finished_at; const durationLabel = waitingForAnswer || displayStatus === "suspended" ? actionStatusLabel(action, { waitingForHuman }) : formatActionDuration(action); const timingParts = []; if (durationLabel) timingParts.push(durationLabel); if (startedAt) timingParts.push(`开始 ${formatTime(startedAt)}`); if (displayStatus === "running" && heartbeatAt) timingParts.push(`最近事件 ${formatRelativeTime(heartbeatAt)}`); if (action.tool_class === "control") timingParts.push("控制动作"); timing.textContent = timingParts.join(" · "); meta.append(role, timing);
   const title = document.createElement("h4"); title.textContent = actionTitle(action); copy.append(meta, title);
   if (displayStatus === "declined") { const note = document.createElement("p"); note.className = "agent-action-result"; note.dataset.state = "declined"; note.textContent = "你选择暂不执行，系统没有运行这项操作。"; copy.append(note); }
   else if (displayStatus === "suspended") { const note = document.createElement("p"); note.className = "agent-action-result"; note.dataset.state = "suspended"; note.textContent = "已暂缓，未提交答案或批准；保留记录供回看。"; copy.append(note); }
@@ -2731,7 +2757,7 @@ function appendInlineMarkdown(container, text) {
     const token = match[0];
     if (token.startsWith("**")) { const strong = document.createElement("strong"); strong.textContent = token.slice(2, -2); container.append(strong); }
     else if (token.startsWith("`")) { const code = document.createElement("code"); code.textContent = token.slice(1, -1); container.append(code); }
-    else if (/^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/.test(token)) container.append(document.createTextNode("结果面板"));
+    else if (/^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/.test(token)) { const open = document.createElement("button"); open.type = "button"; open.className = "inline-panel-link"; open.textContent = "结果面板"; open.addEventListener("click", () => openInspector(state.task?.current_result?.status === "completed" ? "evaluation" : "plan")); container.append(open); }
     else { const link = document.createElement("a"); link.href = token; link.target = "_blank"; link.rel = "noreferrer"; link.textContent = token; container.append(link); }
     cursor = match.index + token.length;
   }
@@ -2739,11 +2765,16 @@ function appendInlineMarkdown(container, text) {
 }
 function markdownTableCells(line) { return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim()); }
 function isMarkdownTableDivider(line) { return markdownTableCells(line).every((cell) => /^:?-{3,}:?$/.test(cell)); }
-function isMarkdownBlockStart(line, nextLine = "") { const value = line.trim(); return !value || /^#{1,4}\s+/.test(value) || /^[-*]\s+/.test(value) || /^\d+\.\s+/.test(value) || (value.startsWith("|") && nextLine.trim().startsWith("|") && isMarkdownTableDivider(nextLine)); }
+function isMarkdownBlockStart(line, nextLine = "") { const value = line.trim(); return !value || value.startsWith("```") || /^#{1,4}\s+/.test(value) || /^[-*]\s+/.test(value) || /^\d+\.\s+/.test(value) || (value.startsWith("|") && nextLine.trim().startsWith("|") && isMarkdownTableDivider(nextLine)); }
 function renderRichText(container, text) {
   container.classList.add("rich-message"); const lines = String(text || "").split(/\r?\n/); let index = 0;
   while (index < lines.length) {
     const line = lines[index]; const trimmed = line.trim(); if (!trimmed) { index += 1; continue; }
+    if (trimmed.startsWith("```")) {
+      const pre = document.createElement("pre"); pre.className = "rich-code"; const code = document.createElement("code"); const body = []; index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith("```")) { body.push(lines[index]); index += 1; }
+      index += 1; code.textContent = body.join("\n"); pre.append(code); container.append(pre); continue;
+    }
     const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
     if (heading) { const level = Math.min(4, heading[1].length + 1); const node = document.createElement(`h${level}`); appendInlineMarkdown(node, heading[2]); container.append(node); index += 1; continue; }
     if (trimmed.startsWith("|") && index + 1 < lines.length && lines[index + 1].trim().startsWith("|") && isMarkdownTableDivider(lines[index + 1])) {
@@ -2903,8 +2934,21 @@ function approvalPresentation(item) {
   if (raw === "model_harness_import_dataset") return { header: "等待导入数据", title: "批准导入并体检这份数据", copy: "系统会按当前任务的数据合同读取文件，并留下可追溯的数据指纹。", allow: "批准并继续", reject: "暂不导入" };
   return { header: "等待你的批准", title: item?.title || "批准关键操作", copy: item?.reason || item?.summary || "协调器请求执行会改变任务状态的操作。", allow: "批准并继续", reject: "暂不执行" };
 }
+function contractApprovalSummary(task) {
+  const report = task?.dataset_report; const contract = task?.contract; if (!report && !contract) return [];
+  const rows = [];
+  if (report?.target_column) rows.push(["预测列", report.target_column]);
+  if (report) rows.push(["数据", [report.row_count != null ? `${report.row_count} 行` : "", report.feature_columns?.length ? `${report.feature_columns.length} 个特征` : "", report.source_filename || ""].filter(Boolean).join(" · ")]);
+  const gates = gateEntries(contract?.release_gates || {}).filter(([value]) => typeof value === "number");
+  const gateText = ([value, label]) => label.endsWith(" 上限") ? `${label.slice(0, -3)} ≤ ${value.toFixed(2)}` : `${label.replace(/ 下限$/, "")} ≥ ${value.toFixed(2)}`;
+  if (gates.length) rows.push(["验收门槛", gates.map(gateText).join("，")]);
+  return rows;
+}
 function appendApprovalScope(card, item) {
+  const raw = String(item?.tool_name || item?.name || "").toLowerCase();
+  const contractRows = ["model_harness_confirm_contract", "model_harness_authorize_task_run_start", "model_harness_start_task_run"].includes(raw) ? contractApprovalSummary(state.task) : [];
   const fields = [
+    ...contractRows,
     ["方案版本", item.plan_revision || item.recipe_revision || item.contract_revision],
     ["数据指纹", item.dataset_fingerprint || item.data_fingerprint],
     ["批准摘要", item.approval_digest || item.contract_digest || item.digest],
@@ -2978,15 +3022,22 @@ function renderTeamActivity(item, target = ui.messageList) {
   events.forEach((event) => { const row = document.createElement("article"); row.className = "team-event"; row.dataset.status = event.status || "unknown"; row.dataset.eventType = event.kind; if (event.status_source) row.dataset.statusSource = event.status_source; const meta = document.createElement("div"); meta.className = "team-event-meta"; const role = document.createElement("span"); role.textContent = roleLabel(event.to_role || event.specialist_role || event.actor_role); const status = document.createElement("b"); status.textContent = event.status === "failed" ? "需要处理" : eventStatusLabel(event.status); meta.append(role, status); const title = document.createElement("h4"); title.textContent = teamEventTitle(event); const summaryText = document.createElement("p"); summaryText.textContent = event.result || event.summary || (event.kind === "tool_call" ? "工具调用已提交，等待真实结果。" : "运行时没有提供摘要。"); row.append(meta, title, summaryText); if (event.result_truncated) { row.dataset.resultPayload = "preview"; const notice = document.createElement("small"); notice.className = "team-event-result-preview"; notice.textContent = event.result_notice || "当前仅显示结果预览。"; row.append(notice); if (event.event_result_ref) { const view = document.createElement("button"); view.type = "button"; view.textContent = "查看完整脱敏结果"; view.addEventListener("click", () => openEventResultRef(event.event_result_ref)); row.append(view); } } appendObjectRefs(row, event.object_refs); list.append(row); });
   details.append(list); target.append(details);
 }
+function tabularSamplePlaceholder(task) {
+  const columns = (task?.dataset_report?.feature_columns || []).slice(0, 4);
+  if (!columns.length) return '{"feature_a": 1.2, "feature_b": 3.4}';
+  const more = (task.dataset_report.feature_columns.length > columns.length) ? ", …" : "";
+  return `{${columns.map((column) => `${JSON.stringify(column)}: …`).join(", ")}${more}}`;
+}
 function appendInferenceInputActions(actions, checkpoint) {
   actions.classList.add("data-upload-actions", "inference-input-actions");
   const result = state.task?.current_result; const sampleType = sampleTypeForRecipe(result?.recipe);
   const hint = document.createElement("small"); hint.textContent = "样本只会成为当前任务和 Run 的一次性输入对象；对话里不会出现本机路径，真正执行前仍需你批准。";
   if (sampleType === "tabular") {
-    const input = document.createElement("textarea"); input.className = "question-custom inference-sample-json"; input.rows = 3; input.placeholder = '{"feature_a": 1.2, "feature_b": 3.4}'; input.setAttribute("aria-label", "输入一行新的表格样本 JSON");
+    const input = document.createElement("textarea"); input.className = "question-custom inference-sample-json"; input.rows = 3; input.placeholder = tabularSamplePlaceholder(state.task); input.setAttribute("aria-label", "输入一行新的表格样本 JSON");
     const submit = document.createElement("button"); submit.type = "button"; submit.className = "checkpoint-upload-button"; submit.textContent = "暂存这条新样本";
     submit.addEventListener("click", async () => {
       let body;
+      if (!input.value.trim()) { showNotice("请先填入一行新样本，字段名与训练时的特征列一致。"); input.focus(); return; }
       try { const value = JSON.parse(input.value); if (!value || Array.isArray(value) || typeof value !== "object") throw new Error("JSON 必须是一行对象"); body = JSON.stringify(value); }
       catch (error) { showNotice(`请输入有效的一行 JSON：${error.message}`); input.focus(); return; }
       setButtonBusy(submit, true, "正在安全暂存");
@@ -3181,8 +3232,10 @@ async function openEventResultRef(ref) {
   catch (error) { if (requestSeq !== state.objectViewerRequestSeq || taskId !== state.selectedTaskId) return; setObjectViewerState(eventRef, { stateLabel: "读取失败", summary: `${error.status || "请求"}：${error.message}` }); }
 }
 function appendObjectRefs(container, refs = []) {
-  if (!refs.length) return; const list = document.createElement("div"); list.className = "object-ref-list"; list.dataset.interactionKind = "artifact-entry";
-  refs.forEach((ref) => { const label = ref.label || `${ref.type || "对象"} · ${shortId(ref.id || ref.object_id || ref.digest)}`; if (typeof ref.url === "string" && (/^https?:\/\//.test(ref.url) || ref.url.startsWith("/"))) { const link = document.createElement("a"); link.href = ref.url; link.textContent = label; list.append(link); } else { const button = document.createElement("button"); button.type = "button"; button.textContent = label; button.addEventListener("click", () => openObjectRef(ref)); list.append(button); } }); container.append(list);
+  const seen = new Set();
+  const unique = refs.filter((ref) => { const key = `${ref.type || ref.object_type || ""}:${ref.id || ref.object_id || ref.digest || ref.label || ""}`; if (seen.has(key)) return false; seen.add(key); return true; });
+  if (!unique.length) return; const list = document.createElement("div"); list.className = "object-ref-list"; list.dataset.interactionKind = "artifact-entry";
+  unique.forEach((ref) => { const label = ref.label || `${ref.type || "对象"} · ${shortId(ref.id || ref.object_id || ref.digest)}`; if (typeof ref.url === "string" && (/^https?:\/\//.test(ref.url) || ref.url.startsWith("/"))) { const link = document.createElement("a"); link.href = ref.url; link.textContent = label; list.append(link); } else { const button = document.createElement("button"); button.type = "button"; button.textContent = label; button.addEventListener("click", () => openObjectRef(ref)); list.append(button); } }); container.append(list);
 }
 async function submitMessage(message) {
   const text = message.trim(); if (!text) return; let attemptedTaskId = state.selectedTaskId; clearComposerRetry("message"); hideNotice(); ui.sendButton.disabled = true; ui.sendButton.dataset.busy = "true";
@@ -3190,6 +3243,7 @@ async function submitMessage(message) {
     if (!state.runtimeReady) { if (state.runtimeIssue === "provider") showRuntimeSetupNotice("模型服务尚未配置。请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动；在此之前不会创建训练任务。"); else showNotice("AI 未连接：没有创建或修改任务，也没有启动固定流程替代对话。请先恢复连接。", "error"); return; }
     if (state.cancelRequestInFlight || backgroundCancellationPending(state.conversation)) { showNotice("当前执行正在停止。为避免新消息与取消请求发生竞态，请等待后端确认最终状态。", "ok"); return; }
     if (!state.selectedTaskId) {
+      showNotice("正在开始对话…", "ok");
       const creation = beginTaskCreationSubmission(text);
       try {
         const created = await request("/conversations", {
@@ -3635,7 +3689,11 @@ dockedWorkspaceMedia.addEventListener("change", () => {
   if (state.task) syncWorkspaceForTask(state.task);
   if (!dockedWorkspaceMedia.matches && ui.inspector.dataset.open === "true") window.requestAnimationFrame(() => ui.closeInspectorButton.focus());
 });
-document.querySelectorAll("[data-prompt]").forEach((button) => button.addEventListener("click", () => { ui.messageInput.value = button.dataset.prompt; resizeComposer(); ui.messageInput.focus(); }));
+document.querySelectorAll("[data-prompt]").forEach((button) => button.addEventListener("click", () => {
+  ui.messageInput.value = button.dataset.prompt; resizeComposer(); saveDraft();
+  if (ui.sendButton.disabled) { ui.messageInput.focus(); return; }
+  ui.composerForm.requestSubmit();
+}));
 
 async function boot() {
   restoreDraft(null); window.setInterval(() => syncAiTurnElapsedLabels(), 1000);

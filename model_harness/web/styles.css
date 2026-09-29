@@ -373,7 +373,7 @@ body[data-view="home"] .topbar-title>div{display:none}
 .tool-history>summary>span:first-child{width:28px;height:28px;display:grid;place-items:center;border-radius:7px;color:var(--green);background:var(--green-bg);font-size:13px;font-weight:750}
 .tool-history>summary>span:nth-child(2){min-width:0;display:grid;gap:2px}.tool-history>summary b{color:var(--ink);font-size:13px}.tool-history>summary small{overflow:hidden;color:var(--muted);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.tool-history>summary em{color:var(--muted);font-size:12px;font-style:normal}
 .tool-history-list{display:grid;padding:0 11px 8px 49px}.tool-history-list>div{min-width:0;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;padding:8px 0;border-top:1px solid #e8eaee}.tool-history-list b{color:var(--text);font-size:12px}.tool-history-list small{grid-column:1;overflow:hidden;color:var(--muted);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.tool-history-list time{grid-column:2;grid-row:1;color:var(--muted);font-size:12px}
-.task-row .task-archive-button{opacity:0;transition:opacity .14s ease}.task-row:hover .task-archive-button,.task-row:focus-within .task-archive-button{opacity:1}
+.task-row .task-archive-button{opacity:1}
 .task-facts{color:#8b909c}.task-meta>time{font-variant-numeric:tabular-nums}
 
 .agent-surface-state{width:calc(100% - 37px);min-height:76px;display:grid;grid-template-columns:34px minmax(0,1fr) auto;gap:12px;align-items:center;margin:2px 0 4px 37px;padding:12px 13px;border:1px solid rgba(98,88,244,.18);border-radius:12px;background:linear-gradient(135deg,#f8f7ff,#fff)}

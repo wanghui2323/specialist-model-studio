@@ -383,7 +383,7 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(css, /@media\(max-width:720px\)[\s\S]*?\.inspector\{width:100%;z-index:42\}/);
   assert.match(css, /@media\(max-width:720px\)[\s\S]*body\[data-workspace="open"\] \.mobile-view-nav\{display:none\}/);
   for (const asset of ["styles.css", "visual-system.css", "app.js", "conversation-view.js", "interaction-shell.js"]) {
-    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.4\\.10-pc-rc`));
+    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.4\\.12-pc-rc`));
   }
   assert.match(app, /function renderAgentSurfaceState\(conversation, projection\)/);
   assert.doesNotMatch(app, /开始 Agent 会话/);
@@ -538,7 +538,8 @@ test("fresh empty workspace enters the shared home composer state", async () => 
   const { html, app } = await sources();
   assert.match(html, /id="homeComposerSlot"/);
   assert.match(html, /id="homeBoundary"/);
-  assert.match(html, /AI 会和你一起澄清目标、查找开源模型，并在每个关键决定前停下来确认/);
+  assert.match(html, /说说你想解决的问题。/);
+  assert.match(app, /\[data-prompt\][\s\S]*ui\.composerForm\.requestSubmit\(\)/);
   assert.doesNotMatch(html, /匹配开源模型、准备数据、训练和评测/);
   assert.match(app, /function enterHomeState\(\{ focusComposer = true \} = \{\}\)/);
   assert.match(app, /ui\.homeComposerSlot\.append\(ui\.composerWrap\)/);
@@ -617,8 +618,8 @@ test("runtime and family-catalog failures preserve honest product boundaries", a
   assert.match(app, /Promise\.allSettled\(\[loadRuntime\(\), loadHfCapability\(\), loadModelSourceProviders\(\), loadTaskSpecFamilies\(\), loadTasks\(\{ selectFromUrl: true \}\)\]\)/);
   assert.match(app, /任务列表暂时无法读取/);
   assert.match(app, /byom_execution_available === true/);
-  assert.match(app, /确认后进入可验证的训练与评测/);
-  assert.match(app, /确认方案后才执行/);
+  assert.match(app, /确认后可以开始训练。/);
+  assert.match(app, /说说你想解决的问题。/);
   assert.match(app, /taskSpecFamiliesError = error\.message/);
   assert.match(app, /const loaded = await loadTaskSpecFamilies\(\)/);
   assert.match(app, /模型类型目录加载失败/);
@@ -1061,8 +1062,8 @@ test("new-task home stays conversation-led while verified specialists appear onl
   const { html, app } = await sources();
   const home = html.slice(html.indexOf('<section class="empty-state"'), html.indexOf('<section class="conversation"'));
   assert.doesNotMatch(home, /专家|Hugging Face|GitHub/);
-  assert.match(home, /先通过对话把目标说清楚/);
-  assert.match(home, /可联网查找开源模型/);
+  assert.match(home, /说说你想解决的问题。/);
+  assert.doesNotMatch(home, /先通过对话把目标说清楚/);
   assert.doesNotMatch(app, /个专家已参与本轮/);
   assert.match(app, /const workItems = projectionWorkItems\(projection\)/);
   assert.match(app, /const activeSpecialists = activeProjectionSpecialists\(projection\)/);
