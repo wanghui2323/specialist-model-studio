@@ -114,6 +114,7 @@ WORKSPACE_DIR="${RUNS_DIR}/_workspace"
 ARTIFACT_EXPORT_DIR_INPUT="${MODEL_HARNESS_ARTIFACT_EXPORT_DIR:-${WORKSPACE_DIR}/exports}"
 MODEL_HARNESS_ARTIFACT_EXPORT_DIR="$("${HARNESS_PYTHON}" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve(strict=False))' "${ARTIFACT_EXPORT_DIR_INPUT}")"
 export MODEL_HARNESS_ARTIFACT_EXPORT_DIR
+export MODEL_HARNESS_RUNS_DIR="${RUNS_DIR}"
 BACKEND_LOG="${RUNS_DIR}/.conversation-backend.log"
 DSH_ROOT_INPUT="${DSH_HOME:-${RUNS_DIR}/.dsh}"
 DSH_ROOT="$("${HARNESS_PYTHON}" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "${DSH_ROOT_INPUT}")"

@@ -383,7 +383,7 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(css, /@media\(max-width:720px\)[\s\S]*?\.inspector\{width:100%;z-index:42\}/);
   assert.match(css, /@media\(max-width:720px\)[\s\S]*body\[data-workspace="open"\] \.mobile-view-nav\{display:none\}/);
   for (const asset of ["styles.css", "visual-system.css", "app.js", "conversation-view.js", "interaction-shell.js"]) {
-    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.4\\.10-pc-rc`));
+    assert.match(html, new RegExp(`${asset.replace(".", "\\.")}\\?v=2\\.4\\.12-pc-rc`));
   }
   assert.match(app, /function renderAgentSurfaceState\(conversation, projection\)/);
   assert.doesNotMatch(app, /开始 Agent 会话/);
@@ -466,7 +466,7 @@ test("conversation-native shell keeps dialogue primary and reveals only task-own
   assert.match(app, /actionTimelineDisclosure: new Map\(\)/);
   assert.match(app, /state\.actionTimelineDisclosure\.set\(disclosureKey, section\.open\)/);
   assert.match(app, /function hydrateActionTimelineResults\(section, actions\)/);
-  assert.match(app, /details\.open = depth === 0 \|\| running \|\| waitingForAnswer \|\| hasFailure/);
+  assert.match(app, /details\.open = hasFailure \|\| running \|\| waitingForAnswer \|\| \(!group\.unverified && !waitingForHuman && depth === 0\)/);
   assert.match(app, /const rootAgent = \{ id: "root-agent"/);
   assert.match(app, /group\.binding\?\.target_agent_id/);
   assert.match(app, /group\.root \? "训练协调器" : roleLabel\(summaryRole\)/);
@@ -538,7 +538,8 @@ test("fresh empty workspace enters the shared home composer state", async () => 
   const { html, app } = await sources();
   assert.match(html, /id="homeComposerSlot"/);
   assert.match(html, /id="homeBoundary"/);
-  assert.match(html, /AI 会和你一起澄清目标、查找开源模型，并在每个关键决定前停下来确认/);
+  assert.match(html, /说说你想解决的问题。/);
+  assert.match(app, /\[data-prompt\][\s\S]*ui\.composerForm\.requestSubmit\(\)/);
   assert.doesNotMatch(html, /匹配开源模型、准备数据、训练和评测/);
   assert.match(app, /function enterHomeState\(\{ focusComposer = true \} = \{\}\)/);
   assert.match(app, /ui\.homeComposerSlot\.append\(ui\.composerWrap\)/);
@@ -617,8 +618,8 @@ test("runtime and family-catalog failures preserve honest product boundaries", a
   assert.match(app, /Promise\.allSettled\(\[loadRuntime\(\), loadHfCapability\(\), loadModelSourceProviders\(\), loadTaskSpecFamilies\(\), loadTasks\(\{ selectFromUrl: true \}\)\]\)/);
   assert.match(app, /任务列表暂时无法读取/);
   assert.match(app, /byom_execution_available === true/);
-  assert.match(app, /确认后进入可验证的训练与评测/);
-  assert.match(app, /确认方案后才执行/);
+  assert.match(app, /确认后可以开始训练。/);
+  assert.match(app, /说说你想解决的问题。/);
   assert.match(app, /taskSpecFamiliesError = error\.message/);
   assert.match(app, /const loaded = await loadTaskSpecFamilies\(\)/);
   assert.match(app, /模型类型目录加载失败/);
@@ -803,7 +804,7 @@ test("AI-human mode keeps one decision foregrounded and accepts natural-language
   assert.match(html, /请先帮我判断是否需要训练/);
   assert.match(app, /function isPendingHumanCheckpoint\(item\)/);
   assert.match(app, /checkpoint\?\.kind === "question"\) return \{ label: "等待你的回答"/);
-  assert.match(app, /checkpoint\?\.kind === "approval"\) return \{ label: "等待你的批准"/);
+  assert.match(app, /checkpoint\?\.kind === "approval"\) return \{ label: approvalPresentation\(checkpoint\)\.header/);
   assert.match(app, /workflowStatus\(task, conversation = null\)/);
   assert.match(app, /syncTaskHeader\(state\.task, conversation, projection\)/);
   assert.match(app, /checkpoint_rpc_id: submission\.checkpoint_rpc_id/);
@@ -1023,7 +1024,7 @@ test("a backend-resolved historical failure stays auditable without remaining cu
   assert.match(timeline, /\["failed", "identity_error"\]\.includes\(action\.status\) && !recoveredFailures\.has\(action\) && !isUserDeclinedAction\(action\)/);
   assert.doesNotMatch(timeline, /recoveredFailures\.size \? "执行已恢复"/);
   assert.doesNotMatch(timeline, /本轮曾遇到问题，后续执行已经恢复/);
-  assert.match(recoveredRow, /timing\.textContent = "已由后续正确调用完成"/);
+  assert.match(recoveredRow, /timing\.textContent = "已完成"/);
   assert.match(recoveredRow, /summary\.textContent = "查看初次调用记录"/);
   assert.match(recoveredRow, /status\.textContent = "已处理"/);
   assert.match(recoveredRow, /evidence\.dataset\.originalStatus = action\.status/);
@@ -1061,8 +1062,8 @@ test("new-task home stays conversation-led while verified specialists appear onl
   const { html, app } = await sources();
   const home = html.slice(html.indexOf('<section class="empty-state"'), html.indexOf('<section class="conversation"'));
   assert.doesNotMatch(home, /专家|Hugging Face|GitHub/);
-  assert.match(home, /先通过对话把目标说清楚/);
-  assert.match(home, /可联网查找开源模型/);
+  assert.match(home, /说说你想解决的问题。/);
+  assert.doesNotMatch(home, /先通过对话把目标说清楚/);
   assert.doesNotMatch(app, /个专家已参与本轮/);
   assert.match(app, /const workItems = projectionWorkItems\(projection\)/);
   assert.match(app, /const activeSpecialists = activeProjectionSpecialists\(projection\)/);
@@ -1128,7 +1129,7 @@ test("an empty capability match is rendered as an honest boundary, not a system 
     ),
     { state: "completed", text: "训练方案返回 0 项结果" },
   );
-  assert.match(app, /timing\.textContent = "已由后续正确调用完成"/);
+  assert.match(app, /timing\.textContent = "已完成"/);
   assert.match(app, /status\.textContent = "已处理"/);
   assert.doesNotMatch(app, /timing\.textContent = "后续执行已恢复"/);
 });
@@ -1190,7 +1191,7 @@ test("composer attachment chip exposes honest states and retries the same reques
 
   assert.match(html, /id="composerAttachment"[^>]*data-state="pending"[^>]*role="group"[^>]*aria-label="所选文件"/);
   assert.match(html, /id="attachmentStatus"[^>]*role="status"[^>]*aria-live="polite"/);
-  assert.match(app, /const COMPOSER_ATTACHMENT_STATUS = \{ pending: "待核对", validating: "校验中", ready: "已就绪", failed: "失败" \}/);
+  assert.match(app, /const COMPOSER_ATTACHMENT_STATUS = \{ pending: "待核对", validating: "校验中", ready: "已导入", failed: "失败" \}/);
   assert.match(app, /function stageComposerAttachment\(file\)/);
   assert.match(app, /request_id: createConversationRequestId\(\), status: "pending"/);
   assert.match(app, /function retryComposerAttachment\(\)/);

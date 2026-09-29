@@ -73,6 +73,19 @@ class PluginRegistry:
             for tag in capability.get("tags", [])
             if str(tag).strip()
         }
+        manifests = [self._recipes[plugin_id].manifest for plugin_id in self.recipe_ids()]
+        known_target_kinds = {
+            value.lower() for manifest in manifests for value in manifest.target_kinds
+        }
+        known_adapters = {
+            (manifest.data_adapter or "").lower() for manifest in manifests if manifest.data_adapter
+        }
+        # Free-form vocabulary that no Recipe declares carries no constraint;
+        # only a declared-but-different value can rule a Recipe out.
+        if target_kind not in known_target_kinds:
+            target_kind = ""
+        if data_adapter not in known_adapters:
+            data_adapter = ""
         matches: list[dict[str, Any]] = []
         for plugin_id in self.recipe_ids():
             manifest = self._recipes[plugin_id].manifest
