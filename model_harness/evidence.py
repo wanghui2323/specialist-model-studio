@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import time
 import zipfile
 from copy import deepcopy
@@ -979,6 +980,18 @@ class ArtifactBundleBuilder:
             for asset in contract.get("execution_assets", []):
                 if isinstance(asset, dict) and isinstance(asset.get("root"), str):
                     private_roots.add(asset["root"])
+            # Keep known host aliases as well as physical paths. On macOS,
+            # /tmp may resolve to /private/tmp; neither spelling may enter
+            # exported source when it refers to this task's private storage.
+            for alias in (Path.home().expanduser(), Path(tempfile.gettempdir())):
+                physical = alias.resolve()
+                if alias == physical:
+                    continue
+                for root in tuple(private_roots):
+                    try:
+                        private_roots.add(str(alias / Path(root).relative_to(physical)))
+                    except ValueError:
+                        continue
             return {"sources": sources, "portable": portable, "private_roots": private_roots}
         except EvidenceError:
             raise
