@@ -2,7 +2,7 @@
 
 **用自然对话推进模型任务：准备数据与实现、隔离训练、独立评估、试用和交付。**
 
-**`v1.0.0-rc.2` 已于 2026-10-07 发布为 [GitHub Prerelease](https://github.com/wanghui2323/specialist-model-studio/releases/tag/v1.0.0-rc.2)。** 这是开发者源码预览版（Python `1.0.0rc2`，API/插件 `1.0.0-rc.2`），用于代码审核、本地体验和问题反馈，**不表示生产就绪**。
+**`v1.0.0-rc.2` 已于 2026-10-07 发布为 [GitHub Prerelease](https://github.com/wanghui2323/specialist-model-studio/releases/tag/v1.0.0-rc.2)。** 这是开发者源码预览版（源码 RC；Python `1.0.0rc2`，API/插件 `1.0.0-rc.2`），用于代码审核、本地体验和问题反馈，**不表示生产就绪**。
 
 - [项目与反馈](https://github.com/wanghui2323/specialist-model-studio)
 - [当前版本安装与验收指南](docs/v1.0-source-release-candidate.md)
