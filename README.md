@@ -146,6 +146,10 @@ uv run python scripts/verify_project.py
 
 功能轨道为 `v1.0-conversation-native`，运行时的 `source_preview_rc` 标记描述源码预览范围。当前 Python 为 `1.0.0rc2`，API/插件为 `1.0.0-rc.2`；[发布门槛](acceptance/v1.0-gates.json)与[发布记录](plans/v1.0-conversation-native/RC2-RELEASE-20261007.md)分别给出规则和证据。
 
+三个内置的用户数据 Recipe 是图片目录分类、表格回归、表格分类；音频关键词分类（动态注册）也保留了原有验证路径。这些可复用实现方便起步，不限制 Agent 接受其他目标。
+
+Python 依赖也可用 `uv pip install '.[server,test]'` 安装；固定版本复现采用上文的 `uv sync --frozen`。测试套件里的确定性复验检查协议行为，它不冒充真实 PID 重启；发布验收另外验证了实际服务重启。
+
 普通 wheel 仅包含后端，`uv run specialist-model-studio serve` 是 backend-only 开发入口；完整 `start` 要求源码 checkout。`agent_required` 为 `false` 的演示不能代替真实 Agent 验收。
 
 生成和第三方模型代码只在受限 OCI 容器里执行；没有已验证的隔离环境时，只允许静态分析。训练标准由用户确认，独立测试不用于选模型或改门槛。实验数据、下载权重、生成声音、凭据与 `runs/` 保持在版本控制之外。
