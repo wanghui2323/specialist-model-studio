@@ -13,6 +13,10 @@ import subprocess
 import sys
 import shutil
 import tempfile
+import queue
+import threading
+import time
+import signal
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,15 +28,36 @@ PROBE="import torch,numpy,scipy,transformers,sklearn,librosa,pandas,PIL,json; x=
 
 
 def command(argv, *, timeout=1800, capture=False):
-    result=subprocess.run(argv,stdin=subprocess.DEVNULL,timeout=timeout,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
-    if not capture:
-        # Registry failures may contain temporary signed CDN URLs.
+    if capture:
+        return subprocess.run(argv,stdin=subprocess.DEVNULL,check=True,timeout=timeout,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    from urllib.parse import urlsplit,urlunsplit
+    def sanitize(text):
         def clean(match):
-            from urllib.parse import urlsplit, urlunsplit
             url=urlsplit(match.group(0));return urlunsplit((url.scheme,url.hostname or "",url.path,"",""))
-        for output in [result.stdout,result.stderr]:sys.stderr.write(re.sub(r'https?://[^\s"<>]+',clean,output))
-    if result.returncode:raise subprocess.CalledProcessError(result.returncode,argv)
-    return result
+        return re.sub(r'https?://[^\s"<>]+',clean,text)
+    process=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,start_new_session=True)
+    lines=queue.Queue()
+    def read_lines():
+        for line in process.stdout:lines.put(line)
+        lines.put(None)
+    reader=threading.Thread(target=read_lines,daemon=True);reader.start();started=time.monotonic()
+    try:
+        while True:
+            if time.monotonic()-started>timeout:raise subprocess.TimeoutExpired(argv,timeout)
+            try:line=lines.get(timeout=.5)
+            except queue.Empty:continue
+            if line is None:break
+            sys.stderr.write(sanitize(line));sys.stderr.flush()
+        process.wait(timeout=10)
+        if process.returncode:raise subprocess.CalledProcessError(process.returncode,argv)
+        return subprocess.CompletedProcess(argv,0)
+    except BaseException:
+        if process.poll() is None:
+            os.killpg(process.pid,signal.SIGTERM)
+            try:process.wait(timeout=3)
+            except subprocess.TimeoutExpired:os.killpg(process.pid,signal.SIGKILL);process.wait()
+        raise
+    finally:process.stdout.close()
 
 
 def build_arguments(arch,tag,base_image=None,context=None):

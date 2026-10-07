@@ -56,3 +56,16 @@ class CpuWorkerRecipeTest(unittest.TestCase):
         redirected=base.SafeRedirect().redirect_request(req,None,302,'',{},'https://docker-images-prod.s3.amazonaws.com/public-layer')
         self.assertIsNone(redirected.get_header('Authorization'))
         with self.assertRaises(ValueError):base.SafeRedirect().redirect_request(req,None,302,'',{},'http://example.com/layer')
+
+    def test_setup_progress_redacts_signed_urls_and_terminates_timed_out_command(self):
+        import contextlib
+        import io
+        import subprocess
+        import sys
+        output=io.StringIO()
+        with contextlib.redirect_stderr(output):
+            module.command([sys.executable,'-c',"print('download https://user:private-fixture@example.com/object?signature=private-fixture')"],timeout=3)
+        self.assertIn('https://example.com/object',output.getvalue())
+        self.assertNotIn('private-fixture',output.getvalue())
+        with self.assertRaises(subprocess.TimeoutExpired):
+            module.command([sys.executable,'-c','import time;time.sleep(20)'],timeout=.05)
