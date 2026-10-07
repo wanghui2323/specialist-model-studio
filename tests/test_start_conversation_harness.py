@@ -41,6 +41,14 @@ class ConversationHarnessStartupTest(unittest.TestCase):
         )
         self.bin_dir.mkdir()
         self.home_dir.mkdir()
+        self._write_executable(
+            self.bin_dir / "node",
+            "#!/usr/bin/env bash\n"
+            "if [[ \"${FAKE_NODE_UNSUPPORTED:-0}\" == 1 ]]; then\n"
+            "  echo 'Unsupported Node.js 20.19.6. Studio requires Node.js >=22.19; Node.js 24 LTS is recommended.' >&2\n"
+            "  exit 1\n"
+            "fi\nexit 0\n",
+        )
         self.dsh_home_log = Path(self.temporary.name) / "dsh-home.log"
         self.dsh_credentials_log = Path(self.temporary.name) / "dsh-credentials.log"
         self.dsh_artifact_export_log = Path(self.temporary.name) / "dsh-artifact-export.log"
@@ -166,7 +174,7 @@ esac
             "real_agent": True,
             "implementation": "dsh_native_subagents",
             "conversation_schema_version": "2.0",
-            "conversation_projector_revision": "3.3",
+            "conversation_projector_revision": "3.4",
             "synthesis_verdict_version": "1.0",
             "conversation_action_schema_version": "1.0",
             "task_truth_source": "TrainingTask",
@@ -629,6 +637,13 @@ esac
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("Reusing the existing DSH runtime.", completed.stdout)
+
+    def test_unsupported_node_fails_before_profile_or_service_changes(self) -> None:
+        completed = self._run(self._runtime(), {"FAKE_NODE_UNSUPPORTED": "1"})
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("Node.js 24 LTS", completed.stderr)
+        self.assertFalse(self.dsh_home_log.exists())
+        self.assertFalse((Path(self.temporary.name) / "health-counter").exists())
 
 
 if __name__ == "__main__":

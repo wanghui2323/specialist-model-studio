@@ -110,6 +110,11 @@ def _descriptor(
 
 OBJECT_REF_DESCRIPTORS: Mapping[str, ObjectRefDescriptor] = MappingProxyType(
     {
+        "execution_proposal": _descriptor(
+            "execution_proposal", required=("type", "id", "task_id", "digest"),
+            identity=("task_id", "id"), digests=("digest",),
+            endpoint="/tasks/{task_id}/execution-proposals/{id}", selector="proposal",
+        ),
         "model_source_search": _descriptor(
             "model_source_search",
             required=("type", "id", "task_id", "base_spec_revision"),

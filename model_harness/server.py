@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import errno
 import fcntl
 import hashlib
@@ -40,6 +41,7 @@ from .agent_bridge import (
     AgentRuntimeError,
     agent_public_projection,
 )
+from .conversation_payloads import engineering_public_projection
 from .conversation_stream import (
     ConversationStreamCapacityError,
     TaskConversationStreamBroker,
@@ -58,12 +60,17 @@ from .multi_agent import (
     ComposerSubmissionError,
     HumanCheckpointAnswerError,
     HumanCheckpointConflictError,
+    TaskArchivedError,
     build_dsh_multi_agent_runtime,
 )
 from .data_adapters import DataAdapterRegistry
 from .errors import ContractError, HarnessError
+from .execution_workspace import ExecutionWorkspace
+from .execution_assets import ExecutionAssetStore
 from .huggingface_catalog import HuggingFaceCatalogError
 from .inference_inputs import InferenceInputError, MAX_INFERENCE_INPUT_BYTES
+from .local_resources import capture_local_resource_inventory
+from .material_inspection import MAX_MATERIAL_BYTES, MaterialConflict, MaterialInspectionStore, validate_metadata
 from .model_assets import ModelAssetError
 from .model_source_store import ModelSourceIntegrityError, StaleBindingIntentError
 from .model_sources import (
@@ -89,6 +96,9 @@ from .training_plans import (
     TrainingPlanIntegrityError,
 )
 from .task_specs import FAMILY_DETAILS
+from .context_state import ContextStateError
+from .context_snapshots import ContextSnapshotReader
+import base64
 from .workspace import TrainingWorkspace
 from .workspace import ConversationConflictError
 
@@ -107,9 +117,9 @@ def _conversation_task_id(create_request_id: str) -> str:
     return f"task-{digest[:32]}"
 
 
-API_VERSION = "1.0.0-rc.1"
+API_VERSION = "1.0.0-rc.2"
 FEATURE_TRACK = "v1.0-conversation-native"
-RELEASE_STATUS = "unreleased_rc"
+RELEASE_STATUS = "source_preview_rc"
 
 
 def _resolve_source_revision(source_root: Path) -> str | None:
@@ -257,6 +267,9 @@ def create_app(
         service,
         data_adapters=data_adapter_registry,
     )
+    materials = MaterialInspectionStore(workspace.root, owner_lock=workspace._lock)
+    workspace.execution_assets = ExecutionAssetStore(workspace)
+    workspace.execution_workspace = ExecutionWorkspace(workspace, materials)
     web_dir = Path(__file__).parent / "web"
     resolved_conversation_url = (
         conversation_url
@@ -275,6 +288,7 @@ def create_app(
         cwd=source_root,
         background_actions_provider=workspace.task_background_actions,
         background_actions_canceller=workspace.cancel_task_background_actions,
+        material_inspections_provider=materials.briefs,
     )
     conversation_streams = TaskConversationStreamBroker(conversations)
     runs_workspace_lease = _RunsWorkspaceLease(resolved_runs_dir)
@@ -299,6 +313,7 @@ def create_app(
                         conversations.stop()
                 finally:
                     try:
+                        workspace.execution_workspace.close()
                         workspace.close()
                     finally:
                         try:
@@ -333,6 +348,8 @@ def create_app(
         ).hexdigest()
     app.state.run_service = service
     app.state.training_workspace = workspace
+    app.state.material_inspections = materials
+    app.state.execution_workspace = workspace.execution_workspace
     app.state.conversation_runtime = conversations
     app.state.conversation_streams = conversation_streams
     app.state.runs_workspace_lease = runs_workspace_lease
@@ -342,7 +359,9 @@ def create_app(
     async def project_remote_agent_response(request: Request, call_next: Any) -> Any:
         response = await call_next(request)
         projection = request.headers.get("x-model-harness-projection", "").lower()
-        if projection not in {"agent", "agent-v1"}:
+        engineering_projection = projection == "agent-execution-v1" and bool(re.fullmatch(
+            r"/tasks/[^/]+/(?:execution-workspace|execution-proposals(?:/[^/]+(?:/(?:qualify|activate))?)?|execution-assets)", request.url.path))
+        if projection not in {"agent", "agent-v1", "agent-execution-v1"}:
             return response
         if "application/json" not in response.headers.get("content-type", ""):
             return response
@@ -363,12 +382,26 @@ def create_app(
         headers = dict(response.headers)
         headers.pop("content-length", None)
         headers.pop("content-type", None)
+        if engineering_projection:
+            value = engineering_public_projection(value)
+        else:
+            value = agent_public_projection(value)
         return JSONResponse(
             status_code=response.status_code,
-            content=agent_public_projection(value),
+            content=value,
             headers=headers,
             background=response.background,
         )
+
+    @app.get("/resources/local")
+    def local_resources(request: Request) -> dict[str, Any]:
+        if request.query_params:
+            raise HTTPException(status_code=422, detail="本机资源观测不接受路径或其它查询参数")
+        try:
+            return {"local_resources": capture_local_resource_inventory(service.runs_dir)}
+        except Exception as exc:
+            # Probe errors may contain host paths; keep their details local.
+            raise HTTPException(status_code=503, detail="本机资源观测暂时不可用，请稍后重试") from exc
 
     @app.get("/model-assets/huggingface/capability")
     def huggingface_capability() -> dict[str, Any]:
@@ -1122,8 +1155,110 @@ def create_app(
             "agent_required": False,
         }
 
+    def execution_response(value: dict[str, Any]) -> dict[str, Any]:
+        if "proposal" in value:
+            return {**value, "qualification": value["proposal"].get("qualification")}
+        return {"proposal": value, "qualification": value.get("qualification")}
+
+    def execution_approval(body: dict[str, Any], token: str | None) -> dict[str, Any]:
+        proof = require_agent_bridge_approval_token(token)
+        approval = dict(body.get("approval") or {})
+        approval.update(verified_by="agent_bridge_token", bridge_token_sha256=proof)
+        return approval
+
+    @app.get("/tasks/{task_id}/execution-workspace")
+    def execution_workspace_info(task_id: str) -> dict[str, Any]:
+        try:
+            info = workspace.execution_workspace.info(task_id)
+            info["assets"] = workspace.execution_assets.list(task_id)
+            return {"execution_workspace": info}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ContractError, HarnessError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/execution-proposals")
+    def create_execution_proposal(task_id: str, body: dict[str, Any] = Body(...)) -> JSONResponse:
+        try:
+            value = workspace.execution_workspace.create(task_id, base_spec_revision=body.get("base_spec_revision"),
+                execution_spec=body.get("execution_spec"), request_id=body.get("request_id"))
+            return JSONResponse(status_code=201, content=execution_response(value))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/tasks/{task_id}/execution-proposals")
+    def list_execution_proposals(task_id: str) -> dict[str, Any]:
+        try:
+            return {"proposals": workspace.execution_workspace.list(task_id)}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/tasks/{task_id}/execution-proposals/{proposal_id}")
+    def get_execution_proposal(task_id: str, proposal_id: str) -> dict[str, Any]:
+        try:
+            return execution_response(workspace.execution_workspace.get(task_id, proposal_id))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/execution-proposals/{proposal_id}/qualify")
+    def qualify_execution_proposal(task_id: str, proposal_id: str, body: dict[str, Any] = Body(...),
+                                  x_model_harness_agent_token: str | None = Header(default=None, alias="X-Model-Harness-Agent-Token")) -> JSONResponse:
+        approval = execution_approval(body, x_model_harness_agent_token)
+        try:
+            value = workspace.execution_workspace.start_qualification(task_id, proposal_id,
+                expected_proposal_sha256=str(body.get("expected_proposal_sha256") or ""), approval=approval,
+                local_experiment_only=body.get("local_experiment_only") is True)
+            return JSONResponse(status_code=202, content=execution_response(value))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ContractError, HarnessError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/execution-proposals/{proposal_id}/activate")
+    def activate_execution_proposal(task_id: str, proposal_id: str, body: dict[str, Any] = Body(...),
+                                   x_model_harness_agent_token: str | None = Header(default=None, alias="X-Model-Harness-Agent-Token")) -> dict[str, Any]:
+        approval = execution_approval(body, x_model_harness_agent_token)
+        try:
+            value = workspace.execution_workspace.activate(task_id, proposal_id,
+                expected_proposal_sha256=str(body.get("expected_proposal_sha256") or ""),
+                qualification_id=str(body.get("qualification_id") or ""),
+                expected_qualification_sha256=str(body.get("expected_qualification_sha256") or ""), approval=approval)
+            return execution_response(value)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ContractError, HarnessError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/tasks/{task_id}/execution-assets")
+    def list_execution_assets(task_id: str) -> dict[str, Any]:
+        try:
+            return {"assets": workspace.execution_assets.list(task_id)}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/execution-assets")
+    def acquire_execution_assets(task_id: str, body: dict[str, Any] = Body(...),
+                                 x_model_harness_agent_token: str | None = Header(default=None, alias="X-Model-Harness-Agent-Token")) -> JSONResponse:
+        approval = execution_approval(body, x_model_harness_agent_token)
+        try:
+            value = workspace.execution_assets.acquire(task_id, repository=body.get("repository"),
+                revision=body.get("revision"), files=body.get("files"), approval=approval)
+            return JSONResponse(status_code=201, content={"asset": value})
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ContractError, HarnessError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.get("/runtime")
     def runtime() -> dict[str, Any]:
+        execution_readiness = workspace.execution_workspace.runtime_readiness()
+        isolated_probe = execution_readiness["runtime"]
         return {
             "package_version": __version__,
             "feature_track": FEATURE_TRACK,
@@ -1134,8 +1269,11 @@ def create_app(
             "source_execution_policy": (
                 "static_analysis_only_without_verified_isolation"
             ),
-            "byom_execution_available": False,
-            "supported_protocol_end": "resource_feasibility",
+            "byom_execution_available": execution_readiness["ready"],
+            "supported_protocol_end": "qualified_isolated_training_and_inference" if execution_readiness["ready"] else "resource_feasibility",
+            "generic_execution_protocol": "0.1",
+            "execution_image": {key: execution_readiness.get(key) for key in ("ready", "image_reference", "reason")},
+            "isolation_runtime": {key: isolated_probe.get(key) for key in ("available", "runtime", "version", "reason")},
             "registered_recipe_training_available": True,
             "runtime_identity": {
                 "source_root": str(source_root),
@@ -1173,11 +1311,188 @@ def create_app(
                 if conversation.get("task_id")
                 else None
             )
-            return {"conversation": conversation, "task": task}
+            summary = materials.summary(conversation_id)
+            conversation["material_inspections"] = summary
+            if task is not None:
+                task["material_inspections"] = summary
+            return {"conversation": conversation, "task": task, "material_inspections": summary}
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except ConversationConflictError as exc:
+        except (ConversationConflictError, MaterialConflict) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/conversations/{owner_id}/agent-context")
+    def conversation_agent_context(owner_id: str) -> dict[str, Any]:
+        try:
+            materials.owner(owner_id)
+            return conversations.root_context(owner_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (MaterialConflict, AgentRuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/conversations/{owner_id}/context-state")
+    def conversation_context_state(owner_id: str) -> dict[str, Any]:
+        try:
+            materials.owner(owner_id)
+            return {"context_state": agent_public_projection(conversations.context_state.snapshot(owner_id))}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ContextStateError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/conversations/{owner_id}/context-state")
+    def record_conversation_context_state(owner_id: str, body: dict[str, Any] = Body(...),
+        x_model_harness_agent_token: str | None = Header(default=None, alias="X-Model-Harness-Agent-Token")) -> dict[str, Any]:
+        require_agent_bridge_approval_token(x_model_harness_agent_token)
+        try:
+            materials.owner(owner_id, writing=True)
+            if set(body) != {"base_revision", "update_id", "entries", "provenance"}:
+                raise ContextStateError("unknown or missing conversation context fields")
+            team = conversations.store.load_team(owner_id)
+            if not team or body["provenance"].get("session_id") != team.get("root_session_id"):
+                raise ContextStateError("conversation interpretations require the exact owner root session")
+            conversations.context_state.record(owner_id, **body)
+            return {"context_state": agent_public_projection(conversations.context_state.snapshot(owner_id))}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ContextStateError, MaterialConflict, AgentRuntimeError, TypeError, AttributeError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/conversations/{owner_id}/context-evidence")
+    def read_conversation_context_evidence(owner_id: str, kind: str, object_id: str,
+        start: int = Query(default=0, ge=0), max_chars: int = Query(default=4000, ge=1, le=8000),
+        filename: str | None = None) -> dict[str, Any]:
+        try:
+            materials.owner(owner_id)
+            if kind == "message":
+                value = conversations.context_state.message(owner_id, object_id, start=start, max_chars=max_chars)
+                return {"evidence": agent_public_projection(value)}
+            if kind == "execution_source":
+                proposal = workspace.execution_workspace.get(owner_id, object_id)
+                files = proposal["execution_spec"]["bundle"]["files"]
+                if filename is None:
+                    return {"evidence": {"owner_id": owner_id, "proposal_id": object_id, "proposal_sha256": proposal["proposal_sha256"], "files": [{"filename": name, "total_chars": len(content), "utf8_sha256": hashlib.sha256(content.encode()).hexdigest()} for name, content in files.items()], "grants_execution_authorization": False}}
+                if filename not in files:
+                    raise FileNotFoundError("file is not declared in this owned proposal")
+                content = files[filename]
+                # Frozen source is data; read an exact virtual file-map entry,
+                # never a caller-provided filesystem path. No sanitizing source
+                # bytes into a different executable or hashable proposal.
+                fragment = content[start:start+max_chars].encode()
+                return {"evidence": {"owner_id": owner_id, "proposal_id": object_id, "proposal_sha256": proposal["proposal_sha256"], "filename": filename, "utf8_sha256": hashlib.sha256(content.encode()).hexdigest(), "encoding": "base64-utf8", "content_base64": base64.b64encode(fragment).decode(), "slice_sha256": hashlib.sha256(fragment).hexdigest(), "start": start, "end": min(len(content), start+max_chars), "total_chars": len(content), "complete": start==0 and max_chars>=len(content), "has_more": start+max_chars<len(content), "grants_execution_authorization": False}}
+            raise ContextStateError("unknown context evidence kind")
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ContextStateError, ContractError, KeyError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    def owned_context_session(owner_id: str) -> str:
+        materials.owner(owner_id)
+        team = conversations.store.load_team(owner_id)
+        if not team or not team.get('root_session_id'):
+            raise FileNotFoundError('conversation has no owned native context session')
+        return team['root_session_id']
+
+    @app.get('/conversations/{owner_id}/context-snapshots')
+    def list_owned_context_snapshots(owner_id: str) -> dict[str, Any]:
+        try:
+            session_id=owned_context_session(owner_id)
+            return {'owner_id':owner_id,'session_id':session_id,'snapshots':ContextSnapshotReader(conversations.workspace_root).list(session_id)}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404,detail=str(exc)) from exc
+        except (ContextStateError,ValueError) as exc:
+            raise HTTPException(status_code=409,detail=str(exc)) from exc
+
+    @app.get('/conversations/{owner_id}/context-snapshots/{snapshot_id}')
+    def read_owned_context_snapshot(owner_id: str,snapshot_id: str,section: str='trace',start: int=Query(default=0,ge=0),max_chars: int=Query(default=4000,ge=1,le=8000)) -> dict[str,Any]:
+        try:
+            session_id=owned_context_session(owner_id)
+            value=ContextSnapshotReader(conversations.workspace_root).section(session_id,snapshot_id,section,start,max_chars)
+            return {'owner_id':owner_id,'snapshot':agent_public_projection(value)}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404,detail=str(exc)) from exc
+        except (ContextStateError,ValueError) as exc:
+            raise HTTPException(status_code=409,detail=str(exc)) from exc
+
+    @app.post("/conversations/{owner_id}/materials")
+    @app.post("/tasks/{owner_id}/materials")
+    async def upload_owner_material(
+        owner_id: str, request: Request,
+        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
+        x_filename: str | None = Header(default=None, alias="X-Filename"),
+    ) -> JSONResponse:
+        try:
+            filename, request_id = validate_metadata(unquote(x_filename or ""), x_request_id or "")
+            materials.owner(owner_id, writing=True)
+            declared = request.headers.get("content-length")
+            if declared and int(declared) < 0:
+                raise ContractError("Content-Length不能为负数")
+            if declared and int(declared) > MAX_MATERIAL_BYTES:
+                raise HTTPException(status_code=413, detail="材料文件超过25MiB上限")
+            payload = bytearray()
+            async for chunk in request.stream():
+                if len(payload) + len(chunk) > MAX_MATERIAL_BYTES:
+                    raise HTTPException(status_code=413, detail="材料文件超过25MiB上限")
+                payload.extend(chunk)
+            record, replayed = await asyncio.to_thread(materials.upload, owner_id, bytes(payload), filename, request_id)
+            return JSONResponse(status_code=200 if replayed else 201, content={"material": record, "replayed": replayed})
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except MaterialConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (ContractError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/conversations/{owner_id}/materials")
+    @app.get("/tasks/{owner_id}/materials")
+    def list_owner_materials(owner_id: str) -> dict[str, Any]:
+        try:
+            records = materials.list(owner_id)
+            return {"owner_id": owner_id, "materials": [materials.brief(item) for item in records[-20:]],
+                "count": len(records), "truncated": len(records) > 20,
+                "data_inspected_only": True, "dataset_imported": False, "execution_authorized": False}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except MaterialConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/conversations/{owner_id}/materials/{material_id}")
+    @app.get("/tasks/{owner_id}/materials/{material_id}")
+    def get_owner_material(owner_id: str, material_id: str, view: str | None = None) -> dict[str, Any]:
+        try:
+            if view not in {None, "agent"}:
+                raise HTTPException(status_code=422, detail="材料view仅支持agent")
+            record = materials.get(owner_id, material_id)
+            return {"material": agent_public_projection(materials.agent_detail(record)) if view == "agent" else record}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except MaterialConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/conversations/{owner_id}/materials/{material_id}/csv-schema")
+    @app.get("/tasks/{owner_id}/materials/{material_id}/csv-schema")
+    def owner_material_csv_schema(owner_id: str, material_id: str) -> dict[str, Any]:
+        try:
+            return materials.csv_schema(owner_id, material_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except MaterialConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (ContractError, ValueError, csv.Error) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/conversations/{owner_id}/material-requests/{request_id}")
+    @app.get("/tasks/{owner_id}/material-requests/{request_id}")
+    def owner_material_request(owner_id: str, request_id: str) -> dict[str, Any]:
+        try:
+            return {"material": materials.receipt(owner_id, request_id)}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except MaterialConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/conversations")
     async def create_conversation(body: dict[str, Any] = Body(...)) -> JSONResponse:
@@ -1242,7 +1557,7 @@ def create_app(
         assert isinstance(initial_message, str)
         assert isinstance(message_request_id, str)
         try:
-            submission = conversations.submit_message(
+            submission = await asyncio.to_thread(conversations.submit_message,
                 conversation_id,
                 str(conversation.get("title") or "新对话"),
                 initial_message,
@@ -1427,7 +1742,7 @@ def create_app(
             raise HTTPException(status_code=422, detail="request_id must be text")
         try:
             record = workspace.get_conversation(conversation_id)
-            submission = conversations.submit_message(
+            submission = await asyncio.to_thread(conversations.submit_message,
                 conversation_id,
                 str(record.get("title") or "新对话"),
                 message,
@@ -1439,6 +1754,8 @@ def create_app(
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except TaskArchivedError as exc:
+            raise HTTPException(status_code=409, detail={"code": "task_archived", "message": str(exc)}) from exc
         except HumanCheckpointConflictError as exc:
             raise HTTPException(status_code=409, detail={"code": "checkpoint_changed", "message": str(exc)}) from exc
         except ComposerModeUnsupportedError as exc:
@@ -1512,7 +1829,7 @@ def create_app(
             )
         try:
             workspace.get_conversation(conversation_id)
-            return conversations.cancel(
+            return await asyncio.to_thread(conversations.cancel,
                 conversation_id,
                 actor="user",
                 reason=reason,
@@ -1537,7 +1854,7 @@ def create_app(
             raise HTTPException(status_code=422, detail="answers must be a list")
         try:
             workspace.get_conversation(conversation_id)
-            conversations.answer_question(conversation_id, rpc_id, answers)
+            await asyncio.to_thread(conversations.answer_question, conversation_id, rpc_id, answers)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except HumanCheckpointAnswerError as exc:
@@ -1736,7 +2053,7 @@ def create_app(
             raise HTTPException(status_code=422, detail="request_id must be text")
         try:
             task = workspace.get_task(task_id)
-            submission = conversations.submit_message(
+            submission = await asyncio.to_thread(conversations.submit_message,
                 task_id,
                 task["name"],
                 message,
@@ -1748,6 +2065,8 @@ def create_app(
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except TaskArchivedError as exc:
+            raise HTTPException(status_code=409, detail={"code": "task_archived", "message": str(exc)}) from exc
         except HumanCheckpointConflictError as exc:
             raise HTTPException(status_code=409, detail={"code": "checkpoint_changed", "message": str(exc)}) from exc
         except ComposerModeUnsupportedError as exc:
@@ -1824,7 +2143,7 @@ def create_app(
                 },
             )
         try:
-            return conversations.cancel(
+            return await asyncio.to_thread(conversations.cancel,
                 task_id,
                 actor="user",
                 reason=reason,
@@ -1848,7 +2167,7 @@ def create_app(
         if outcome not in {"allowed-once", "rejected"}:
             raise HTTPException(status_code=422, detail="outcome must be allowed-once or rejected")
         try:
-            conversations.answer_approval(task_id, rpc_id, outcome)
+            await asyncio.to_thread(conversations.answer_approval, task_id, rpc_id, outcome)
         except AgentRuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"accepted": True}
@@ -1863,7 +2182,7 @@ def create_app(
         if not isinstance(answers, list):
             raise HTTPException(status_code=422, detail="answers must be a list")
         try:
-            conversations.answer_question(task_id, rpc_id, answers)
+            await asyncio.to_thread(conversations.answer_question, task_id, rpc_id, answers)
         except HumanCheckpointAnswerError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except AgentRuntimeError as exc:
@@ -1976,7 +2295,7 @@ def create_app(
                     },
                 )
             try:
-                submission = conversations.submit_message(
+                submission = await asyncio.to_thread(conversations.submit_message,
                     deterministic_task_id,
                     str(task["name"]),
                     initial_message,
@@ -2051,9 +2370,13 @@ def create_app(
     @app.get("/tasks/{task_id}")
     def get_task(task_id: str) -> dict[str, Any]:
         try:
-            return {"task": workspace.get_task(task_id)}
+            task = workspace.get_task(task_id)
+            task["material_inspections"] = materials.summary(task_id)
+            return {"task": task}
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except MaterialConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/tasks/{task_id}/csv-target-recommendation")
     async def recommend_task_csv_target(
@@ -2077,10 +2400,11 @@ def create_app(
     @app.post("/tasks/{task_id}/archive")
     def archive_task(task_id: str) -> dict[str, Any]:
         try:
-            return {"task": workspace.archive_task(task_id)}
+            workspace.get_task(task_id)
+            return {"task": conversations.archive_task(task_id, workspace.archive_task)}
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except HarnessError as exc:
+        except (HarnessError, AgentRuntimeError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/tasks/{task_id}/spec/revisions")
@@ -2324,6 +2648,60 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except HarnessError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/tasks/{task_id}/dataset-from-material")
+    async def import_dataset_from_material(task_id: str, body: dict[str, Any] = Body(...)) -> JSONResponse:
+        """Reuse inspected bytes without another file picker or upload.
+
+        This enters the existing data adapter and confirmation workflow. It
+        neither treats a material inspection as a Dataset nor grants execution.
+        """
+        try:
+            allowed_fields = {"material_id", "inspection_sha256", "request_id", "options", "base_spec_revision"}
+            if set(body) - allowed_fields:
+                raise ContractError("材料导入请求包含不支持的字段")
+            for field in ("material_id", "inspection_sha256", "request_id"):
+                if not isinstance(body.get(field), str) or not body[field]:
+                    raise ContractError(f"{field}必须提供非空文本")
+            base_spec_revision = body.get("base_spec_revision")
+            if base_spec_revision is not None and (isinstance(base_spec_revision, bool) or not isinstance(base_spec_revision, int) or base_spec_revision < 1):
+                raise ContractError("base_spec_revision必须是正整数")
+            options = body.get("options", {})
+            if not isinstance(options, dict) or set(options) - {"target_column", "ignored_columns", "delimiter", "data_adapter"}:
+                raise ContractError("材料导入options只支持预测列、忽略列、分隔符与数据适配器")
+            for field in ("target_column", "data_adapter"):
+                if field in options and (not isinstance(options[field], str) or not options[field] or len(options[field]) > 256):
+                    raise ContractError(f"{field}必须是非空文本")
+            if "delimiter" in options and options["delimiter"] not in {",", ";", "\t", "|"}:
+                raise ContractError("delimiter必须是受支持的单字符分隔符")
+            if "ignored_columns" in options and (not isinstance(options["ignored_columns"], list) or len(options["ignored_columns"]) > 256 or any(not isinstance(value, str) or not value or len(value) > 256 for value in options["ignored_columns"])):
+                raise ContractError("ignored_columns必须是列名列表")
+
+            def perform_import():
+                with workspace._lock:
+                    materials.owner(task_id, writing=True)
+                    task = workspace.get_task(task_id)
+                    if task.get("status") == "running":
+                        raise HarnessError("运行中不能替换数据集")
+                    if task.get("capability_decision", {}).get("status") != "resolved":
+                        raise HarnessError("请先确认任务规格，再使用材料导入训练数据")
+                    recipe_id = task.get("recipe_id")
+                    if not recipe_id or recipe_id not in workspace._eligible_recipe_ids_for_capability(task.get("capability_request", {})):
+                        raise HarnessError("当前目标尚无已验证的训练方案；材料检查记录已保留")
+                    plugin = registry.get_recipe(recipe_id)
+                    if options.get("data_adapter") and options["data_adapter"] != plugin.manifest.data_adapter:
+                        raise ContractError("材料导入适配器与当前训练方案不一致")
+                    record, payload = materials.retained_source(task_id, body["material_id"], inspection_sha256=body["inspection_sha256"], for_import=True)
+                    return workspace.attach_dataset_idempotent(task_id, payload, record["file"]["name"], request_id=body["request_id"], options=options, expected_spec_revision=base_spec_revision)
+
+            task, receipt, replayed = await asyncio.to_thread(perform_import)
+            return JSONResponse(status_code=201, content={"task": task, "dataset_upload": receipt, "idempotent_replay": replayed})
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (ContractError, ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/tasks/{task_id}/dataset")
     async def upload_task_dataset(
@@ -2712,7 +3090,8 @@ def create_app(
             selected.get("sample_inference_authorization_id") or ""
         )
         try:
-            result = workspace.run_sample_inference_with_authorization(
+            result = await asyncio.to_thread(
+                workspace.run_sample_inference_with_authorization,
                 task_id,
                 run_id,
                 inference_input_id=inference_input_id,
@@ -2803,6 +3182,20 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.get("/tasks/{task_id}/runs/{run_id}/sample-inferences/{check_id}/files/{name:path}")
+    def get_sample_output_file(task_id: str, run_id: str, check_id: str, name: str) -> FileResponse:
+        try:
+            import mimetypes
+            from .generic_inference import generic_sample_artifact
+            from .sample_inference import SampleInference
+            workspace._require_owned_run(task_id, run_id)
+            path = generic_sample_artifact(SampleInference(service._run_dir(run_id)), check_id, name)
+            return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ContractError, HarnessError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.post(
         "/tasks/{task_id}/runs/{run_id}/artifact-bundle-authorizations"
     )
@@ -2874,7 +3267,8 @@ def create_app(
     ) -> JSONResponse:
         selected = body or {}
         try:
-            result = workspace.build_artifact_bundle(
+            result = await asyncio.to_thread(
+                workspace.build_artifact_bundle,
                 task_id,
                 run_id,
                 artifact_bundle_authorization_id=str(
@@ -3177,4 +3571,14 @@ def serve(
         raise RuntimeError(
             "HTTP server dependencies are missing; install specialist-model-studio[server]"
         ) from exc
-    uvicorn.run(create_app(runs_dir, max_workers=max_workers), host=host, port=port)
+    try:
+        graceful_seconds = float(os.environ.get("MODEL_HARNESS_GRACEFUL_SHUTDOWN_SECONDS", "5"))
+    except (TypeError, ValueError):
+        raise RuntimeError("MODEL_HARNESS_GRACEFUL_SHUTDOWN_SECONDS must be between 0 and 60") from None
+    if not 0 <= graceful_seconds <= 60:
+        raise RuntimeError("MODEL_HARNESS_GRACEFUL_SHUTDOWN_SECONDS must be between 0 and 60")
+    # Browser EventSource connections are intentionally long-lived. Bound the
+    # HTTP drain so Uvicorn cancels SSE tasks and reaches lifespan cleanup.
+    # Lifespan still waits for owned workers before releasing the writer lease.
+    uvicorn.run(create_app(runs_dir, max_workers=max_workers), host=host, port=port,
+                timeout_graceful_shutdown=graceful_seconds)

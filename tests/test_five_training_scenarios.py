@@ -34,6 +34,9 @@ def _classification_csv() -> bytes:
     for index in range(72):
         label = "pass" if index < 48 else "defect"
         signal = 8.0 + (index % 5) * 0.1 if label == "pass" else 1.0 + (index % 4) * 0.1
+        # Distinct physical readings, not just unique ignored identifiers: the
+        # former fixture contained only 14 effective observations after dedup.
+        signal += (index + 1) * 0.001
         batch = ["morning", "evening"][index % 2]
         writer.writerow([f"C-{index:04d}", signal, batch, label])
     return output.getvalue().encode("utf-8")
@@ -228,6 +231,8 @@ class FiveTrainingScenarioTests(unittest.TestCase):
                 )
                 self.assertEqual(uploaded.status_code, 201, uploaded.text)
                 self.assertEqual(uploaded.json()["task"]["dataset_report"]["target_kind"], "categorical")
+                self.assertEqual(uploaded.json()["task"]["dataset_report"]["row_count"], 72)
+                self.assertEqual(uploaded.json()["task"]["dataset_report"]["duplicate_count"], 0)
                 confirmed = client.post(
                     f"/tasks/{task_id}/confirm",
                     json=contract_confirmation_payload(client, task_id),

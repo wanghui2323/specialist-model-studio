@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -30,6 +32,8 @@ from .conversation_payloads import (
 )
 from .io_utils import read_json, sha256_bytes, write_json
 from .continuation_lineage import bind_child_invocations, complete_history, in_source_window, structured_arguments
+from .projection_history import ProjectionHistoryReader
+from .context_state import ContextStateStore, ContextStateError
 from .synthesis_evidence import (
     SYNTHESIS_VERDICT_VERSION,
     RunBoundary,
@@ -41,7 +45,7 @@ from .synthesis_evidence import (
 
 TEAM_SCHEMA_VERSION = "1.0"
 CONVERSATION_EVENT_SCHEMA_VERSION = "2.0"
-CONVERSATION_PROJECTOR_REVISION = "3.3"
+CONVERSATION_PROJECTOR_REVISION = "3.4"
 AGENT_WORK_ITEM_SCHEMA_VERSION = "1.0"
 COMPOSER_REQUEST_SCHEMA_VERSION = "1.0"
 SUPPORTED_COMPOSER_MODES = frozenset({"queue_after_turn"})
@@ -136,6 +140,10 @@ def _agent_turn_id_for_run(
 
 class MultiAgentRuntimeError(AgentRuntimeError):
     """Expected failure at the DSH multi-agent product boundary."""
+
+
+class TaskArchivedError(MultiAgentRuntimeError):
+    """An archived owner cannot accept new executable conversation input."""
 
 
 class HumanCheckpointConflictError(MultiAgentRuntimeError):
@@ -644,7 +652,25 @@ class DshAgentTeamStore:
         task_id: str,
         events: Sequence[Mapping[str, Any]],
     ) -> list[dict[str, Any]]:
-        return [self.append_event(task_id=task_id, event=event) for event in events]
+        # Native history is replayed on every refresh. Index the existing audit
+        # once: append_event's individual replay path scans the full ledger,
+        # which otherwise turns a no-change refresh into quadratic JSON IO.
+        with self._lock:
+            self.load_team(task_id)  # Recover a crash between event and team commit.
+            by_source: dict[str, dict[str, Any]] = {}
+            for existing in self.list_events(task_id):
+                by_source.setdefault(str(existing.get("source_key") or ""), existing)
+            result = []
+            for event in events:
+                key = str(event.get("source_key") or "")
+                if not key:
+                    raise MultiAgentRuntimeError("conversation event 缺少 source_key")
+                record = by_source.get(key)
+                if record is None:
+                    record = self.append_event(task_id=task_id, event=event)
+                    by_source[key] = record
+                result.append(deepcopy(record))
+            return result
 
     def list_events(self, task_id: str) -> list[dict[str, Any]]:
         path = self._events_path(task_id)
@@ -671,7 +697,7 @@ class DshAgentTeamStore:
         ]
 
     def reproject_root_checkpoint_audit(self, task_id: str) -> None:
-        """Preserve 3.2 human receipts only after exact 3.3 root-call replay.
+        """Preserve older human receipts only after exact current root-call replay.
 
         Child ownership changed in 3.3; those old receipts are audit-only.
         This never recreates a live pending RPC or grants an authorization.
@@ -687,7 +713,7 @@ class DshAgentTeamStore:
         identity_fields = ("task_id", "agent_run_id", "session_id", "turn_id", "call_id")
         for event in events:
             payload = event.get("payload", {})
-            if (event.get("source") != "dsh_pending" or event.get("projector_revision") != "3.2"
+            if (event.get("source") != "dsh_pending" or event.get("projector_revision") not in {"3.2", "3.3"}
                 or event.get("event_type") not in {"approval", "question"}
                 or payload.get("phase") not in {"requested", "resolved"}
                 or not payload.get("rpc_id")
@@ -706,7 +732,7 @@ class DshAgentTeamStore:
                 "projector_revision": CONVERSATION_PROJECTOR_REVISION,
                 "source_key": f"dsh-pending:{CONVERSATION_PROJECTOR_REVISION}:replay:{event['event_id']}",
                 "payload": {**payload, "origin_event_id": matches[0]["event_id"],
-                    "replayed_from_event_id": event["event_id"], "replayed_from_projector_revision": "3.2"},
+                    "replayed_from_event_id": event["event_id"], "replayed_from_projector_revision": event["projector_revision"]},
             })
 
     def get_projected_event(
@@ -751,6 +777,18 @@ class DshAgentTeamStore:
 class DshConversationV2Projector:
     """Projects only observed DSH history into product conversation events."""
 
+    # Native history contains token chunks, not just completed messages. A
+    # 240-message page can contain hundreds of thousands of chunk events.
+    # These are the only event kinds which affect this projection; filter
+    # before hashing payloads and looking up per-invocation child identities.
+    PROJECTED_EVENT_TYPES = frozenset({
+        "user/message", "assistant/message", "tool/call", "tool/result", "turn/end",
+        "approval/requested", "approval/resolved", "question/requested", "question/resolved",
+        "agent/started", "agent/status", "agent/completed", "agent/failed",
+        "subagent/created", "subagent/started", "subagent/status", "subagent/completed",
+        "subagent/failed", "subagent/cancelled",
+    })
+
     DELEGATION_TOOLS = {
         "spawn_agent",
         "fork_agent",
@@ -764,6 +802,41 @@ class DshConversationV2Projector:
         for profile in AGENT_PROFILES
         if not profile.root
     }
+
+    @staticmethod
+    def _content_only_result_rewrite(event: Mapping[str, Any], prior: Mapping[int, Mapping[str, Any]]) -> bool:
+        """Native context pruning rewrites a surface node, not a tool execution.
+
+        Keep the original result as execution evidence. Only accept a bounded
+        native replacement whose provenance and all non-content fields match;
+        an unmarked or conflicting second result remains an identity error.
+        """
+        op = event.get("surfaceOp")
+        seq = event.get("seq")
+        if not isinstance(op, Mapping) or op.get("op") != "replace":
+            return False
+        start = op.get("start")
+        if (not isinstance(seq, int) or isinstance(seq, bool)
+            or not isinstance(start, int) or isinstance(start, bool)
+            or start < 0 or start >= seq or op.get("end") != start
+            or event.get("sourceEventSeqs") != [start]):
+            return False
+        original = prior.get(start)
+        if not original or original.get("type") != "tool/result":
+            return False
+        def without_content(value: Mapping[str, Any]) -> dict[str, Any] | None:
+            data = deepcopy(value.get("data"))
+            if not isinstance(data, dict) or not isinstance(data.get("message"), dict):
+                return None
+            content = data["message"].get("content")
+            if (not isinstance(content, list) or len(content) != 1
+                or not isinstance(content[0], dict) or content[0].get("type") != "tool-result"
+                or not content[0].get("toolCallId") or "content" not in content[0]):
+                return None
+            content[0]["content"] = None
+            return data
+        original_rest = without_content(original)
+        return original_rest is not None and original_rest == without_content(event)
 
     def project(
         self,
@@ -811,14 +884,28 @@ class DshConversationV2Projector:
             if child_identity is not None
             else None
         )
+        native_results: dict[int, Mapping[str, Any]] = {}
         for index, entry in enumerate(entries):
             raw_event = entry.get("event", {}) if isinstance(entry, dict) else {}
             if not isinstance(raw_event, dict):
                 continue
             event_type = str(raw_event.get("type") or "")
+            if event_type == "tool/result":
+                rewrite = self._content_only_result_rewrite(raw_event, native_results)
+                native_seq = raw_event.get("seq")
+                if isinstance(native_seq, int) and not isinstance(native_seq, bool):
+                    native_results[native_seq] = raw_event
+                if rewrite:
+                    continue
             data = raw_event.get("data", {})
             if not isinstance(data, dict):
                 data = {}
+            if event_type == "turn/start":
+                if not is_root_session and isinstance(data.get("turn"), int) and data["turn"] > 0:
+                    turn_number = data["turn"]
+                continue
+            if event_type not in self.PROJECTED_EVENT_TYPES:
+                continue
             if event_type in {
                 "subagent/completed",
                 "subagent/failed",
@@ -843,8 +930,6 @@ class DshConversationV2Projector:
                 current_agent_run_id = invocation["agent_run_id"] if invocation else None
                 owning_delegation_id = invocation["delegation_id"] if invocation else None
                 owning_parent_delegation_id = invocation["parent_delegation_id"] if invocation else None
-                if event_type == "turn/start" and isinstance(data.get("turn"), int) and data["turn"] > 0:
-                    turn_number = data["turn"]
             source_key = self._source_key(
                 root_session_id=observed_session_id,
                 source_seq=source_seq,
@@ -1075,7 +1160,7 @@ class DshConversationV2Projector:
                             "status": "cancelled",
                             "payload": {
                                 "reason": reason_kind,
-                                "text": "本轮 DSH 智能体任务已取消。",
+                                "text": "当前对话回合已停止。",
                             },
                         }
                     )
@@ -1151,14 +1236,14 @@ class DshConversationV2Projector:
             ),
             "interrupted": (
                 "TURN_INTERRUPTED",
-                "本轮在完成前被中断（常见于服务重启）；已完成的数据、训练和交付包都已保留，可以直接在对话里让 AI 继续。",
+                "本轮在完成前中断。已保存的材料和执行记录仍可查看，恢复连接后可以继续。",
             ),
             "max-tokens": (
                 "MAX_TOKENS",
                 "模型达到输出 token 上限，本轮未正常完成。",
             ),
-            "failed": ("UNKNOWN", "DSH 智能体本轮执行失败。"),
-            "error": ("UNKNOWN", "DSH provider 请求失败。"),
+            "failed": ("UNKNOWN", "AI 未能完成当前回合。"),
+            "error": ("UNKNOWN", "AI 服务请求失败，请恢复连接后重试。"),
             "unknown": ("UNKNOWN_TURN_END", "DSH 返回了未知的失败终止原因。"),
         }
         default_code, default_message = defaults.get(
@@ -1564,6 +1649,9 @@ class DshMultiAgentRuntime:
         background_actions_canceller: (
             Callable[[str, Mapping[str, Any]], Sequence[Mapping[str, Any]]] | None
         ) = None,
+        material_inspections_provider: (
+            Callable[[str], Sequence[Mapping[str, Any]]] | None
+        ) = None,
     ) -> None:
         self.workspace_root = Path(workspace_root).expanduser().resolve()
         self.cwd = Path(cwd).expanduser().resolve()
@@ -1572,10 +1660,131 @@ class DshMultiAgentRuntime:
         self.events.bind_workspace(self.workspace_root)
         self.agent_preset = agent_preset
         self.store = DshAgentTeamStore(self.workspace_root)
+        self.context_state = ContextStateStore(self.workspace_root)
         self.projector = projector or DshConversationV2Projector()
+        self._projection_histories = ProjectionHistoryReader(self.client.call, DshConversationV2Projector.PROJECTED_EVENT_TYPES)
+        self._projection_history_client = self.client
         self.background_actions_provider = background_actions_provider
         self.background_actions_canceller = background_actions_canceller
+        self.material_inspections_provider = material_inspections_provider
         self._lock = RLock()
+        self._checkpoint_observation_unavailable: set[str] = set()
+
+    def root_context(self, owner_id: str) -> dict[str, Any]:
+        """Read canonical invocation facts without creating a task or permission.
+
+        Native pre-step callers may refresh this after a queued message or a
+        child report. The submission snapshot alone cannot remain authoritative
+        after promotion, attachment inspection, or a task revision.
+        """
+        # This endpoint is called back from DSH agent/pre-step. It must never
+        # wait for the runtime/DSH RPC lock: submit and transcript refresh can
+        # hold that lock while the SDK is awaiting this very callback.
+        # Owner and team documents are atomically replaced by write_json, so a
+        # local snapshot is complete without reconciling the event ledger.
+        task_path = _safe_task_dir(self.store.tasks_dir, owner_id) / "task.json"
+        task_exists = task_path.is_file()
+        owner_path = task_path if task_exists else _safe_task_dir(self.store.conversations_dir, owner_id) / "conversation.json"
+        owner = read_json(owner_path)
+        if not isinstance(owner, dict) or owner.get("task_id") != owner_id:
+            raise MultiAgentRuntimeError("会话事实源损坏或 owner id 不匹配")
+        archived = bool(owner.get("archived_at_utc"))
+        materials: dict[str, Any] = {"status": "unobserved", "items": []}
+        if self.material_inspections_provider is not None:
+            try:
+                observed = self.material_inspections_provider(owner_id)
+                if not isinstance(observed, Sequence) or isinstance(observed, (str, bytes)):
+                    raise ValueError("material inspection list is not a sequence")
+                items = []
+                for raw in observed:
+                    if not isinstance(raw, Mapping):
+                        raise ValueError("material inspection is not an object")
+                    identities = [raw.get(key) for key in ("owner_id", "task_id", "conversation_id") if raw.get(key)]
+                    if not identities or any(value != owner_id for value in identities):
+                        raise ValueError("material inspection owner mismatch")
+                    items.append(agent_public_projection(dict(raw)))
+                materials = {"status": "observed", "items": items}
+            except Exception as exc:
+                # Do not turn an unavailable observation into "no uploads"
+                # or include adapter exceptions containing local paths.
+                materials = {
+                    "status": "observation_degraded", "items": [],
+                    "error_type": type(exc).__name__,
+                }
+        context = {
+            "schema_version": "1.0",
+            "owner": {
+                "owner_id": owner_id,
+                "record_type": "training_task" if task_exists else "conversation_draft",
+                "training_task_exists": task_exists,
+                "task_id": owner_id if task_exists else None,
+                "current_spec_revision": owner.get("current_spec_revision") if task_exists else None,
+                "status": owner.get("status") if task_exists else owner.get("conversation_status", "unbound"),
+                "archived": archived,
+            },
+            "scope": {
+                "can_promote": not task_exists and not archived,
+                "can_read_task": task_exists,
+                "can_inspect_material": not archived,
+                "training_dataset_import": (
+                    "archived" if archived else
+                    "requires_task_binding" if not task_exists else
+                    "requires_verified_recipe" if not owner.get("recipe_id") else
+                    "requires_existing_import_gates"
+                ),
+                "grants_execution_authorization": False,
+            },
+            "data": {
+                "dataset_id": owner.get("dataset_id") if task_exists else None,
+                "data_adapter_id": owner.get("data_adapter_id") if task_exists else None,
+                "recipe_id": owner.get("recipe_id") if task_exists else None,
+                "material_inspections": materials,
+            },
+            "execution": {
+                "current_run_id": owner.get("current_run_id") if task_exists else None,
+                "contract_confirmed": owner.get("contract_confirmed") is True if task_exists else False,
+            },
+        }
+        team_path = self.store._team_path(owner_id)
+        team = read_json(team_path) if team_path.is_file() else None
+        if team is not None and (not isinstance(team, dict) or team.get("task_id") != owner_id
+                or team.get("schema_version") != TEAM_SCHEMA_VERSION):
+            raise MultiAgentRuntimeError("Agent Team 映射损坏")
+        stopped_scope = (team or {}).get("cancellation_targets") or {}
+        latest_run = ((team or {}).get("runs") or [{}])[-1]
+        stop_is_current = bool(team and stopped_scope.get("root_session_id") == team.get("root_session_id")
+            and latest_run.get("run_id") in stopped_scope.get("agent_run_ids", []))
+        context["control"] = {
+            "stop_automatic_continuations": stop_is_current,
+            "cancellation_id": stopped_scope.get("cancellation_id") if stop_is_current else None,
+        }
+        try:
+            context["conversation_state"] = self.context_state.snapshot(owner_id)
+        except (ContextStateError, OSError, ValueError):
+            context["conversation_state"] = {"owner_id": owner_id, "status": "observation_degraded", "grants_execution_authorization": False}
+        if task_exists:
+            spec = owner.get("task_spec") or {}
+            revision = owner.get("current_spec_revision")
+            if type(revision) is int and revision > 0:
+                spec_path = task_path.parent / "spec_revisions" / f"r{revision}.json"
+                if spec_path.is_symlink():
+                    raise MultiAgentRuntimeError("task spec context source is unsafe")
+                if spec_path.is_file():
+                    spec = read_json(spec_path)
+                    if spec.get("task_id") != owner_id or spec.get("revision") != revision:
+                        raise MultiAgentRuntimeError("task spec context identity mismatch")
+            context["canonical_goal"] = {
+                "business_goal": spec.get("business_goal") or owner.get("business_goal") or (owner.get("contract") or {}).get("business_goal"),
+                "capability_request": owner.get("capability_request"),
+                "spec_revision": owner.get("current_spec_revision"),
+                "spec_revision_id": spec.get("revision_id"),
+                "user_note": spec.get("user_note"),
+                "instruction": "This is the current TaskSpec, not an inferred conversation choice. Changes must use task update and invalidate obsolete confirmation through existing controls.",
+            }
+        context = agent_public_projection(context)
+        context["facts_digest"] = _json_digest(context)
+        context["observed_at_utc"] = _utc_now()
+        return context
 
     def runtime_status(self) -> dict[str, Any]:
         try:
@@ -1624,9 +1833,10 @@ class DshMultiAgentRuntime:
         closed so the product cannot present a runnable composer on guesswork.
         """
 
+        provider_id = os.environ.get("MODEL_HARNESS_AGENT_PROVIDER") or DEFAULT_AGENT_PROVIDER_ID
         status: dict[str, Any] = {
             "ready": False,
-            "provider": DEFAULT_AGENT_PROVIDER_ID,
+            "provider": provider_id,
             "active": False,
             "configured": False,
             "source": None,
@@ -1644,7 +1854,7 @@ class DshMultiAgentRuntime:
                 raise ValueError("provider directory is missing")
             status["active"] = any(
                 isinstance(row, Mapping)
-                and row.get("provider") == DEFAULT_AGENT_PROVIDER_ID
+                and row.get("provider") == provider_id
                 and row.get("active") is True
                 for row in provider_rows
             )
@@ -1652,17 +1862,62 @@ class DshMultiAgentRuntime:
             status["reason"] = "llm_provider_probe_unavailable"
             return status
 
+        if provider_id == "codex-cli":
+            # The CLI owns OAuth storage/renewal. Never resolve, copy or return
+            # its tokens, and do not turn an API-key login into plan billing.
+            checked = getattr(self, "_codex_login_checked_at", None)
+            if checked is None or monotonic() - checked > 30:
+                available = False
+                binary = os.environ.get("MODEL_HARNESS_CODEX_BIN") or shutil.which("codex")
+                if binary:
+                    environment = {key: value for key, value in os.environ.items()
+                                   if key not in {"OPENAI_API_KEY", "CODEX_API_KEY", "DEEPSEEK_API_KEY", "MODEL_HARNESS_AGENT_BRIDGE_TOKEN"}}
+                    try:
+                        observed = subprocess.run([binary, "login", "status"], capture_output=True,
+                                                  text=True, timeout=8, env=environment)
+                        available = observed.returncode == 0 and "Logged in using ChatGPT" in observed.stdout + observed.stderr
+                    except (OSError, subprocess.SubprocessError):
+                        pass
+                self._codex_login_checked_at = monotonic()
+                self._codex_login_available = available
+            status["configured"] = getattr(self, "_codex_login_available", False)
+            status["source"] = "chatgpt_login" if status["configured"] else None
+            status["model"] = os.environ.get("MODEL_HARNESS_AGENT_MODEL") or "gpt-5.6-sol"
+            status["ready"] = status["active"] and status["configured"]
+            status["reason"] = None if status["ready"] else "llm_provider_inactive" if not status["active"] else "codex_chatgpt_login_required"
+            return status
+
+        # Provider identities come from the runtime adapter directory, not a
+        # Studio vendor allowlist. Credentials belong to the selected route.
+        # A local no-auth endpoint requires an explicit operator declaration;
+        # activation alone must never imply credential readiness.
+        credential_ref = os.environ.get("MODEL_HARNESS_AGENT_CREDENTIAL_REF") or (
+            DEFAULT_AGENT_PROVIDER_CREDENTIAL_REF if provider_id == DEFAULT_AGENT_PROVIDER_ID else None
+        )
+        if provider_id != DEFAULT_AGENT_PROVIDER_ID and not os.environ.get("MODEL_HARNESS_AGENT_MODEL"):
+            status["reason"] = "llm_model_selection_missing"
+            return status
+        if os.environ.get("MODEL_HARNESS_AGENT_AUTH") == "none":
+            status["configured"] = True
+            status["source"] = "operator_declared_no_auth"
+            status["model"] = os.environ.get("MODEL_HARNESS_AGENT_MODEL")
+            status["ready"] = status["active"]
+            status["reason"] = None if status["ready"] else "llm_provider_inactive"
+            return status
+        if not credential_ref:
+            status["reason"] = "llm_credential_reference_missing"
+            return status
         try:
             credential_payload = self.client.call(
                 "credentials.describe",
-                {"refs": [DEFAULT_AGENT_PROVIDER_CREDENTIAL_REF]},
+                {"refs": [credential_ref]},
             )
             if not isinstance(credential_payload, Mapping):
                 raise ValueError("credential response is not an object")
             credential_rows = credential_payload.get("credentials")
             if not isinstance(credential_rows, Mapping):
                 raise ValueError("credential directory is missing")
-            credential = credential_rows.get(DEFAULT_AGENT_PROVIDER_CREDENTIAL_REF)
+            credential = credential_rows.get(credential_ref)
             if not isinstance(credential, Mapping):
                 raise ValueError("credential description is missing")
             status["configured"] = credential.get("configured") is True
@@ -1756,6 +2011,81 @@ class DshMultiAgentRuntime:
                 agent_preset=self.agent_preset,
             )
 
+    def _require_unarchived_task(self, task_id: str) -> dict[str, Any]:
+        task = self.store.load_task(task_id)
+        if task.get("archived_at_utc"):
+            raise TaskArchivedError("任务已归档，不能发送新消息、回答问题或批准执行")
+        return task
+
+    def archive_task(
+        self,
+        task_id: str,
+        archive: Callable[[str], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Atomically compare live execution state and persist soft archive.
+
+        The same lock gates submit/answer/approval, so a checkpoint response or
+        queued prompt cannot slip between this observation and the archive.
+        Historical run arrays are audit evidence, not an activity predicate.
+        """
+        with self._lock:
+            task = self.store.load_task(task_id)
+            if task.get("archived_at_utc"):
+                return archive(task_id)
+            team = self.store.load_team(task_id)
+            if team is not None and not self.client.available():
+                raise MultiAgentRuntimeError("当前会话状态不可用，请恢复连接并确认执行已停止后再归档")
+            try:
+                snapshot = self._conversation_snapshot(task_id)
+            except AgentRuntimeError as exc:
+                raise MultiAgentRuntimeError(
+                    "无法确认当前执行状态，请恢复连接并确认执行已停止后再归档"
+                ) from exc
+            canonical = snapshot.get("interaction_projection")
+            if (
+                snapshot.get("task_id") != task_id
+                or not isinstance(canonical, Mapping)
+                or canonical.get("schema_version") != "1.0"
+            ):
+                raise MultiAgentRuntimeError("当前执行状态缺少有效观测，请刷新后再归档")
+            phase = canonical.get("phase")
+            background = canonical.get("background") or {}
+            if phase == "stopping" or background.get("stopping") is True:
+                raise MultiAgentRuntimeError("当前执行尚未停止，请等待停止完成后再归档")
+            if phase in {"agent_working", "background_working", "waiting_question", "waiting_approval"} or background.get("running") is True:
+                raise MultiAgentRuntimeError("当前 Agent 或后台任务仍在执行或等待确认，请先停止当前执行，再归档任务")
+            background_unknown = any(
+                item.get("action_type") == "observation_error"
+                for item in snapshot.get("background_actions", [])
+            )
+            if background_unknown or (team is not None and (
+                phase == "observation_degraded"
+                or snapshot.get("projection_health") != "healthy"
+            )):
+                raise MultiAgentRuntimeError("当前执行状态无法可靠观测，请恢复连接并确认执行已停止后再归档")
+            if team is not None and phase not in {"idle", "completed", "stopped", "blocked", "failed"}:
+                raise MultiAgentRuntimeError("当前执行状态尚未稳定，请先停止当前执行，再归档任务")
+            # A queued native prompt can be accepted before session.list starts
+            # reporting running=true. An idle snapshot of that current turn is
+            # not evidence that its queue has drained. Exact terminal evidence
+            # permits old idle-without-final turns without scanning historical
+            # statuses or treating old pending RPCs as current activity.
+            current_run_id = (canonical.get("turn_identity") or {}).get("agent_run_id")
+            if team is not None and phase in {"idle", "blocked"} and current_run_id:
+                if not self._run_has_observed_terminal(task_id, team, current_run_id):
+                    raise MultiAgentRuntimeError("当前消息仍可能在排队，执行尚未稳定，请先停止当前执行，再归档任务")
+            return archive(task_id)
+
+    def _run_has_observed_terminal(
+        self, task_id: str, team: Mapping[str, Any], run_id: str,
+    ) -> bool:
+        return any(
+            event.get("agent_run_id") == run_id
+            and event.get("session_id") == team.get("root_session_id")
+            and event.get("event_type") in {"turn_finished", "turn_error", "turn_cancelled"}
+            for event in self.store.current_projection_events(task_id)
+        )
+
     # Canonical task-owned conversation entry. DSH queues the real root-agent
     # turn; callers retrieve live progress via ``conversation``.
     def submit_message(
@@ -1772,6 +2102,7 @@ class DshMultiAgentRuntime:
         # Serialize discussion handoff with answers/approvals: an obsolete card
         # must never authorize a tool after its waiting turn has been retired.
         with self._lock:
+            self._require_unarchived_task(task_id)
             return self._submit_message(
                 task_id, title, message, composer_mode=composer_mode,
                 request_id=request_id, actor=actor,
@@ -1853,6 +2184,7 @@ class DshMultiAgentRuntime:
             discussion = self._suspend_checkpoint_for_discussion(
                 task_id, team, checkpoint_rpc_id,
             )
+        self._select_configured_model_for_idle_root(team)
         source_floors, boundary_complete = self._capture_source_seq_boundary(team)
         run = self.store.append_prompt_run(
             task_id=task_id,
@@ -1869,12 +2201,18 @@ class DshMultiAgentRuntime:
                 task_id=task_id, run_id=run["run_id"], status=run["status"],
                 evidence={"checkpoint_discussion": discussion},
             )
+        # Same owner path before/after promotion; preserve raw historical user
+        # messages outside the model window, without semantic keyword routing.
+        self.context_state.ingest_prompt_runs(task_id, self.store.load_team(task_id)["runs"])
+        root_context = self.root_context(task_id)
+        root_context["submission"] = {"request_id": selected_request_id}
         instruction = self._root_instruction(
             task_id=task_id,
             agent_run_id=run["run_id"],
-            current_spec_revision=task.get("current_spec_revision"),
-            record_type=str(task.get("record_type") or "training_task"),
+            current_spec_revision=root_context["owner"]["current_spec_revision"],
+            record_type=root_context["owner"]["record_type"],
             user_message=selected,
+            root_context=root_context,
         )
         if discussion is not None:
             instruction = (
@@ -1912,37 +2250,117 @@ class DshMultiAgentRuntime:
             ) from exc
         return self._composer_submission(team=team, run=run)
 
+    def _select_configured_model_for_idle_root(self, team: Mapping[str, Any]) -> None:
+        """A ready provider directory does not migrate a cold legacy session.
+
+        Adopt an explicitly selected local route before a new user turn. Do
+        not change the model of an already running/queued turn or touch owned
+        specialist sessions. The native selector validates model metadata.
+        """
+        provider = os.environ.get("MODEL_HARNESS_AGENT_PROVIDER")
+        model = os.environ.get("MODEL_HARNESS_AGENT_MODEL") or (
+            "gpt-5.6-sol" if provider == "codex-cli" else None
+        )
+        if not provider or not model:
+            return
+        root = str(team["root_session_id"])
+        listing = self.client.call("session.list", {})
+        items = listing.get("items") if isinstance(listing, Mapping) else None
+        if not isinstance(items, list):
+            raise AgentRuntimeError("cannot verify root session state before selecting the configured model")
+        row = next((item for item in items if isinstance(item, Mapping) and item.get("sessionId") == root), None)
+        if row is not None and row.get("running") is True:
+            return
+        selection = {"sessionId": root, "provider": provider, "model": model}
+        effort = os.environ.get("MODEL_HARNESS_AGENT_REASONING_EFFORT") or (
+            "low" if provider == "codex-cli" else None
+        )
+        if effort:
+            selection["reasoningEffort"] = effort
+        self.client.call("session.selectModel", selection)
+
     def _suspend_checkpoint_for_discussion(
         self, task_id: str, team: Mapping[str, Any], rpc_id: str,
     ) -> dict[str, Any]:
-        pending = self._pending(team)
+        root_session = str(team["root_session_id"])
+        # Reconnect may leave a durable WebSocket receipt whose native call
+        # already ended. Reconcile real root history before deciding whether
+        # there is a live turn to cancel; session.cancel cannot attach a cold
+        # session and must never be used as an availability probe.
+        history = complete_history(self.client.call, root_session)
+        self.store.persist_projection(task_id=task_id, events=self.projector.project(
+            task_id=task_id, team=team, history=history,
+        ))
+        summaries = self.client.call("session.list", {})
+        by_session = {value["sessionId"]: value for value in summaries.get("items", [])
+                      if isinstance(value, Mapping) and value.get("sessionId")}
+        observed = by_session.get(root_session)
+        pending = self._pending(team, summaries_by_session=by_session)
         self._persist_pending_requested(task_id=task_id, team=team, pending=pending)
         pending = self._invalidate_pending_after_terminal(
             task_id=task_id, team=team, pending=pending,
         )
         item = next((value for value in pending if value.get("rpc_id") == rpc_id), None)
+        terminal = None
+        if item is None:
+            # A refresh in another tab may already have retired this exact
+            # receipt. Its owner/turn/call and terminal evidence survive in the
+            # audit; this allows discussion, never an answer or approval replay.
+            audit = self.store.list_events(task_id)
+            resolved = [value for value in audit if value.get("source") == "dsh_pending"
+                and value.get("projector_revision") == CONVERSATION_PROJECTOR_REVISION
+                and value.get("task_id") == task_id and value.get("session_id") == root_session
+                and value.get("payload", {}).get("rpc_id") == rpc_id
+                and value.get("payload", {}).get("phase") == "resolved"
+                and value.get("payload", {}).get("outcome") == "invalidated_by_turn_terminal"]
+            if resolved:
+                receipt = resolved[-1]
+                terminal = next((value for value in audit if value.get("event_id") == receipt.get("payload", {}).get("terminal_event_id")
+                    and value.get("source") == "dsh" and value.get("projector_revision") == CONVERSATION_PROJECTOR_REVISION
+                    and value.get("event_type") in {"turn_error", "turn_cancelled", "turn_finished"}
+                    and all(value.get(key) == receipt.get(key) and value.get(key) for key in ("task_id", "session_id", "agent_run_id", "turn_id"))), None)
+                if terminal is not None:
+                    item = {**receipt.get("payload", {}), **{key: receipt.get(key) for key in
+                        ("session_id", "agent_run_id", "turn_id", "call_id")}}
         if item is None or item.get("kind") not in {"question", "approval"}:
             raise HumanCheckpointConflictError("这个检查点已变化，请刷新后继续发送；没有提交任何批准或答案")
-        root_session = str(team["root_session_id"])
         if item.get("session_id") != root_session:
             raise HumanCheckpointConflictError("这个检查点属于专家执行，请先停止当前执行再讨论；不会代替你批准")
+        latest_run = (team.get("runs") or [{}])[-1]
+        if item.get("agent_run_id") != latest_run.get("run_id"):
+            raise HumanCheckpointConflictError("这个检查点不属于当前对话回合，请刷新后继续；没有提交批准或答案")
         active_runs = [run for run in team.get("runs", [])
                        if run.get("status") in {"queued", "running", "waiting_for_human"}]
         if len(active_runs) > 1:
             raise HumanCheckpointConflictError("已有其他消息在排队，请先处理或停止当前执行后再讨论；不会丢弃排队消息")
-        # Cancels only the waiting coordinator turn, NOT task-owned workers or
-        # training runs. Native cancellation never emits an approval response.
-        self.client.call("session.cancel", {"sessionId": root_session})
-        deadline = monotonic() + 2.0
-        while True:
-            summaries = self.client.call("session.list", {})
-            observed = next((value for value in summaries.get("items", [])
-                             if value.get("sessionId") == root_session), None)
-            if observed is not None and observed.get("running") is False:
-                break
-            if monotonic() >= deadline:
-                raise HumanCheckpointConflictError("仍在等待当前回合停止，请刷新后重试；新消息尚未发送")
-            sleep(0.05)
+        if not isinstance(observed, Mapping) or not isinstance(observed.get("running"), bool):
+            raise HumanCheckpointConflictError("暂时无法确认当前回合状态，请刷新后重试；新消息尚未发送")
+        if terminal is not None and observed["running"] is True:
+            raise HumanCheckpointConflictError("旧检查点已结束，但当前回合仍在执行，请刷新后继续；新消息尚未发送")
+        if terminal is None and observed["running"] is not True:
+            raise HumanCheckpointConflictError("尚未确认这个检查点已结束，请刷新后重试；新消息尚未发送")
+        # Fence cancellation-triggered native reports before calling the SDK.
+        # Only this exact old AgentRun is fenced; the next explicit user turn
+        # leaves the scope naturally. Background workers remain independent.
+        self.store.update_team(task_id, cancellation_targets={
+            "cancellation_id": "discussion-stop-" + uuid4().hex,
+            "root_session_id": root_session, "children": [],
+            "agent_run_ids": [latest_run["run_id"]], "kind": "checkpoint_discussion",
+        })
+        if terminal is None:
+            receipt = self.client.call("session.cancel", {"sessionId": root_session})
+            if not isinstance(receipt, Mapping) or receipt.get("accepted") is not True:
+                raise HumanCheckpointConflictError("尚未确认当前回合停止，请刷新后重试；新消息尚未发送")
+            deadline = monotonic() + 2.0
+            while True:
+                summaries = self.client.call("session.list", {})
+                observed = next((value for value in summaries.get("items", [])
+                                 if value.get("sessionId") == root_session), None)
+                if observed is not None and observed.get("running") is False:
+                    break
+                if monotonic() >= deadline:
+                    raise HumanCheckpointConflictError("仍在等待当前回合停止，请刷新后重试；新消息尚未发送")
+                sleep(0.05)
         for checkpoint in pending:
             if checkpoint.get("session_id") != root_session:
                 continue
@@ -1953,13 +2371,18 @@ class DshMultiAgentRuntime:
             self.events.resolve_local(root_session, str(checkpoint["rpc_id"]))
         for old_run in team.get("runs", []):
             if old_run.get("status") in {"queued", "running", "waiting_for_human"}:
+                status = "cancelled" if terminal is None else {
+                    "turn_error": "failed", "turn_cancelled": "cancelled", "turn_finished": "idle_without_final",
+                }[terminal["event_type"]]
                 self.store.update_run(
-                    task_id=task_id, run_id=old_run["run_id"], status="cancelled",
+                    task_id=task_id, run_id=old_run["run_id"], status=status,
                     evidence={"discussion_handoff": {"rpc_id": rpc_id,
-                        "outcome": "superseded_for_discussion", "session_id": root_session}},
+                        "outcome": "superseded_for_discussion" if terminal is None else "resumed_after_terminal_checkpoint",
+                        "session_id": root_session}},
                 )
         return {"rpc_id": rpc_id, "kind": item["kind"],
                 "questions": deepcopy(item.get("questions", [])),
+                "previous_checkpoint_terminal_event_id": terminal.get("event_id") if terminal else None,
                 "outcome": "superseded_for_discussion"}
 
     @staticmethod
@@ -2087,6 +2510,12 @@ class DshMultiAgentRuntime:
         with self._lock:
             return self._conversation_snapshot(task_id)
 
+    def _read_projection_history(self, session_id: str) -> dict[str, Any]:
+        if self._projection_history_client is not self.client:
+            self._projection_histories = ProjectionHistoryReader(self.client.call, DshConversationV2Projector.PROJECTED_EVENT_TYPES)
+            self._projection_history_client = self.client
+        return self._projection_histories.read(session_id)
+
     def _conversation_snapshot(self, task_id: str) -> dict[str, Any]:
         team = self.store.load_team(task_id)
         background_actions = self._background_actions(task_id)
@@ -2169,10 +2598,15 @@ class DshMultiAgentRuntime:
             }
         root_session_id = str(team["root_session_id"])
         try:
-            history = complete_history(self.client.call, root_session_id)
+            if not self.client.available():
+                raise AgentRuntimeError("agent runtime is offline")
+            history = self._read_projection_history(root_session_id)
             summaries = self.client.call("session.list", {})
         except (AgentRuntimeError, ValueError) as exc:
-            raise MultiAgentRuntimeError(f"无法读取多智能体会话：{exc}") from exc
+            return self._persisted_conversation_snapshot(
+                task_id=task_id, team=team, background_actions=background_actions,
+                stream_health=stream_health, error=exc,
+            )
         summary_items = summaries.get("items", []) if isinstance(summaries, dict) else []
         summaries_by_session = {
             str(item["sessionId"]): item
@@ -2197,6 +2631,12 @@ class DshMultiAgentRuntime:
             team=team,
             summaries_by_session=summaries_by_session,
         )
+        root_summary = summaries_by_session.get(root_session_id)
+        if not isinstance(root_summary, Mapping) or not isinstance(root_summary.get("running"), bool):
+            projection_errors.append({
+                "session_id": root_session_id,
+                "error": "root_session_execution_state_unavailable",
+            })
         child_running = False
         observed_child_sessions: set[str] = set()
         for delegation in team.get("delegations", {}).values():
@@ -2235,7 +2675,7 @@ class DshMultiAgentRuntime:
                 continue
             child_running = child_running or bool(child_summary.get("running"))
             try:
-                child_history = complete_history(self.client.call, child_session_id)
+                child_history = self._read_projection_history(child_session_id)
             except (AgentRuntimeError, ValueError) as exc:
                 projection_errors.append(
                     {"session_id": child_session_id, "error": str(exc)}
@@ -2289,7 +2729,7 @@ class DshMultiAgentRuntime:
             observed_child_sessions.add(child_session_id)
             child_running = child_running or bool(child_summary.get("running"))
             try:
-                child_history = complete_history(self.client.call, child_session_id)
+                child_history = self._read_projection_history(child_session_id)
             except (AgentRuntimeError, ValueError) as exc:
                 projection_errors.append(
                     {"session_id": child_session_id, "error": str(exc)}
@@ -2306,6 +2746,27 @@ class DshMultiAgentRuntime:
                 ),
             )
             self.store.persist_projection(task_id=task_id, events=child_projection)
+        # Stop may discover a child through DSH's authoritative routing catalog
+        # before ordinary transcript projection has bound its delegation. Keep
+        # that exact tree visible until observed quiet; a root turn/end alone
+        # cannot prove the descendants stopped. A later submitted AgentRun is
+        # outside the old cancellation's scope.
+        cancellation_targets = team.get("cancellation_targets") or {}
+        latest_id = (team.get("runs") or [{}])[-1].get("run_id")
+        if (cancellation_targets.get("root_session_id") == root_session_id
+                and latest_id in cancellation_targets.get("agent_run_ids", [])):
+            for address in cancellation_targets.get("children", []):
+                child_id = address.get("childSessionId")
+                summary = summaries_by_session.get(child_id)
+                if summary is None:
+                    continue  # No live driver: native interrupt is an accepted no-op.
+                if (summary.get("origin") != "subagent"
+                        or summary.get("parentSessionId") != address.get("parentSessionId")):
+                    projection_errors.append({"session_id": child_id, "error": "cancel_target_lineage_changed"})
+                    continue
+                if not isinstance(summary.get("running"), bool):
+                    projection_errors.append({"session_id": child_id, "error": "cancel_target_activity_unobserved"})
+                child_running = child_running or summary.get("running") is True
         self.store.reproject_root_checkpoint_audit(task_id)
         pending = self._pending(team, summaries_by_session=summaries_by_session)
         self._persist_pending_requested(task_id=task_id, team=team, pending=pending)
@@ -2360,6 +2821,59 @@ class DshMultiAgentRuntime:
         )
         cancellation_pending = agent_cancel_pending or background_cancel_pending
         lifecycle_running = running or cancellation_pending
+        return self._render_conversation_projection(
+            task_id=task_id, team=team, background_actions=background_actions,
+            background_action_running=background_action_running,
+            stream_health=stream_health, verdict_index=verdict_index,
+            observation_degraded=observation_degraded, projection_errors=projection_errors,
+            pending=pending, agent_response_running=agent_response_running,
+            execution_running=execution_running, lifecycle_running=lifecycle_running,
+            cancellation_pending=cancellation_pending,
+        )
+
+    def _persisted_conversation_snapshot(
+        self, *, task_id: str, team: dict[str, Any],
+        background_actions: list[dict[str, Any]], stream_health: dict[str, Any],
+        error: Exception,
+    ) -> dict[str, Any]:
+        """Read durable observations without reconciling unknown live activity."""
+        self._checkpoint_observation_unavailable.add(task_id)
+        events = self.store.current_projection_events(task_id)
+        boundaries = self._run_boundaries(team)
+        verdict_index = evaluate_synthesis_evidence(
+            task_id=task_id, team_id=str(team["team_id"]),
+            root_session_id=str(team["root_session_id"]),
+            projector_revision=CONVERSATION_PROJECTOR_REVISION,
+            events=events, runs=boundaries,
+            verified_children=self._verified_child_bindings(team, boundaries),
+        )
+        background_running = any(action.get("running") is True for action in background_actions)
+        cancellation_pending = any(run.get("status") == "cancel_requested" for run in team.get("runs", []) if isinstance(run, Mapping)) or any(
+            action.get("cancel_requested") is True and action.get("running") is True
+            for action in background_actions
+        )
+        return self._render_conversation_projection(
+            task_id=task_id, team=team, background_actions=background_actions,
+            background_action_running=background_running, stream_health=stream_health,
+            verdict_index=verdict_index, observation_degraded=True,
+            projection_errors=[{"session_id": team["root_session_id"],
+                "error": "root_history_unavailable", "error_type": type(error).__name__}],
+            pending=[], agent_response_running=None,
+            execution_running=True if background_running else None,
+            lifecycle_running=True if background_running else None,
+            cancellation_pending=cancellation_pending, execution_state_observed=False,
+        )
+
+    def _render_conversation_projection(
+        self, *, task_id: str, team: dict[str, Any],
+        background_actions: list[dict[str, Any]], background_action_running: bool,
+        stream_health: dict[str, Any], verdict_index: SynthesisVerdictIndex,
+        observation_degraded: bool, projection_errors: list[dict[str, Any]],
+        pending: list[dict[str, Any]], agent_response_running: bool | None,
+        execution_running: bool | None, lifecycle_running: bool | None,
+        cancellation_pending: bool, execution_state_observed: bool = True,
+    ) -> dict[str, Any]:
+        root_session_id = str(team["root_session_id"])
         effective_projection = self._effective_projection_events(
             self.store.current_projection_events(task_id),
             verdict_index,
@@ -2469,7 +2983,11 @@ class DshMultiAgentRuntime:
             agent_response_running=agent_response_running,
             observation_degraded=observation_degraded,
             cancellation_pending=cancellation_pending,
-            can_cancel=execution_running and not cancellation_pending,
+            can_cancel=bool(execution_state_observed and execution_running and not cancellation_pending),
+            events=events,
+            training_task_exists=(
+                _safe_task_dir(self.store.tasks_dir, task_id) / "task.json"
+            ).is_file(),
         )
         response = {
             "schema_version": CONVERSATION_EVENT_SCHEMA_VERSION,
@@ -2482,7 +3000,9 @@ class DshMultiAgentRuntime:
             "background_action_running": background_action_running,
             "background_actions": background_actions,
             "interaction_state": (
-                "cancelling"
+                "observation_degraded"
+                if not execution_state_observed
+                else "cancelling"
                 if cancellation_pending
                 else "waiting_for_human"
                 if pending
@@ -2494,7 +3014,7 @@ class DshMultiAgentRuntime:
                 in {"completed", "failed", "cancelled", "interrupted"}
                 else "idle"
             ),
-            "can_cancel_agent": execution_running and not cancellation_pending,
+            "can_cancel_agent": bool(execution_state_observed and execution_running and not cancellation_pending),
             "items": conversation_items,
             "events": events,
             "actions": actions,
@@ -2523,6 +3043,22 @@ class DshMultiAgentRuntime:
                 "interaction_projection"
             ],
         }
+        if not execution_state_observed:
+            response.update(observation_source="persisted_projection",
+                            execution_state_observed=False, pending_observed=False)
+            # Records retain their last observed status and identity. This is
+            # historical evidence, never a new assertion of activity/termination.
+            for key in ("items", "events", "actions", "work_items", "agents", "delegations", "runs", "agent_turns"):
+                response[key] = [dict(value, observation_stale=True) for value in response[key]]
+            for turn in response["agent_turns"]:
+                turn["response_running"] = None
+            for item in response["items"]:
+                if item.get("event_type") in {"approval", "question"}:
+                    item["actionable"] = False
+            object_projection["agent_turns"] = response["agent_turns"]
+            object_projection["actions"] = [dict(value, observation_stale=True) for value in object_projection["actions"]]
+        elif not observation_degraded:
+            self._checkpoint_observation_unavailable.discard(task_id)
         try:
             return compact_conversation_response(response)
         except ConversationPayloadCompactionError as exc:
@@ -2872,6 +3408,14 @@ class DshMultiAgentRuntime:
         cancellation_kind: str = "user_requested",
         scope: str = "task_execution",
     ) -> dict[str, Any]:
+        with self._lock:
+            return self._cancel_locked(task_id, actor=actor, reason=reason,
+                cancellation_kind=cancellation_kind, scope=scope)
+
+    def _cancel_locked(
+        self, task_id: str, *, actor: str, reason: str,
+        cancellation_kind: str, scope: str,
+    ) -> dict[str, Any]:
         owner = self.store.load_task(task_id)
         conversation_only = owner.get("record_type") == "conversation_draft"
         if actor not in {"user", "operator", "system"}:
@@ -2902,47 +3446,84 @@ class DshMultiAgentRuntime:
             "requested_at_utc": _utc_now(),
         }
         team = self.store.load_team(task_id)
-        session_ids: list[str] = []
-        if team is not None:
-            session_ids.append(str(team["root_session_id"]))
-            session_ids.extend(
-                sorted(
-                    {
-                        str(agent["dsh_session_id"])
-                        for agent in team.get("agents", {}).values()
-                        if isinstance(agent, Mapping)
-                        and agent.get("lineage_verified") is True
-                        and isinstance(agent.get("dsh_session_id"), str)
-                        and agent.get("dsh_session_id") != team["root_session_id"]
-                        and agent.get("status")
-                        not in {"completed", "failed", "cancelled", "interrupted"}
-                    }
-                )
-            )
         cancelled_session_ids: list[str] = []
         cascade_errors: list[dict[str, str]] = []
+        subagent_addresses: list[dict[str, str]] = []
         root_was_running = False
         if team is not None:
+            root_session_id = str(team["root_session_id"])
+            # Publish the local stop fence before calling into the SDK: its
+            # cancellation can synchronously schedule a settlement pre-step
+            # callback into root_context, which now reads only atomic files.
+            self.store.update_team(task_id, cancellation_targets={
+                "cancellation_id": cancellation["cancellation_id"],
+                "root_session_id": root_session_id, "children": [],
+                "agent_run_ids": [run["run_id"] for run in team.get("runs", []) if isinstance(run, Mapping) and isinstance(run.get("run_id"), str)],
+            })
             try:
                 summaries = self.client.call("session.list", {})
                 root_was_running = any(isinstance(item, Mapping)
-                    and item.get("sessionId") == team["root_session_id"]
+                    and item.get("sessionId") == root_session_id
                     and item.get("running") is True for item in summaries.get("items", []))
             except AgentRuntimeError:
-                # The actual cancel RPC remains authoritative; missing pre-read
-                # state must not manufacture a cancelled lifecycle.
                 pass
-        for session_id in session_ids:
-            try:
-                self.client.call(
-                    "session.cancel",
-                    {"sessionId": session_id},
-                )
-                cancelled_session_ids.append(session_id)
-            except AgentRuntimeError as exc:
-                cascade_errors.append(
-                    {"target": f"dsh_session:{session_id}", "error": str(exc)}
-                )
+            # Public DSH session.cancel explicitly fences subagent-owned
+            # sessions. Descendants must use their durable direct-parent
+            # address with subagent.interrupt; accepted is not quiescence.
+            def request_cancel(method: str, payload: dict[str, Any], target: str) -> None:
+                try:
+                    receipt = self.client.call(method, payload)
+                    if not isinstance(receipt, Mapping) or receipt.get("accepted") is not True:
+                        raise AgentRuntimeError("DSH did not acknowledge the cancellation request")
+                    if target not in cancelled_session_ids:
+                        cancelled_session_ids.append(target)
+                except AgentRuntimeError as exc:
+                    cascade_errors.append({"target": f"dsh_session:{target}", "error": str(exc)})
+
+            request_cancel("session.cancel", {"sessionId": root_session_id}, root_session_id)
+            pending_parents = [root_session_id]
+            visited = {root_session_id}
+            while pending_parents:
+                parent_id = pending_parents.pop(0)
+                try:
+                    catalog = self.client.call("subagent.list", {"parentSessionId": parent_id})
+                    entries = catalog.get("entries") if isinstance(catalog, Mapping) else None
+                    if not isinstance(entries, list):
+                        raise AgentRuntimeError("DSH subagent catalog was not observed")
+                except AgentRuntimeError as exc:
+                    cascade_errors.append({"target": f"dsh_subagent_catalog:{parent_id}", "error": str(exc)})
+                    continue
+                for entry in entries:
+                    if not isinstance(entry, Mapping) or entry.get("kind") != "child":
+                        cascade_errors.append({"target": f"dsh_subagent_catalog:{parent_id}", "error": "A child routing identity is unavailable or diagnostic"})
+                        continue
+                    child_id = entry.get("id")
+                    if not isinstance(child_id, str) or not child_id or child_id in visited:
+                        cascade_errors.append({"target": f"dsh_subagent_catalog:{parent_id}", "error": "DSH returned an invalid or cyclic child identity"})
+                        continue
+                    visited.add(child_id)
+                    address = {"parentSessionId": parent_id, "childSessionId": child_id, "mode": str(entry.get("mode") or "")}
+                    subagent_addresses.append(address)
+                    if entry.get("mode") == "continuable":
+                        request_cancel("subagent.interrupt", address, child_id)
+                    elif entry.get("activity") == "running":
+                        cascade_errors.append({"target": f"dsh_session:{child_id}", "error": "The installed DSH API cannot interrupt a running one-shot child independently"})
+                    if entry.get("hasChildren") is True:
+                        pending_parents.append(child_id)
+                    if len(visited) > 512:
+                        cascade_errors.append({"target": "dsh_subagent_catalog", "error": "Subagent cancellation tree exceeds the observation limit"})
+                        pending_parents.clear()
+                        break
+            # A settlement may have reached the coordinator while its children
+            # were being signalled. Stop the exact root again, without routing
+            # through or claiming ownership of any unrelated session.
+            if subagent_addresses:
+                request_cancel("session.cancel", {"sessionId": root_session_id}, root_session_id)
+            self.store.update_team(task_id, cancellation_targets={
+                "cancellation_id": cancellation["cancellation_id"],
+                "root_session_id": root_session_id, "children": subagent_addresses,
+                "agent_run_ids": [run["run_id"] for run in team.get("runs", []) if isinstance(run, Mapping) and isinstance(run.get("run_id"), str)],
+            })
         background_actions: list[dict[str, Any]] = []
         if self.background_actions_canceller is not None and not conversation_only:
             try:
@@ -2963,8 +3544,13 @@ class DshMultiAgentRuntime:
                 )
         runs = team.get("runs", []) if team is not None else []
         for run in runs:
-            delayed_active = bool(root_was_running and runs and run is runs[-1]
+            current_idle = bool(runs and run is runs[-1]
                 and isinstance(run, Mapping) and run.get("status") == "idle_without_final")
+            delayed_active = current_idle and (
+                root_was_running or not self._run_has_observed_terminal(
+                    task_id, team, str(run.get("run_id") or ""),
+                )
+            )
             if not isinstance(run, Mapping) or (not delayed_active and run.get("status") not in {
                 "queued",
                 "running",
@@ -2994,6 +3580,8 @@ class DshMultiAgentRuntime:
                     "status": "cancel_requested",
                     "payload": {
                         "cancelled_session_ids": cancelled_session_ids,
+                        "subagent_addresses": subagent_addresses,
+                        "termination_observed": False,
                         "background_actions": background_actions,
                         "cascade_errors": cascade_errors,
                         "cancellation": cancellation,
@@ -3008,6 +3596,8 @@ class DshMultiAgentRuntime:
         return {
             "accepted": True,
             "cancelled_session_ids": cancelled_session_ids,
+            "subagent_addresses": subagent_addresses,
+            "termination_observed": False,
             "background_actions": background_actions,
             "cancellation": cancellation,
         }
@@ -3019,6 +3609,7 @@ class DshMultiAgentRuntime:
         outcome: str,
     ) -> None:
         with self._lock:
+            self._require_unarchived_task(task_id)
             self._answer_approval(task_id, rpc_id, outcome)
 
     def _answer_approval(self, task_id: str, rpc_id: str, outcome: str) -> None:
@@ -3055,6 +3646,7 @@ class DshMultiAgentRuntime:
         answers: list[dict[str, Any]],
     ) -> None:
         with self._lock:
+            self._require_unarchived_task(task_id)
             self._answer_question(task_id, rpc_id, answers)
 
     def _answer_question(self, task_id: str, rpc_id: str, answers: list[dict[str, Any]]) -> None:
@@ -3375,6 +3967,8 @@ class DshMultiAgentRuntime:
         *,
         expected_kind: str,
     ) -> tuple[str, dict[str, Any]]:
+        if str(team["task_id"]) in self._checkpoint_observation_unavailable:
+            raise HumanCheckpointConflictError("当前无法确认这条待决请求，请恢复连接并刷新对话后重试")
         pending = self._pending(team)
         self._persist_pending_requested(
             task_id=str(team["task_id"]),
@@ -3414,50 +4008,69 @@ class DshMultiAgentRuntime:
         team: Mapping[str, Any],
         pending: Sequence[Mapping[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Retire a checkpoint whose DSH turn already ended unsuccessfully.
+        """Retire a checkpoint whose owning DSH turn has already ended.
 
         DSH can leave a durable question/approval request behind after the
         owning turn is interrupted.  Such an RPC rejects every answer and must
         not remain rendered as a live human checkpoint.
         """
 
-        terminal_by_session: dict[str, tuple[float, Mapping[str, Any]]] = {}
+        events = self.store.current_projection_events(task_id)
+        audit = self.store.list_events(task_id)
         terminal_by_turn: dict[tuple[str, str, str], Mapping[str, Any]] = {}
-        for event in self.store.current_projection_events(task_id):
-            if event.get("event_type") not in {"turn_error", "turn_cancelled"}:
+        def native_sequence(value: Any) -> int | None:
+            return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+        for event in events:
+            if event.get("event_type") not in {"turn_error", "turn_cancelled", "turn_finished"}:
                 continue
             session_id = event.get("session_id")
-            timestamp = self._timestamp_seconds(event.get("timestamp_utc"))
-            if not isinstance(session_id, str) or not session_id or timestamp is None:
+            source_seq = native_sequence(event.get("source_seq"))
+            if event.get("source") != "dsh" or not session_id or source_seq is None:
                 continue
             if event.get("agent_run_id") and event.get("turn_id"):
-                terminal_by_turn[(session_id, event["agent_run_id"], event["turn_id"])] = event
-            current = terminal_by_session.get(session_id)
-            if current is None or timestamp >= current[0]:
-                terminal_by_session[session_id] = (timestamp, event)
+                identity = (session_id, event["agent_run_id"], event["turn_id"])
+                previous = terminal_by_turn.get(identity)
+                if previous is None or source_seq > previous["source_seq"]:
+                    terminal_by_turn[identity] = event
 
         active: list[dict[str, Any]] = []
         for raw_item in pending:
             item = dict(raw_item)
             session_id = item.get("session_id")
-            received_at = self._timestamp_seconds(item.get("received_at"))
-            terminal = (
-                terminal_by_session.get(session_id)
-                if isinstance(session_id, str)
-                else None
-            )
-            # Interrupted history can timestamp its synthetic turn/end at the
-            # last source event, before websocket receipt of the checkpoint.
-            # Exact turn ownership is authoritative; receipt-time proximity is
-            # only a legacy fallback when that ownership was never observed.
             identity = (session_id, item.get("agent_run_id"), item.get("turn_id"))
-            exact_terminal = terminal_by_turn.get(identity) if all(identity) else None
-            if all(identity):
-                terminal_event = exact_terminal
-            else:
-                terminal_event = (terminal[1] if terminal is not None
-                                  and received_at is not None
-                                  and terminal[0] >= received_at else None)
+            terminal_event = terminal_by_turn.get(identity) if all(identity) else None
+            call_id = item.get("call_id")
+            # DSH can resume a root turn after a child report while retaining
+            # the same turn ID. A previous terminal is therefore insufficient:
+            # it must follow this exact checkpoint's native source sequence.
+            # Native order also survives a terminal timestamp preceding its
+            # WebSocket receipt during restart; wall clocks/local audit seqs
+            # are deliberately not used to retire an answerable checkpoint.
+            origin_sequences: list[int] = []
+            if all(identity) and call_id:
+                for event in events:
+                    if (
+                        event.get("source") == "dsh"
+                        and (event.get("session_id"), event.get("agent_run_id"), event.get("turn_id")) == identity
+                        and event.get("call_id") == call_id
+                        and event.get("event_type") in {"tool_call", "question", "approval"}
+                        and (sequence := native_sequence(event.get("source_seq"))) is not None
+                    ):
+                        origin_sequences.append(sequence)
+                for event in audit:
+                    payload = event.get("payload") or {}
+                    if (
+                        event.get("source") == "dsh_pending"
+                        and (event.get("session_id"), event.get("agent_run_id"), event.get("turn_id")) == identity
+                        and event.get("call_id") == call_id
+                        and payload.get("rpc_id") == item.get("rpc_id")
+                        and payload.get("phase") == "requested"
+                        and (sequence := native_sequence(payload.get("origin_source_seq"))) is not None
+                    ):
+                        origin_sequences.append(sequence)
+            if not origin_sequences or (terminal_event is not None and terminal_event["source_seq"] <= max(origin_sequences)):
+                terminal_event = None
             if terminal_event is None:
                 active.append(item)
                 continue
@@ -3707,6 +4320,8 @@ class DshMultiAgentRuntime:
             }
             if origin.get("event_id"):
                 payload["origin_event_id"] = origin.get("event_id")
+            if isinstance(origin.get("source_seq"), int) and not isinstance(origin["source_seq"], bool):
+                payload["origin_source_seq"] = origin["source_seq"]
             if call_id:
                 payload["call_id"] = call_id
             if kind == "approval" and item.get("approval_id"):
@@ -3738,12 +4353,16 @@ class DshMultiAgentRuntime:
                     and desired_identity[field] != requested.get(field)
                     for field in desired_identity
                 )
-                if not improves_identity:
+                improves_source_boundary = (
+                    payload.get("origin_source_seq") is not None
+                    and payload.get("origin_source_seq") != requested.get("payload", {}).get("origin_source_seq")
+                )
+                if not improves_identity and not improves_source_boundary:
                     continue
                 payload["supersedes_event_id"] = requested.get("event_id")
                 source_key = (
                     f"{base_source_key}:correlation:"
-                    f"{_json_digest(desired_identity)[:16]}"
+                    f"{_json_digest({**desired_identity, 'origin_source_seq': payload.get('origin_source_seq')})[:16]}"
                 )
             else:
                 source_key = base_source_key
@@ -3837,6 +4456,7 @@ class DshMultiAgentRuntime:
                         break
             return {
                 "event_id": event.get("event_id"),
+                "source_seq": event.get("source_seq"),
                 "turn_id": event.get("turn_id"),
                 "call_id": event_call_id or direct_call_id or None,
                 "agent_run_id": event.get("agent_run_id"),
@@ -3864,14 +4484,31 @@ class DshMultiAgentRuntime:
                       for event in requested}
         if len(identities) == 1:
             event = requested[-1]
-            return {field: event.get(field) for field in
-                    ("event_id", "turn_id", "call_id", "agent_run_id", "agent_id", "agent_label")}
+            return {
+                **{field: event.get(field) for field in
+                   ("event_id", "turn_id", "call_id", "agent_run_id", "agent_id", "agent_label")},
+                "source_seq": event.get("payload", {}).get("origin_source_seq"),
+            }
         if len(identities) > 1:
             return {}
 
         expected_tool = (
             "ask_user_question" if kind == "question" else str(item.get("tool_name") or "")
         )
+        if direct_call_id and item.get("rpc_id") and expected_tool:
+            exact_calls = [event for event in events if event.get("event_type") == "tool_call"
+                and event.get("task_id") == task_id and event.get("call_id") == direct_call_id
+                and event.get("payload", {}).get("tool_name") == expected_tool
+                and event.get("agent_run_id") and event.get("turn_id")]
+            if len(exact_calls) == 1:
+                # Native approval events may be absent from persisted history
+                # after restart. The direct native call identity remains exact
+                # even after its interrupted tool result; terminal reconciliation
+                # below can retire it, without reviving an answerable request.
+                return {field: exact_calls[0].get(field) for field in
+                    ("event_id", "source_seq", "turn_id", "call_id", "agent_run_id", "agent_id", "agent_label")}
+            if len(exact_calls) > 1:
+                return {}
         completed_calls = {
             str(event.get("call_id") or event.get("payload", {}).get("call_id") or "")
             for event in events
@@ -3892,6 +4529,7 @@ class DshMultiAgentRuntime:
                 continue
             return {
                 "event_id": event.get("event_id"),
+                "source_seq": event.get("source_seq"),
                 "turn_id": event.get("turn_id"),
                 "call_id": call_id or direct_call_id or None,
                 "agent_run_id": event.get("agent_run_id"),
@@ -4709,7 +5347,7 @@ class DshMultiAgentRuntime:
                 ),
                 None,
             )
-            if observed_cancel is None and not session_terminal_observed:
+            if not session_terminal_observed:
                 continue
             convergence_source = (
                 "observed_turn_cancelled"
@@ -4812,6 +5450,7 @@ class DshMultiAgentRuntime:
         current_spec_revision: Any,
         record_type: str,
         user_message: str,
+        root_context: Mapping[str, Any] | None = None,
     ) -> str:
         profiles = "\n".join(
             f"- {profile.agent_id}: {profile.agent_label}; owns={','.join(profile.owns)}; "
@@ -4819,17 +5458,35 @@ class DshMultiAgentRuntime:
             for profile in AGENT_PROFILES
             if not profile.root
         )
+        consultation = (
+            "用户沟通遵循领域插件提供的共享咨询策略；本段只补充身份、事实源和执行授权约束。"
+            "此处没有追加提问配额，也不要求先盘点材料才提供准备建议。\n"
+        )
         selected_record_type = str(record_type or "training_task").strip()
+        facts = (
+            "以下是调用时读取的持久事实快照，不是执行授权；后续原生步骤提供的新快照优先。"
+            "材料检查记录与训练 Dataset 导入是不同事实，未观察到的状态不可断言已完成。"
+            "material_inspections 为 unobserved 或 observation_degraded 时表示材料观察未知，"
+            "不能据此说用户没有提供材料；只有 observed 的检查记录才能支撑材料结论。\n"
+            f"ROOT_CONTEXT_JSON: {json.dumps(dict(root_context), ensure_ascii=False)}\n"
+            if root_context is not None else ""
+        )
         if selected_record_type == "conversation_draft":
             return (
                 "你是 Specialist Model Studio 面向用户的模型训练伙伴。"
+                f"{consultation}"
                 "当前是尚未绑定 TrainingTask 的普通对话，不是训练执行阶段。"
                 "先理解用户这句话属于问候、产品/能力咨询、模糊训练意图，还是已经包含明确输入与输出的训练目标。\n"
                 "若是问候，请像人一样简短回应并邀请用户说出想解决的问题；若是产品或能力咨询，"
-                "直接回答，不要借机创建任务。若训练意图仍模糊，先复述已理解的部分，再用普通对话只问一个"
-                "真正影响方案的问题。以上三种情况都禁止调用 model_harness_*、ask_user_question 或委派专家，"
-                "也不得声称任务、训练或分析已经开始。intake 中 model_harness_* 的唯一例外是"
-                " model_harness_promote_conversation，且只适用于下述明确目标。\n"
+                "直接回答，不要借机创建任务。模糊需求按共享策略澄清，不要构造训练执行状态。"
+                "以上情况不调用业务变更工具、ask_user_question 或委派专家，也不声称工作已经开始。"
+                "intake 允许在下述明确目标成立后调用 model_harness_promote_conversation；"
+                "需要核对事实时可只读调用 model_harness_get_local_resources、model_harness_get_conversation、"
+                "model_harness_list_materials、model_harness_get_material；材料检查不要求先建立训练任务，"
+                "这些读取不创建任务或授权执行。"
+                "对话目标与已回答事项可通过 model_harness_get_context_state、"
+                "model_harness_record_context_state、model_harness_read_context_evidence 保留或回查；"
+                "只修改来源引用的对话解释记录，不创建任务或批准执行。\n"
                 "只有当用户已经给出足够具体的业务结果，至少能辨认主要输入和期望输出时，"
                 "才调用一次 model_harness_promote_conversation。conversation_id 必须逐字复制下面的规范值；"
                 "name 要简短，business_goal 必须忠实使用用户的说法，不得补造数据、设备或验收标准。"
@@ -4842,18 +5499,22 @@ class DshMultiAgentRuntime:
                 f"EXACT_CONVERSATION_ID_JSON: {json.dumps(task_id, ensure_ascii=False)}\n"
                 f"CONVERSATION_ID: {task_id}\n"
                 f"AGENT_RUN_ID: {agent_run_id}\n\n"
+                f"{facts}"
                 f"USER_MESSAGE:\n{user_message}"
             )
         return (
             "你是 Specialist Model Studio 面向用户的模型训练伙伴，并在内部承担 Training Orchestrator。"
+            f"{consultation}"
             "当前对话已绑定 TrainingTask；TrainingTask 是唯一任务事实源。"
             "先判断用户当前这句话是否真的在推进、查询或修改这个任务。纯问候请自然简短回应；"
             "与当前任务事实无关的一般产品能力、方法或流程问题请直接回答。以上情况不得调用"
             " model_harness_get_task、ask_user_question 或任何专家，也不得改变任务或暗示开始了新工作。\n"
+            "本机配置相关的问题可只读调用 model_harness_get_local_resources，无需任务或训练计划，"
+            "但该观测不代表模型适配结论或执行授权。\n"
             "只有当用户要继续当前任务、查询其状态，或请求一个会读取/改变领域事实的动作时，"
             "才先用下面给出的精确 task_id 调用 model_harness_get_task。禁止先调用 model_harness_list_tasks，"
             "不得创建第二个任务，也不得从聊天记忆推断任务状态。"
-            "每次调用 model_harness_* 时，task_id 参数必须逐字复制完整 canonical 值，不得截断、改写，"
+            "调用带 task_id 参数的 model_harness_* 工具时，必须逐字复制完整 canonical 值，不得截断、改写，"
             "也不得根据任务标题自行构造。不得再次调用 model_harness_promote_conversation。\n"
             "需要专业工作时，使用 DeepSeek Harness 已提供的原生、可继续的 subagent "
             "delegate/spawn/fork 能力。专家必须使用下面固定的 agent_id 与职责；"
@@ -4862,19 +5523,16 @@ class DshMultiAgentRuntime:
             "只有本轮成功领域工具返回的、与当前 task_id 一致的 canonical ObjectRef "
             "才能支撑完成结论；get_task、list 类和 Agent 散文都不是完成证据。"
             "如果证据不足，请如实说明仍在等待什么，不要声称训练、评测或交付已经完成。\n"
-            "任务绑定前后保持同一种自然对话。先区分用户在回答、追问、补充背景、修改目标，还是要求执行。"
-            "普通澄清、方法解释和目标讨论直接用自然语言交流，不强制逐字段确认；已知信息不要重复询问。"
-            "先直接回答本轮问题，再补充必要依据和一个有用的下一步；短追问不要重述整套方案。"
-            "区分方法本身的可能性与本产品当前可执行能力，不要把暂不支持说成技术上不可能。"
-            "样本数量、模型优劣和误差门槛只能作为待验证建议，不作无证据的绝对断言或替用户定门槛。"
+            "任务绑定前后的咨询均遵循共享策略；不要从本段执行约束推导出必须追加问题。"
             "明确区分讨论中的新目标与已保存的任务版本；只有更新工具成功后才能说任务已修改。"
             "若原任务标题明确描述旧目标，修改目标时通过同一个 update_task_spec 的 name 字段同步标题；"
             "与目标无关的用户自定义名称保持不变，除非用户要求改名。"
             "只有需要实际文件、精确选项或不可变人工决策时才用结构化检查点，使用稳定 question id"
-            "（例如 data_upload 或 target_column）。用户尚无数据时先提供格式示例或准备建议，不反复催上传。"
+            "（例如 data_upload 或 target_column）。准备建议无需文件先到位；只有实际导入才请求具体文件。"
             "上传和明确回答通过原 rpc_id 续接；普通聊天不作为授权。目标或数据变化后旧确认必须失效。"
-            "建议下一步前核对工具能力；任意外部模型目前仅可发现、分析、规划和资源检查，"
-            "不能把现成模型试跑或适配训练说成已经可执行，只有已验证 Recipe 与 Adapter 可创建 Run。\n"
+            "可以推荐技术上可行但尚待接入的方案；在提出实际执行动作前核对工具连接与条件。"
+            "当前任意外部模型可继续发现、分析、规划和资源检查，不能把现成模型试跑或适配训练"
+            "说成已经可执行，只有已验证 Recipe 与 Adapter 可创建 Run。\n"
             "启动真实训练前，根会话必须调用 model_harness_authorize_task_run_start，让用户只批准一次当前"
             "合同、数据指纹和任务版本；再把返回的 run_authorization_id 交给 build_training 专家。"
             "该专家委派必须保持 continuable（省略 run_in_background 或设为 true，绝不能设为 false），"
@@ -4887,6 +5545,7 @@ class DshMultiAgentRuntime:
             f"TrainingTask: {task_id}; observed_spec_revision={current_spec_revision}\n"
             f"AGENT_RUN_ID: {agent_run_id}\n"
             f"SPECIALIST_PROFILES:\n{profiles}\n\n"
+            f"{facts}"
             f"USER_MESSAGE:\n{user_message}"
         )
 
@@ -4901,6 +5560,9 @@ def build_dsh_multi_agent_runtime(
     ) = None,
     background_actions_canceller: (
         Callable[[str, Mapping[str, Any]], Sequence[Mapping[str, Any]]] | None
+    ) = None,
+    material_inspections_provider: (
+        Callable[[str], Sequence[Mapping[str, Any]]] | None
     ) = None,
 ) -> DshMultiAgentRuntime:
     """Build the production path; no scripted or Anthropic fallback is added."""
@@ -4917,4 +5579,5 @@ def build_dsh_multi_agent_runtime(
         cwd=cwd,
         background_actions_provider=background_actions_provider,
         background_actions_canceller=background_actions_canceller,
+        material_inspections_provider=material_inspections_provider,
     )

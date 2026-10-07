@@ -351,8 +351,9 @@ test("plugin registers the complete conversation-first model-training toolchain"
   const mounted = mountPlugin();
   assert.deepEqual(inject, ["tools", "systemPrompt"]);
   const names = new Set(mounted.tools.map((tool) => tool.name));
-  assert.equal(names.size, 55);
+  assert.equal(names.size, 72);
   for (const required of [
+    "model_harness_get_local_resources",
     "model_harness_list_tasks",
     "model_harness_list_data_adapters",
     "model_harness_match_capability",
@@ -382,6 +383,7 @@ test("plugin registers the complete conversation-first model-training toolchain"
     "model_harness_hf_attach",
     "model_harness_hf_verify",
     "model_harness_import_dataset",
+    "model_harness_import_material_dataset",
     "model_harness_scaffold_recipe",
     "model_harness_stage_recipe_samples",
     "model_harness_build_recipe",
@@ -422,20 +424,17 @@ test("plugin registers the complete conversation-first model-training toolchain"
   assert.match(mounted.sections[0].text, /workbench_url/);
   assert.match(mounted.sections[0].text, /EvaluationReport/);
   assert.match(mounted.sections[0].text, /40-character commit/);
-  assert.match(mounted.sections[0].text, /ask exactly one high-impact clarification question/);
   assert.match(mounted.sections[0].text, /Conversation and training-task lifecycles are separate/);
-  assert.match(mounted.sections[0].text, /Reflect a vague request and ask one concise natural-language question/);
-  assert.match(mounted.sections[0].text, /natural intake clarification must not use ask_user_question/);
-  assert.match(mounted.sections[0].text, /sole model_harness_\* exception in intake is model_harness_promote_conversation/);
-  assert.match(mounted.sections[0].text, /Only after promotion succeeds may you call model_harness_get_task/);
-  assert.match(mounted.sections[0].text, /A greeting or general product, capability, method or process question/);
-  assert.match(mounted.sections[0].text, /do not call model_harness_get_task, create a checkpoint, delegate a specialist/);
-  assert.match(mounted.sections[0].text, /Only for current-task work, read task\.control/);
-  assert.match(mounted.sections[0].text, /separate the user's desired outcome from the implementation method/);
-  assert.match(mounted.sections[0].text, /do not recommend immediate pretrained inference or adaptation training as an available button/);
-  assert.match(mounted.sections[0].text, /Use a human conversation contract, not an operator log/);
-  assert.match(mounted.sections[0].text, /Task binding must not change conversation into a form wizard/);
-  assert.match(mounted.sections[0].text, /do not end with a technical inventory dump/);
+  assert.match(mounted.sections[0].text, /Greetings and vague requests do not create tasks, structured checkpoints or delegated work/);
+  assert.match(mounted.sections[0].text, /Intake permits model_harness_promote_conversation only when a concrete input-to-output outcome is known/);
+  assert.match(mounted.sections[0].text, /model_harness_get_local_resources, model_harness_get_conversation, model_harness_list_materials and model_harness_get_material when their observed facts are relevant/);
+  assert.match(mounted.sections[0].text, /inventory is read-only and never creates a task or authorizes execution/);
+  assert.match(mounted.sections[0].text, /only after it succeeds may domain task tools be used/);
+  assert.match(mounted.sections[0].text, /Do not call model_harness_create_task inside an existing conversation/);
+  assert.match(mounted.sections[0].text, /General advice does not require task reads or a checkpoint/);
+  assert.match(mounted.sections[0].text, /For current-task facts, read task\.control and task\.capability_decision/);
+  assert.match(mounted.sections[0].text, /The existing Recipe execution path requires a registered verified Recipe, matching Data Adapter and the normal evidence and approval gates/);
+  assert.match(mounted.sections[0].text, /Follow the shared consultation policy below for all user-facing guidance/);
   assert.match(mounted.sections[0].text, /Universal BYOM/);
   assert.match(mounted.sections[0].text, /BlockerEvidence/);
   assert.match(mounted.sections[0].text, /native structured question checkpoint/);
@@ -443,7 +442,7 @@ test("plugin registers the complete conversation-first model-training toolchain"
   assert.match(mounted.sections[0].text, /“现在上传 CSV\/ZIP”/);
   assert.match(mounted.sections[0].text, /never “我已上传”/);
   assert.match(mounted.sections[0].text, /file picker performs the upload/);
-  assert.match(mounted.sections[0].text, /only after model_harness_import_dataset has actually succeeded/);
+  assert.match(mounted.sections[0].text, /only after a formal dataset import has actually succeeded/);
   assert.match(mounted.sections[0].text, /answer beginning with dataset- is the opaque id of that already-imported Dataset/);
   assert.match(mounted.sections[0].text, /never pass an opaque dataset id back into model_harness_import_dataset/);
   assert.match(mounted.sections[0].text, /question whose id is inference_input_id/);
@@ -460,8 +459,8 @@ test("plugin registers the complete conversation-first model-training toolchain"
   assert.match(mounted.sections[0].text, /bundle_request_sha256/);
   assert.match(mounted.sections[0].text, /Never let the child request a second native approval/);
   assert.match(mounted.sections[0].text, /never invent decorative expert activity/);
-  assert.match(mounted.sections[0].text, /Never reveal private chain-of-thought/);
-  assert.match(mounted.sections[0].text, /Mention a specialist role only inside the real action item/);
+  assert.match(mounted.sections[0].text, /[Nn]ever reveal private chain-of-thought/);
+  assert.match(mounted.sections[0].text, /Mention a specialist role only inside an action item backed by a real DSH child/);
   assert.match(mounted.sections[0].text, /workspace default location/);
   assert.match(mounted.sections[0].text, /configured workspace exports directory/);
   assert.match(mounted.sections[0].text, /never infer a destination from the process working directory/);
@@ -780,33 +779,18 @@ test("contract confirmation revalidates canonical identity and binds ApprovalDec
 });
 
 
-test("coordinator prompt keeps vague forecasting and data collection human-native", () => {
-  const prompt = mountPlugin().sections.find(
-    (section) => section.name === "domain:model-training-harness",
-  )?.text;
+test("coordinator data checkpoints preserve the upload and continuation protocol", () => {
+  const prompt = mountPlugin().sections.find(section => section.name === "domain:model-training-harness")?.text;
   assert.ok(prompt);
-
-  assert.match(prompt, /briefly reflect the outcome you heard in the user's own vocabulary/);
-  assert.match(prompt, /Resolve an ambiguous business outcome first/);
-  assert.match(prompt, /Do not open with tool activity or internal state/);
-  assert.match(prompt, /Labels should describe familiar outcomes/);
-  assert.match(prompt, /Recommend what best matches the user's goal, never what happens to be easiest/);
-  assert.match(prompt, /Treat “time-series model”, “numeric prediction” and “regression” as still ambiguous/);
-  assert.match(prompt, /“预测未来一段时间的销量、流量或温度”/);
-  assert.match(prompt, /ask whether past order is used to predict a future horizon or whether each row stands alone/);
-  assert.match(prompt, /Select time_series_forecasting for future horizons based on ordered history/);
-  assert.match(prompt, /Select tabular_regression only when every row is an independent sample/);
-  assert.match(prompt, /Never remap genuine forecasting to tabular regression/);
-  assert.match(prompt, /drag a representative file into the conversation/);
+  assert.match(prompt, /a future forecast must not be silently replaced by independent-row regression/);
   assert.match(prompt, /Never ask a human to type a host absolute path or workspace-relative path/);
-  assert.match(prompt, /inspect it first and then ask only the next unresolved question/);
   assert.match(prompt, /question id must be exactly data_upload/);
   assert.match(prompt, /primary option or action label must be “现在上传 CSV\/ZIP”/);
   assert.match(prompt, /never “我已上传”/);
   assert.match(prompt, /The product file picker performs the upload/);
-  assert.match(prompt, /submit the data_upload answer only after model_harness_import_dataset has actually succeeded/);
+  assert.match(prompt, /submit the data_upload answer only after a formal dataset import has actually succeeded/);
   assert.match(prompt, /Other checkpoints use stable ids such as target_column/);
-  assert.match(prompt, /first address that message in natural language/);
+  assert.match(prompt, /An attachment or answer must resolve that same checkpoint/);
 });
 
 
@@ -1546,7 +1530,7 @@ test("role delegates expose only domain facts and no shell or generic tools", ()
       assert.match(toolName, /^model_harness_[a-z0-9_]+$/);
       assert.doesNotMatch(
         toolName,
-        /(?:shell|bash|terminal|exec|read_file|write_file|subagent|computer|browser|web_search|generic)/,
+        /(?:^|_)(?:shell|bash|terminal|exec|read_file|write_file|subagent|computer|browser|web_search|generic)(?:_|$)/,
       );
     }
   }
@@ -1562,9 +1546,11 @@ test("root persona is an evidence-bound Training Orchestrator", () => {
   assert.match(rootPersona, /You are the Training Orchestrator/);
   assert.match(rootPersona, /Own the conversation first/);
   assert.match(rootPersona, /In INTAKE, greet greetings naturally/);
-  assert.match(rootPersona, /Do not call model_harness_\* tools, use ask_user_question, delegate a specialist/);
+  assert.match(rootPersona, /Do not create tasks, use ask_user_question, delegate a specialist or imply training started/);
   assert.match(rootPersona, /model_harness_promote_conversation once/);
-  assert.match(rootPersona, /sole model_harness_\* exception in INTAKE/);
+  assert.match(rootPersona, /INTAKE permits model_harness_promote_conversation only for a concrete/);
+  assert.match(rootPersona, /model_harness_get_local_resources, model_harness_get_conversation,[\s\S]*model_harness_list_materials and model_harness_get_material when those facts are relevant/);
+  assert.match(rootPersona, /Reading inventory or inspection reports does not create a task or approve execution/);
   assert.match(rootPersona, /only after it succeeds may you read the TrainingTask/);
   assert.match(rootPersona, /A greeting or general product, capability, method or/);
   assert.match(rootPersona, /do not call[\s\S]*model_harness_get_task, create a checkpoint, delegate or mutate the task/);
@@ -1577,12 +1563,8 @@ test("root persona is an evidence-bound Training Orchestrator", () => {
   assert.match(rootPersona, /combining their evidence into one user-facing/);
   assert.match(rootPersona, /Never fabricate progress, results, files, metrics/);
   assert.match(rootPersona, /Never approve on the user's behalf/);
-  assert.match(rootPersona, /distinguish the[\s\S]*desired outcome from the implementation method/);
-  assert.match(rootPersona, /do not promise pretrained inference or adaptation training without a verified Recipe/);
-  assert.match(rootPersona, /Speak like a thoughtful model-training partner, not an operator log/);
-  assert.match(rootPersona, /A vague “time-series model”, “numeric prediction” or “regression” is not enough/);
-  assert.match(rootPersona, /Select time_series_forecasting[\s\S]*tabular_regression only/);
-  assert.match(rootPersona, /Never ask the user to type an absolute or workspace-relative path/);
+  assert.match(rootPersona, /Follow the shared consultation policy supplied by domain:model-training-harness/);
+  assert.match(rootPersona, /This persona defines roles and execution responsibilities/);
   assert.match(rootPersona, /native structured[\s\S]*question checkpoint/);
   assert.match(rootPersona, /question id must be exactly data_upload/);
   assert.match(rootPersona, /primary option or action[\s\S]*“现在上传 CSV\/ZIP”/);
@@ -1629,7 +1611,7 @@ test("root persona is an evidence-bound Training Orchestrator", () => {
 });
 
 
-test("task-spec update exposes every canonical specialist family", () => {
+test("task-spec update keeps familiar family hints without restricting semantic goals", () => {
   const mounted = mountPlugin();
   const updateTool = mounted.tools.find(
     (tool) => tool.name === "model_harness_update_task_spec",
@@ -1637,10 +1619,9 @@ test("task-spec update exposes every canonical specialist family", () => {
   assert.ok(updateTool);
   assert.equal(updateTool.parameters.properties.name.type, "string");
   assert.equal(updateTool.parameters.required.includes("name"), false);
-  assert.deepEqual(
-    updateTool.parameters.properties.selected_family.enum,
-    [...TASK_FAMILIES],
-  );
+  assert.equal(updateTool.parameters.properties.selected_family.type, "string");
+  assert.equal(updateTool.parameters.properties.selected_family.enum, undefined);
+  assert.match(updateTool.parameters.properties.selected_family.description, /Open semantic output family/);
   assert.deepEqual(
     [...TASK_FAMILIES],
     [
@@ -1866,6 +1847,7 @@ test("source binding approvals return to the root instead of a never-approval ch
 test("root orchestrator keeps clarification, canonical reads and human checkpoint control", async () => {
   const listener = mountPlugin().listeners.get("tools/pre-execute");
   for (const toolName of [
+    "model_harness_get_local_resources",
     "model_harness_clarify_task_spec",
     "model_harness_update_task_spec",
     "model_harness_get_task",
@@ -2206,7 +2188,7 @@ test("a stale canonical binding invalidates the grant before the run side effect
 });
 
 
-test("root approval lets only the bound delivery specialist spend one opaque inference-input grant", async () => {
+for (const sampleType of ["image", "generic"]) test(`root approval lets only the bound delivery specialist spend one opaque ${sampleType} inference-input grant`, async () => {
   const mounted = mountPlugin();
   const listener = mounted.listeners.get("tools/pre-execute");
   const authorize = mounted.tools.find(
@@ -2223,6 +2205,8 @@ test("root approval lets only the bound delivery specialist spend one opaque inf
     inference_input_id: "inference-input-delivery-1",
     inference_input_sha256: DIGEST_C,
   };
+  const declaration = { extensions: [".shape"], max_bytes: 1024, schema: { type: "object", properties: { root: { type: "number" } } } };
+  const inputOverrides = sampleType === "generic" ? { sample_type: "generic", filename: "new-object.shape", generic_declaration: declaration } : {};
   const originalFetch = globalThis.fetch;
   let executed = 0;
   globalThis.fetch = async (url, options = {}) => {
@@ -2232,7 +2216,7 @@ test("root approval lets only the bound delivery specialist spend one opaque inf
       return jsonResponse(deliveryTask());
     }
     if (method === "GET" && selectedUrl.endsWith("/runs/run-delivery-1/result")) {
-      return jsonResponse(deliveryRun());
+      return jsonResponse(deliveryRun(sampleType === "generic" ? { recipe: "generic-isolated-execution", inference: declaration } : {}));
     }
     if (
       method === "GET"
@@ -2240,7 +2224,7 @@ test("root approval lets only the bound delivery specialist spend one opaque inf
         "/tasks/task-delivery-1/runs/run-delivery-1/inference-inputs/inference-input-delivery-1",
       )
     ) {
-      return jsonResponse(deliveryInferenceInput());
+      return jsonResponse(deliveryInferenceInput(inputOverrides));
     }
     if (
       method === "POST"
@@ -2254,7 +2238,7 @@ test("root approval lets only the bound delivery specialist spend one opaque inf
         inference_input_sha256: DIGEST_C,
         approval: { actor: "user", checkpoint_id: "authorize-inference" },
       });
-      return jsonResponse(sampleInferenceAuthorization("authorize-inference"), 201);
+      const authorization = sampleInferenceAuthorization("authorize-inference"); authorization.sample_inference_authorization.scope.sample_type = sampleType; return jsonResponse(authorization, 201);
     }
     if (
       method === "POST"
@@ -2271,7 +2255,7 @@ test("root approval lets only the bound delivery specialist spend one opaque inf
       return jsonResponse({
         task: deliveryTask(),
         run_id: "run-delivery-1",
-        inference_input: deliveryInferenceInput({ status: "consumed" }).inference_input,
+        inference_input: deliveryInferenceInput({ ...inputOverrides, status: "consumed" }).inference_input,
         sample_inference: {
           task_id: "task-delivery-1",
           run_id: "run-delivery-1",
@@ -2667,4 +2651,24 @@ test("subagent role identity fails closed and ignores inherited descriptors", as
     ),
     priorDenial,
   );
+});
+
+
+test("generic inference authorization rejects declaration drift, foreign identities and input limits before issuing a grant", async () => {
+  const mounted = mountPlugin(), authorize = mounted.tools.find(tool => tool.name === "model_harness_authorize_sample_inference"), original = globalThis.fetch;
+  const declaration = { extensions: [".vector"], max_bytes: 200, schema: { type: "object", properties: { features: { type: "array" } } } };
+  const args = { task_id: "task-delivery-1", run_id: "run-delivery-1", inference_input_id: "inference-input-delivery-1", inference_input_sha256: DIGEST_C };
+  let overrides = {}, declarationOverride = declaration, writes = 0;
+  globalThis.fetch = async (url, options) => {
+    const path = new URL(url).pathname; if (options.method === "POST") { writes += 1; throw new Error("authorization write must not happen"); }
+    if (path.endsWith("/result")) return jsonResponse(deliveryRun({ recipe: "generic-isolated-execution", inference: declarationOverride }));
+    if (path.includes("/inference-inputs/")) return jsonResponse(deliveryInferenceInput({ sample_type: "generic", filename: "new.vector", generic_declaration: declaration, ...overrides }));
+    return jsonResponse(deliveryTask());
+  };
+  try {
+    for (const bad of [{ generic_declaration: undefined }, { generic_declaration: { ...declaration, max_bytes: 300 } }, { size_bytes: 201 }, { filename: "new.other" }, { task_id: "foreign" }, { run_id: "foreign" }, { sha256: DIGEST_A }]) {
+      overrides = bad; await assert.rejects(authorize.execute(args, { agent: rootAgent(), callId: "native-generic" }), /declaration|limits|canonical evidence/);
+    }
+    overrides = {}; declarationOverride = undefined; await assert.rejects(authorize.execute(args, { agent: rootAgent(), callId: "native-generic" }), /frozen declaration/); assert.equal(writes, 0);
+  } finally { globalThis.fetch = original; }
 });

@@ -16,8 +16,212 @@ _RESULT_EVENT_TYPES = frozenset(
 )
 
 
+def engineering_public_projection(value: Any) -> Any:
+    """Preserve engineering data keys and virtual mounts, never host controls.
+
+    Execution schemas, authored file maps and open business/config fields are
+    data namespaces: a key named ``root`` is not itself a host path. No marker
+    replacement is used, so source literals and code digests stay stable.
+    """
+    import re
+    from pathlib import Path
+    from .agent_bridge import (
+        _AGENT_PUBLIC_REDACTED, _AGENT_PUBLIC_SENSITIVE_KEYS,
+        _AGENT_PUBLIC_EMBEDDED_WINDOWS_PATH, _AGENT_PUBLIC_EMBEDDED_FILE_URI,
+        _AGENT_PUBLIC_EMBEDDED_KNOWN_ROOT, _AGENT_PUBLIC_EMBEDDED_HOST_ROOT,
+        _AGENT_PUBLIC_EMBEDDED_POSIX_PATH, _AGENT_PUBLIC_URL_PREFIX,
+        _agent_local_absolute_path, _agent_public_route,
+    )
+
+    def virtual_prefix(text: str) -> bool:
+        return bool(re.match(r"^/workspace/(?:source|input|output)(?=/|$)", text.strip()))
+
+    def virtual_path(text: str) -> bool:
+        return virtual_prefix(text) and "\\" not in text and not any(
+            part in {".", ".."} for part in text.split("/")
+        ) and not any(ord(char) < 32 for char in text)
+
+    def safe_text(text: str) -> str:
+        if _agent_local_absolute_path(text) and not virtual_path(text):
+            return _AGENT_PUBLIC_REDACTED
+        selected = _AGENT_PUBLIC_EMBEDDED_WINDOWS_PATH.sub(_AGENT_PUBLIC_REDACTED, text)
+        selected = _AGENT_PUBLIC_EMBEDDED_FILE_URI.sub(_AGENT_PUBLIC_REDACTED, selected)
+        selected = _AGENT_PUBLIC_EMBEDDED_KNOWN_ROOT.sub(_AGENT_PUBLIC_REDACTED, selected)
+        selected = _AGENT_PUBLIC_EMBEDDED_HOST_ROOT.sub(
+            lambda match: match.group(0) if _AGENT_PUBLIC_URL_PREFIX.search(selected[:match.start()]) else _AGENT_PUBLIC_REDACTED,
+            selected,
+        )
+        return _AGENT_PUBLIC_EMBEDDED_POSIX_PATH.sub(
+            lambda match: match.group(0) if _agent_public_route(match.group(0)) or virtual_path(match.group(0)) else _AGENT_PUBLIC_REDACTED,
+            selected,
+        )
+
+    def project(item: Any, data_namespace: bool = False, path: tuple = ()) -> Any:
+        if isinstance(item, dict):
+            output = {}
+            for raw_key, child in item.items():
+                key = str(raw_key)
+                normalized = key.strip().lower().replace("-", "_")
+                sensitive_key = normalized in _AGENT_PUBLIC_SENSITIVE_KEYS or normalized.endswith("_root")
+                path_key = normalized == "path" or normalized.endswith("_path")
+                host_value = isinstance(child, Path) or isinstance(child, str) and _agent_local_absolute_path(child) and not virtual_path(child)
+                protocol_directory = (path == ("execution_workspace", "protocol")
+                                      and key == "working_directory"
+                                      and isinstance(child, str) and virtual_path(child))
+                if sensitive_key and not protocol_directory and (not data_namespace or host_value) or path_key and host_value:
+                    continue
+                output[key] = project(child, data_namespace or key in {"execution_spec", "execution_spec_schema"}, (*path, key))
+            return output
+        if isinstance(item, (list, tuple)):
+            return [project(child, data_namespace, (*path, index)) for index, child in enumerate(item)]
+        if isinstance(item, Path):
+            return _AGENT_PUBLIC_REDACTED
+        return safe_text(item) if isinstance(item, str) else item
+
+    result = project(value)
+
+    def retain_frozen_source(record: Any, output: Any) -> None:
+        if not isinstance(record, dict) or not isinstance(output, dict):
+            return
+        spec = record.get("execution_spec")
+        if (record.get("object_type") != "ExecutionProposal"
+                or not isinstance(record.get("task_id"), str) or not record["task_id"]
+                or not re.fullmatch(r"execution-[0-9a-f]{24}", str(record.get("proposal_id", "")))
+                or not re.fullmatch(r"[0-9a-f]{64}", str(record.get("proposal_sha256", "")))
+                or type(record.get("base_spec_revision")) is not int or record["base_spec_revision"] < 1
+                or not isinstance(spec, dict)):
+            return
+        try:
+            from .isolated_execution import ExecutionBundle
+            bundle = ExecutionBundle.from_dict(spec.get("bundle"))
+            if bundle.digest != spec.get("bundle_sha256"):
+                return
+        except (TypeError, ValueError):
+            return
+        # Only the exact source field of a frozen proposal is content. Path
+        # literals here do not grant access; metadata/logs remain redacted.
+        output["execution_spec"]["bundle"]["files"] = deepcopy(spec["bundle"]["files"])
+        output["execution_spec"]["bundle"]["stages"] = deepcopy(spec["bundle"]["stages"])
+
+    if isinstance(value, dict) and isinstance(result, dict):
+        retain_frozen_source(value.get("proposal"), result.get("proposal"))
+        originals, outputs = value.get("proposals"), result.get("proposals")
+        if isinstance(originals, list) and isinstance(outputs, list):
+            for original, output in zip(originals, outputs):
+                retain_frozen_source(original, output)
+    return result
+
+
 class ConversationPayloadCompactionError(ValueError):
     """Raised when an oversized result cannot retain a retrievable identity."""
+
+
+def _task_read_promotion_recoveries(
+    *, task_id: str, actions: Sequence[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]], training_task_exists: bool,
+) -> dict[str, Mapping[str, Any]]:
+    """Resolve only observed missing-owner reads after verified promotion.
+
+    A tool name or later coordinator claim is insufficient. Both native pairs,
+    exact arguments, the HTTP error envelope, the successful task result, and
+    current canonical owner existence must agree. The original action survives.
+    """
+    if not training_task_exists:
+        return {}
+    by_id: dict[str, Mapping[str, Any]] = {}
+    ambiguous: set[str] = set()
+    for event in events:
+        event_id = event.get("event_id")
+        if not isinstance(event_id, str) or not event_id:
+            continue
+        if event_id in by_id:
+            ambiguous.add(event_id)
+        by_id[event_id] = event
+
+    def pair(action: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any]] | None:
+        if (action.get("task_id") != task_id or action.get("truth_type") != "observed_result"
+                or action.get("tool_class") != "domain"):
+            return None
+        call_id, result_id = action.get("call_event_id"), action.get("result_event_id")
+        if (not isinstance(call_id, str) or not isinstance(result_id, str)
+                or call_id == result_id or call_id in ambiguous or result_id in ambiguous):
+            return None
+        call, result = by_id.get(call_id), by_id.get(result_id)
+        if call is None or result is None:
+            return None
+        for event, kind in ((call, "tool_call"), (result, "tool_result")):
+            if event.get("event_type") != kind or event.get("source") != "dsh":
+                return None
+            if event.get("root_session_id") != action.get("session_id"):
+                return None
+            for key in ("task_id", "agent_run_id", "session_id", "turn_id", "call_id"):
+                if not isinstance(action.get(key), str) or not action[key] or event.get(key) != action[key]:
+                    return None
+            payload = event.get("payload")
+            if (not isinstance(payload, Mapping)
+                    or payload.get("tool_name") != action.get("tool_name")
+                    or payload.get("call_id") != action.get("call_id")):
+                return None
+            for sequence_key in ("seq", "source_seq"):
+                if isinstance(event.get(sequence_key), bool) or not isinstance(event.get(sequence_key), int):
+                    return None
+        if call["seq"] >= result["seq"] or call["source_seq"] >= result["source_seq"]:
+            return None
+        return call, result
+
+    def object_value(value: Any) -> Mapping[str, Any] | None:
+        if isinstance(value, Mapping):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except (ValueError, TypeError):
+                return None
+            return parsed if isinstance(parsed, Mapping) else None
+        if (isinstance(value, list) and len(value) == 1 and isinstance(value[0], Mapping)
+                and value[0].get("type") == "text"):
+            return object_value(value[0].get("text"))
+        return None
+
+    missing_reads: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = []
+    recovered: dict[str, Mapping[str, Any]] = {}
+    for action in actions:
+        tool = action.get("tool_name")
+        if tool not in {"model_harness_get_task", "model_harness_promote_conversation"}:
+            continue
+        observed = pair(action)
+        if observed is None:
+            continue
+        call, result = observed
+        arguments = object_value(call.get("payload", {}).get("arguments")) or {}
+        payload = result.get("payload", {})
+        if tool == "model_harness_get_task":
+            raw = payload.get("result")
+            # This is the client/DSH HTTP-error envelope, not free-form model
+            # text or a translated substring such as "task does not exist".
+            not_found = (isinstance(raw, list) and len(raw) == 1 and isinstance(raw[0], Mapping)
+                         and raw[0].get("type") == "text" and isinstance(raw[0].get("text"), str)
+                         and raw[0]["text"].startswith("Error: Specialist Model Studio 404: "))
+            if (action.get("status") == "failed" and payload.get("is_error") is True
+                    and arguments.get("task_id") == task_id and not_found):
+                missing_reads.append((action, result))
+            continue
+        promoted = object_value(payload.get("result")) or {}
+        task = promoted.get("task")
+        conversation = promoted.get("conversation")
+        if (action.get("status") != "completed" or action.get("error")
+                or payload.get("is_error") is not False or arguments.get("conversation_id") != task_id
+                or not isinstance(task, Mapping) or task.get("task_id") != task_id
+                or task.get("record_type") != "training_task"
+                or not isinstance(conversation, Mapping) or conversation.get("conversation_id") != task_id
+                or conversation.get("task_id") != task_id or conversation.get("status") != "bound"):
+            continue
+        for failed, failure_result in missing_reads:
+            if (failed.get("session_id") == action.get("session_id")
+                    and failure_result["seq"] < call["seq"]
+                    and failure_result["source_seq"] < call["source_seq"]):
+                recovered.setdefault(str(failed["action_id"]), action)
+    return recovered
 
 
 def project_conversation_objects(
@@ -31,6 +235,8 @@ def project_conversation_objects(
     observation_degraded: bool = False,
     cancellation_pending: bool | None = None,
     can_cancel: bool | None = None,
+    events: Sequence[Mapping[str, Any]] = (),
+    training_task_exists: bool = False,
 ) -> dict[str, Any]:
     """Build the additive, typed read model used by conversation-native UIs.
 
@@ -160,7 +366,36 @@ def project_conversation_objects(
 
     risks: list[dict[str, Any]] = []
     later_success_by_operation: dict[tuple[str, str], dict[str, Any]] = {}
+    later_training_starts: dict[tuple[str, str], list[dict[str, Any]]] = {}
     action_risks_reversed: list[dict[str, Any]] = []
+    promotion_recoveries = _task_read_promotion_recoveries(
+        task_id=task_id, actions=projected_actions, events=events,
+        training_task_exists=training_task_exists,
+    )
+
+    def paired_result_sequence(action: Mapping[str, Any]) -> int | None:
+        """Require an observed pair and its task-owned result order, not prose."""
+        if (
+            action.get("truth_type") != "observed_result"
+            or action.get("task_id") != task_id
+            or not all(isinstance(action.get(name), str) and action[name] for name in (
+                "agent_run_id", "session_id", "turn_id", "call_id",
+                "call_event_id", "result_event_id",
+            ))
+            or action["call_event_id"] == action["result_event_id"]
+        ):
+            return None
+        ref = action.get("event_result_ref")
+        if (
+            not isinstance(ref, Mapping)
+            or ref.get("type") != "conversation_event_result"
+            or ref.get("task_id") != task_id
+            or ref.get("id") != action.get("result_event_id")
+        ):
+            return None
+        sequence = ref.get("event_seq")
+        return sequence if isinstance(sequence, int) and not isinstance(sequence, bool) else None
+
     # ``projected_actions`` is in canonical observed-event order.  Scan it in
     # reverse so a failed invocation is superseded only by a *later* observed
     # success of the same structured tool operation.  Coordinator prose and
@@ -175,6 +410,14 @@ def project_conversation_objects(
         )
         if action.get("status") == "completed" and operation_key is not None:
             later_success_by_operation[operation_key] = action
+            if (
+                tool_name == "model_harness_start_task_run"
+                and tool_class == "domain"
+                and not action.get("error")
+                and paired_result_sequence(action) is not None
+            ):
+                scope = (task_id, str(action["agent_run_id"]))
+                later_training_starts.setdefault(scope, []).append(action)
             continue
         if action.get("status") not in {"failed", "identity_error"}:
             continue
@@ -186,6 +429,28 @@ def project_conversation_objects(
             if action.get("status") == "failed" and operation_key is not None
             else None
         )
+        resolution_kind = "superseded_by_later_success"
+        if resolved_by is None and action.get("status") == "failed":
+            resolved_by = promotion_recoveries.get(str(action["action_id"]))
+            if resolved_by is not None:
+                resolution_kind = "task_created_by_later_promotion"
+        # A registered, authorized training start proves capability resolution
+        # has been passed for this same task/AgentRun. It can retire an earlier
+        # matching failure even when the unnecessary match tool is not retried.
+        # This does not resolve training/delivery errors or confer completion.
+        if (
+            resolved_by is None and action.get("status") == "failed"
+            and tool_name == "model_harness_match_capability" and tool_class == "domain"
+        ):
+            failure_sequence = paired_result_sequence(action)
+            if failure_sequence is not None:
+                scope = (task_id, str(action["agent_run_id"]))
+                resolved_by = next((
+                    candidate for candidate in reversed(later_training_starts.get(scope, []))
+                    if paired_result_sequence(candidate) > failure_sequence
+                ), None)
+                if resolved_by is not None:
+                    resolution_kind = "capability_resolved_by_training_start"
         risk = {
             "risk_id": f"risk:{action['action_id']}",
             "source_type": "Action",
@@ -200,7 +465,7 @@ def project_conversation_objects(
                 None
                 if resolved_by is None
                 else {
-                    "kind": "superseded_by_later_success",
+                    "kind": resolution_kind,
                     "source_type": "Action",
                     "source_id": resolved_by["action_id"],
                 }

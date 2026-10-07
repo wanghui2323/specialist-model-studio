@@ -1,0 +1,679 @@
+{
+  "schema_version": "1.0",
+  "created_on": "2026-10-04",
+  "timezone": "Asia/Shanghai",
+  "status": "authored_ui_acceptance_pending",
+  "fixture_root": "runs/acceptance/20261004-four-scenarios",
+  "template_contract": {
+    "syntax": "{{MATERIAL_SUMMARY}}",
+    "must_resolve_before_send": true,
+    "source": "各数据目录README/manifest及制作者确认；不得把计划规模冒充实际生成规模。"
+  },
+  "read_only_capability_snapshot": {
+    "base_commit": "ac91164",
+    "working_tree": "modified",
+    "recipes": [
+      "digit-classification",
+      "image-folder-classification",
+      "tabular-classification",
+      "tabular-regression"
+    ],
+    "adapters": [
+      "image-folder-zip",
+      "tabular-csv"
+    ],
+    "all_four_matching_recipe_ids": []
+  },
+  "live_probe": {
+    "turn_limit": 2,
+    "max_seconds_per_turn": 90,
+    "approve_checkpoints": false,
+    "pending_checkpoint_action": "若要讨论续接，使用当前checkpoint_rpc_id提交用户消息；不得自动填写答案或批准。",
+    "do_not_start_training": true,
+    "record": [
+      "raw_user_input",
+      "raw_assistant_text",
+      "task_id",
+      "expected_and_actual_family",
+      "tool_calls",
+      "pending_checkpoint",
+      "elapsed_seconds",
+      "failures",
+      "capability_remapping"
+    ],
+    "method": "api_auxiliary_only",
+    "counts_as_ui_acceptance": false
+  },
+  "cases": [
+    {
+      "id": "speech",
+      "title": "自己的声音 TTS",
+      "expected_family": "speech_synthesis",
+      "route": "from_scratch",
+      "route_label": "从零训练语音合成模型",
+      "forbidden_family_remappings": [
+        "audio_classification",
+        "asr"
+      ],
+      "fixture_dir": "runs/acceptance/20261004-four-scenarios/speech",
+      "template_values": {
+        "MATERIAL_SUMMARY": "48条本机 macOS Tingting 合成普通话及配对原创文本；仅作格式和流程样例，不是我本人声音，也不是训练效果证据",
+        "UPLOAD_OBSERVATION": null
+      },
+      "prompts": [
+        {
+          "turn": 1,
+          "id": "speech-01",
+          "user_input": "我已经决定从零训练一个普通话语音合成模型：输入新文字，用我自己的声音读出来。请先给我数据怎么准备、机器怎么选，以及第一轮最小实验怎样验证的方案。",
+          "stage": "goal_and_preparation",
+          "checkpoint": "C1",
+          "template_tokens": []
+        },
+        {
+          "turn": 2,
+          "id": "speech-02",
+          "user_input": "我准备了一份本地样例：{{MATERIAL_SUMMARY}}。这些文件还没有通过工作台上传。请基于这份说明把数据自查、还要补的材料和最小实验准备步骤落细，并说明当前页面是否已有对应的数据入口。",
+          "stage": "described_material_not_imported",
+          "checkpoint": "C2",
+          "template_tokens": [
+            "MATERIAL_SUMMARY"
+          ]
+        },
+        {
+          "turn": 3,
+          "id": "speech-03",
+          "user_input": "我刚才在页面操作了导入入口：{{UPLOAD_OBSERVATION}}。请结合当前任务的真实状态，说明下一步可以做什么。",
+          "stage": "after_real_ui_upload_attempt",
+          "checkpoint": "C3",
+          "template_tokens": [
+            "UPLOAD_OBSERVATION"
+          ],
+          "send_only_after": "已真实观察上传入口/文件选择/附件状态并填入如实观察"
+        },
+        {
+          "turn": 4,
+          "id": "speech-04",
+          "user_input": "请沿已经选定的从零训练路线，给我一份可照做的录音、标注和自查清单，再用一个明确的小模型假设说明参考机器、最小实验和验收方式。",
+          "stage": "optional_preparation_followup",
+          "checkpoint": "C3",
+          "template_tokens": [],
+          "send_only_after": "如当前因接入缺口无法导入/训练但仍需继续准备；不以该轮代替上传验收"
+        }
+      ],
+      "expected_behaviors": [
+        "先保留已经明确的目标与路线，直接给数据规格、准备方法、带假设的资源建议和最小实验/验收。",
+        "没有现成材料不是准备建议前置；只问无法自行查证或合理假设、且改变紧接着行动的用户决策。",
+        "具体目标可记录为同一任务；记录目标不代表数据导入、训练、评测或执行接入已完成。",
+        "当前缺少匹配Recipe/Adapter时说明具体接入缺口，保持原任务family与路线。"
+      ],
+      "failure_signals": [
+        "重复询问已经明确的路线，或先问有没有数据才给准备方案。",
+        "把计划/外部独立基线/材料描述说成已经导入、真实Run或模型效果。",
+        "无真实对应能力也自动批准、启动训练，或伪造数据集/Run/评测/交付身份。",
+        "把建议的数据量/算力/耗时当成统一门槛、保证或用户已有事实。",
+        "将TTS改成音频分类、关键词分类或ASR。",
+        "拿Tingting格式样例声称复现了用户本人音色。",
+        "将短参考录音克隆推理说成从零训练或自有新权重。"
+      ],
+      "data_step": {
+        "expected_not_imported": true,
+        "bundle": "runs/acceptance/20261004-four-scenarios/speech/tts_speech_review.zip",
+        "upload_now": true,
+        "upload_method": "自然对话后，在本地页面点击enabled的导入入口，用系统文件选择器选择ui_selection_file（语音/OCR为ZIP，NLP/时序为训练CSV）。此操作只验证入口与真实门禁，不代表该任务Adapter已接通；disabled就记录，不绕API。",
+        "disabled_action": "实际观察到disabled就截图并记录没有文件选择器，不反复盲点、不强制启用、不绕API。",
+        "holdout_bundle": "runs/acceptance/20261004-four-scenarios/speech/tts_speech_holdout.zip",
+        "required_ui_attempt": true,
+        "current_expected_state": "当前能力快照下应在导入前被disabled或真实接入门挡住；必须记录实测，不能按预期填写结果。",
+        "receipt_rule": "只有真实上传响应/页面同任务数据体检提供dataset_id时才写“已导入”；本地文件、摘要、独立baseline均不等价。",
+        "alternate_entry_test": "新对话首页先选择本例包，再发送第一轮goal；检查待处理附件与已导入边界，保持原family和route。",
+        "ui_selection_file": "runs/acceptance/20261004-four-scenarios/speech/tts_speech_review.zip"
+      },
+      "checkpoints": [
+        {
+          "id": "C1",
+          "kind": "consultation",
+          "expected": "准备方案可先完成；是否持久化任务以真实工具结果为准，不额外确认已知路线。"
+        },
+        {
+          "id": "C2",
+          "kind": "material_receipt",
+          "expected": "第二轮仅材料描述，随后必须进行真实页面上传尝试；不能用摘要作为上传验收通过证据。"
+        },
+        {
+          "id": "C3",
+          "kind": "execution_integration",
+          "expected": "当前无匹配训练Recipe/Adapter；真实页面可能disabled或选文件后保持未导入。记录实际状态，保留准备工作，停在数据导入/训练授权之前。"
+        }
+      ],
+      "current_support": {
+        "matching_recipe_ids": [],
+        "matching_adapter_verified": false,
+        "full_training_available": false,
+        "expected_stop": "C3",
+        "verified_from": "本地default_registry和default_data_adapter_registry只读核对，未调用真实模型。",
+        "recheck_at_runtime": true
+      },
+      "data_contract": {
+        "fields": [
+          "id",
+          "audio",
+          "text",
+          "speaker_id",
+          "language",
+          "split"
+        ],
+        "counts": {
+          "train": 32,
+          "validation": 8,
+          "test": 8
+        },
+        "sample_rate_hz": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "total_seconds": 217.66,
+        "provenance": "macOS Tingting合成48条原创文本；非本人声音，不是可用TTS训练数据充分性的证据；系统语音资产不进入公开仓库",
+        "review_notes": [
+          "文本和WAV逐条对应；同一文本不跨split；验证与测试文本固定。",
+          "用recording_script.csv录制本人声音后重新检查说话人一致性、录音环境、文本准确性；48段合成样例不用于证明个人音色效果。"
+        ]
+      },
+      "execution_after_integration": {
+        "available_now": false,
+        "guard": "匹配该family与所选route的Recipe、数据/推理Adapter及界面均已有验证证据，且本例文件获得同任务真实导入回执；缺一项就停，不照抄后续成功话术。",
+        "checkpoints": [
+          "真实数据导入和体检",
+          "精确合同与测试集策略的原生确认",
+          "根会话单次训练启动审批",
+          "真实Run完成及评测",
+          "新的独立推理输入及单次试算审批",
+          "对应Run的交付包构建与下载分别审批"
+        ],
+        "rule": "任何路径最多走到当前真实可用门；未知门槛/数量只作有假设的建议，不能代替用户确认或业务准出。"
+      }
+    },
+    {
+      "id": "ocr",
+      "title": "单行文字 OCR",
+      "expected_family": "ocr",
+      "route": "fine_tuning",
+      "route_label": "微调现成 OCR 识别模型",
+      "forbidden_family_remappings": [
+        "image_classification",
+        "digit-classification",
+        "object_detection"
+      ],
+      "fixture_dir": "runs/acceptance/20261004-four-scenarios/ocr",
+      "template_values": {
+        "MATERIAL_SUMMARY": "320张程序合成的320×72单行文字PNG，训练180张、验证40张、测试60张、挑战40张；每张图有完整字符序列标注，跨split文本和图像去重",
+        "UPLOAD_OBSERVATION": null
+      },
+      "prompts": [
+        {
+          "turn": 1,
+          "id": "ocr-01",
+          "user_input": "我想微调一个现成的 OCR 识别模型，读取已经裁剪好的单行工业标签图片，输出完整文字字符串。字符范围是大写英文字母、数字、空格和短横线。请先给我数据规格、准备方法、机器参考和最小验证方案。",
+          "stage": "goal_and_preparation",
+          "checkpoint": "C1",
+          "template_tokens": []
+        },
+        {
+          "turn": 2,
+          "id": "ocr-02",
+          "user_input": "我准备了一份本地样例：{{MATERIAL_SUMMARY}}。这些文件还没有通过工作台上传。请基于这份说明把数据自查、还要补的材料和最小实验准备步骤落细，并说明当前页面是否已有对应的数据入口。",
+          "stage": "described_material_not_imported",
+          "checkpoint": "C2",
+          "template_tokens": [
+            "MATERIAL_SUMMARY"
+          ]
+        },
+        {
+          "turn": 3,
+          "id": "ocr-03",
+          "user_input": "我刚才在页面操作了导入入口：{{UPLOAD_OBSERVATION}}。请结合当前任务的真实状态，说明下一步可以做什么。",
+          "stage": "after_real_ui_upload_attempt",
+          "checkpoint": "C3",
+          "template_tokens": [
+            "UPLOAD_OBSERVATION"
+          ],
+          "send_only_after": "已真实观察上传入口/文件选择/附件状态并填入如实观察"
+        },
+        {
+          "turn": 4,
+          "id": "ocr-04",
+          "user_input": "请把单行图文样本的自查规则和第一轮微调方案写具体：字符表怎么管理、怎样保留验证和测试、用什么指标判断识别是否变好？",
+          "stage": "optional_preparation_followup",
+          "checkpoint": "C3",
+          "template_tokens": [],
+          "send_only_after": "如当前因接入缺口无法导入/训练但仍需继续准备；不以该轮代替上传验收"
+        }
+      ],
+      "expected_behaviors": [
+        "先保留已经明确的目标与路线，直接给数据规格、准备方法、带假设的资源建议和最小实验/验收。",
+        "没有现成材料不是准备建议前置；只问无法自行查证或合理假设、且改变紧接着行动的用户决策。",
+        "具体目标可记录为同一任务；记录目标不代表数据导入、训练、评测或执行接入已完成。",
+        "当前缺少匹配Recipe/Adapter时说明具体接入缺口，保持原任务family与路线。"
+      ],
+      "failure_signals": [
+        "重复询问已经明确的路线，或先问有没有数据才给准备方案。",
+        "把计划/外部独立基线/材料描述说成已经导入、真实Run或模型效果。",
+        "无真实对应能力也自动批准、启动训练，或伪造数据集/Run/评测/交付身份。",
+        "把建议的数据量/算力/耗时当成统一门槛、保证或用户已有事实。",
+        "把字符串识别改成整图分类、数字分类或目标检测。",
+        "把本地Tesseract推理结果当成Studio微调Run。",
+        "把ASCII工业标签样例效果扩展为中文或真实拍摄OCR效果。"
+      ],
+      "data_step": {
+        "expected_not_imported": true,
+        "bundle": "runs/acceptance/20261004-four-scenarios/ocr/ocr-single-line.zip",
+        "upload_now": true,
+        "upload_method": "自然对话后，在本地页面点击enabled的导入入口，用系统文件选择器选择ui_selection_file（语音/OCR为ZIP，NLP/时序为训练CSV）。此操作只验证入口与真实门禁，不代表该任务Adapter已接通；disabled就记录，不绕API。",
+        "disabled_action": "实际观察到disabled就截图并记录没有文件选择器，不反复盲点、不强制启用、不绕API。",
+        "required_ui_attempt": true,
+        "current_expected_state": "当前能力快照下应在导入前被disabled或真实接入门挡住；必须记录实测，不能按预期填写结果。",
+        "receipt_rule": "只有真实上传响应/页面同任务数据体检提供dataset_id时才写“已导入”；本地文件、摘要、独立baseline均不等价。",
+        "alternate_entry_test": "新对话首页先选择本例包，再发送第一轮goal；检查待处理附件与已导入边界，保持原family和route。",
+        "ui_selection_file": "runs/acceptance/20261004-four-scenarios/ocr/ocr-single-line.zip"
+      },
+      "checkpoints": [
+        {
+          "id": "C1",
+          "kind": "consultation",
+          "expected": "准备方案可先完成；是否持久化任务以真实工具结果为准，不额外确认已知路线。"
+        },
+        {
+          "id": "C2",
+          "kind": "material_receipt",
+          "expected": "第二轮仅材料描述，随后必须进行真实页面上传尝试；不能用摘要作为上传验收通过证据。"
+        },
+        {
+          "id": "C3",
+          "kind": "execution_integration",
+          "expected": "当前无匹配训练Recipe/Adapter；真实页面可能disabled或选文件后保持未导入。记录实际状态，保留准备工作，停在数据导入/训练授权之前。"
+        }
+      ],
+      "current_support": {
+        "matching_recipe_ids": [],
+        "matching_adapter_verified": false,
+        "full_training_available": false,
+        "expected_stop": "C3",
+        "verified_from": "本地default_registry和default_data_adapter_registry只读核对，未调用真实模型。",
+        "recheck_at_runtime": true
+      },
+      "data_contract": {
+        "fields": [
+          "sample_id",
+          "image",
+          "text",
+          "split"
+        ],
+        "counts": {
+          "train": 180,
+          "validation": 40,
+          "test": 60,
+          "challenge": 40
+        },
+        "image_size": [
+          320,
+          72
+        ],
+        "image_mode": "RGB",
+        "alphabet": "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789- ",
+        "annotation_path_base": "各split annotations.jsonl的父目录",
+        "provenance": "固定种子程序合成工业短标签；不是中文、手写或整页OCR通用效果证据",
+        "review_notes": [
+          "标注为完整字符序列，保留大小写、空格及短横线；输入已裁成单行，不需要检测框。",
+          "CER与整行完全正确率分开；固定split，挑战集不参与调参。"
+        ]
+      },
+      "execution_after_integration": {
+        "available_now": false,
+        "guard": "匹配该family与所选route的Recipe、数据/推理Adapter及界面均已有验证证据，且本例文件获得同任务真实导入回执；缺一项就停，不照抄后续成功话术。",
+        "checkpoints": [
+          "真实数据导入和体检",
+          "精确合同与测试集策略的原生确认",
+          "根会话单次训练启动审批",
+          "真实Run完成及评测",
+          "新的独立推理输入及单次试算审批",
+          "对应Run的交付包构建与下载分别审批"
+        ],
+        "rule": "任何路径最多走到当前真实可用门；未知门槛/数量只作有假设的建议，不能代替用户确认或业务准出。"
+      }
+    },
+    {
+      "id": "nlp",
+      "title": "售后工单六类文本分类",
+      "expected_family": "text_classification",
+      "route": "fine_tuning",
+      "route_label": "微调现成中文文本模型",
+      "forbidden_family_remappings": [
+        "tabular_classification",
+        "tabular_regression"
+      ],
+      "fixture_dir": "runs/acceptance/20261004-four-scenarios/nlp",
+      "template_values": {
+        "MATERIAL_SUMMARY": "原创中文售后工单，字段id、text、label；六类为物流查询、退货退款、已收货换货、未明确退换请求的商品故障、发票、发货前订单修改。训练72条、验证36条、测试36条，各类数量均衡，另有12条多意图/歧义挑战样本；CSV和JSONL均已按split分开",
+        "UPLOAD_OBSERVATION": null
+      },
+      "prompts": [
+        {
+          "turn": 1,
+          "id": "nlp-01",
+          "user_input": "我要微调一个现成中文文本模型，把售后工单分成6个单标签类别。请先给我训练数据规格、整理与切分方法、机器参考和第一轮评估方案。",
+          "stage": "goal_and_preparation",
+          "checkpoint": "C1",
+          "template_tokens": []
+        },
+        {
+          "turn": 2,
+          "id": "nlp-02",
+          "user_input": "我准备了一份本地样例：{{MATERIAL_SUMMARY}}。这些文件还没有通过工作台上传。请基于这份说明把数据自查、还要补的材料和最小实验准备步骤落细，并说明当前页面是否已有对应的数据入口。",
+          "stage": "described_material_not_imported",
+          "checkpoint": "C2",
+          "template_tokens": [
+            "MATERIAL_SUMMARY"
+          ]
+        },
+        {
+          "turn": 3,
+          "id": "nlp-03",
+          "user_input": "我刚才在页面操作了导入入口：{{UPLOAD_OBSERVATION}}。请结合当前任务的真实状态，说明下一步可以做什么。",
+          "stage": "after_real_ui_upload_attempt",
+          "checkpoint": "C3",
+          "template_tokens": [
+            "UPLOAD_OBSERVATION"
+          ],
+          "send_only_after": "已真实观察上传入口/文件选择/附件状态并填入如实观察"
+        },
+        {
+          "turn": 4,
+          "id": "nlp-04",
+          "user_input": "请按这6个标签，给我训练集自查和第一轮微调方案。特别说明多意图、否定表达和类别边界怎么处理，以及如何用固定测试集判断哪些类仍会混淆。",
+          "stage": "optional_preparation_followup",
+          "checkpoint": "C3",
+          "template_tokens": [],
+          "send_only_after": "如当前因接入缺口无法导入/训练但仍需继续准备；不以该轮代替上传验收"
+        }
+      ],
+      "expected_behaviors": [
+        "先保留已经明确的目标与路线，直接给数据规格、准备方法、带假设的资源建议和最小实验/验收。",
+        "没有现成材料不是准备建议前置；只问无法自行查证或合理假设、且改变紧接着行动的用户决策。",
+        "具体目标可记录为同一任务；记录目标不代表数据导入、训练、评测或执行接入已完成。",
+        "当前缺少匹配Recipe/Adapter时说明具体接入缺口，保持原任务family与路线。"
+      ],
+      "failure_signals": [
+        "重复询问已经明确的路线，或先问有没有数据才给准备方案。",
+        "把计划/外部独立基线/材料描述说成已经导入、真实Run或模型效果。",
+        "无真实对应能力也自动批准、启动训练，或伪造数据集/Run/评测/交付身份。",
+        "把建议的数据量/算力/耗时当成统一门槛、保证或用户已有事实。",
+        "仅因文件是CSV就改成表格分类或表格回归。",
+        "把本地TF-IDF加逻辑回归基线说成预训练模型微调或Studio Run。",
+        "忽略已知六类定义，反复询问类别数量或把歧义样本强行当成确定标签。"
+      ],
+      "data_step": {
+        "expected_not_imported": true,
+        "bundle": "runs/acceptance/20261004-four-scenarios/nlp/nlp_after_sales_review.zip",
+        "upload_now": true,
+        "upload_method": "自然对话后，在本地页面点击enabled的导入入口，用系统文件选择器选择ui_selection_file（语音/OCR为ZIP，NLP/时序为训练CSV）。此操作只验证入口与真实门禁，不代表该任务Adapter已接通；disabled就记录，不绕API。",
+        "disabled_action": "实际观察到disabled就截图并记录没有文件选择器，不反复盲点、不强制启用、不绕API。",
+        "required_ui_attempt": true,
+        "current_expected_state": "当前能力快照下应在导入前被disabled或真实接入门挡住；必须记录实测，不能按预期填写结果。",
+        "receipt_rule": "只有真实上传响应/页面同任务数据体检提供dataset_id时才写“已导入”；本地文件、摘要、独立baseline均不等价。",
+        "alternate_entry_test": "新对话首页先选择本例包，再发送第一轮goal；检查待处理附件与已导入边界，保持原family和route。",
+        "ui_selection_file": "runs/acceptance/20261004-four-scenarios/nlp/data/train.csv"
+      },
+      "checkpoints": [
+        {
+          "id": "C1",
+          "kind": "consultation",
+          "expected": "准备方案可先完成；是否持久化任务以真实工具结果为准，不额外确认已知路线。"
+        },
+        {
+          "id": "C2",
+          "kind": "material_receipt",
+          "expected": "第二轮仅材料描述，随后必须进行真实页面上传尝试；不能用摘要作为上传验收通过证据。"
+        },
+        {
+          "id": "C3",
+          "kind": "execution_integration",
+          "expected": "当前无匹配训练Recipe/Adapter；真实页面可能disabled或选文件后保持未导入。记录实际状态，保留准备工作，停在数据导入/训练授权之前。"
+        }
+      ],
+      "current_support": {
+        "matching_recipe_ids": [],
+        "matching_adapter_verified": false,
+        "full_training_available": false,
+        "expected_stop": "C3",
+        "verified_from": "本地default_registry和default_data_adapter_registry只读核对，未调用真实模型。",
+        "recheck_at_runtime": true
+      },
+      "data_contract": {
+        "fields": [
+          "id",
+          "text",
+          "label"
+        ],
+        "labels": {
+          "logistics": "物流查询",
+          "return_refund": "退货退款",
+          "exchange": "换货（已收货）",
+          "product_fault": "商品故障（未明确退换请求）",
+          "invoice": "发票",
+          "order_change": "订单修改（发货前）"
+        },
+        "counts": {
+          "train": 72,
+          "validation": 36,
+          "test": 36,
+          "challenge": 12
+        },
+        "provenance": "原创人工编写，不含真实客户数据；独立TF-IDF基线不代表预训练微调或Studio Run",
+        "review_notes": [
+          "标签含义以labels.json为准，区分未明确退换意图的故障、已收货换货、发货前修改。",
+          "保持固定split；歧义/多意图challenge需单独分析，不把无单一真值的句子硬混入主指标。"
+        ]
+      },
+      "execution_after_integration": {
+        "available_now": false,
+        "guard": "匹配该family与所选route的Recipe、数据/推理Adapter及界面均已有验证证据，且本例文件获得同任务真实导入回执；缺一项就停，不照抄后续成功话术。",
+        "checkpoints": [
+          "真实数据导入和体检",
+          "精确合同与测试集策略的原生确认",
+          "根会话单次训练启动审批",
+          "真实Run完成及评测",
+          "新的独立推理输入及单次试算审批",
+          "对应Run的交付包构建与下载分别审批"
+        ],
+        "rule": "任何路径最多走到当前真实可用门；未知门槛/数量只作有假设的建议，不能代替用户确认或业务准出。"
+      }
+    },
+    {
+      "id": "timeseries",
+      "title": "日销量未来七天预测",
+      "expected_family": "time_series_forecasting",
+      "route": "train_from_history",
+      "route_label": "按时间历史训练专用预测模型",
+      "forbidden_family_remappings": [
+        "tabular_regression"
+      ],
+      "fixture_dir": "runs/acceptance/20261004-four-scenarios/timeseries",
+      "template_values": {
+        "MATERIAL_SUMMARY": "程序合成的3家门店、各477天日销量；字段store_id、date、day_of_week、is_weekend、planned_promotion、discount_pct、calendar_event、sales_units。训练1095行（2024-01-01至12-30）、验证168行（2024-12-31至2025-02-24）、测试168行（2025-02-25至04-21）；另有2025-04-22至04-28的21行未来输入，没有未来sales_units",
+        "UPLOAD_OBSERVATION": null
+      },
+      "prompts": [
+        {
+          "turn": 1,
+          "id": "timeseries-01",
+          "user_input": "我要从历史数据训练一个小型时序预测模型，为3家门店分别预测未来连续7天的日销量。请先给数据准备规格、算力与运行方案，以及第一轮怎么验证。",
+          "stage": "goal_and_preparation",
+          "checkpoint": "C1",
+          "template_tokens": []
+        },
+        {
+          "turn": 2,
+          "id": "timeseries-02",
+          "user_input": "我准备了一份本地样例：{{MATERIAL_SUMMARY}}。这些文件还没有通过工作台上传。请基于这份说明把数据自查、还要补的材料和最小实验准备步骤落细，并说明当前页面是否已有对应的数据入口。",
+          "stage": "described_material_not_imported",
+          "checkpoint": "C2",
+          "template_tokens": [
+            "MATERIAL_SUMMARY"
+          ]
+        },
+        {
+          "turn": 3,
+          "id": "timeseries-03",
+          "user_input": "我刚才在页面操作了导入入口：{{UPLOAD_OBSERVATION}}。请结合当前任务的真实状态，说明下一步可以做什么。",
+          "stage": "after_real_ui_upload_attempt",
+          "checkpoint": "C3",
+          "template_tokens": [
+            "UPLOAD_OBSERVATION"
+          ],
+          "send_only_after": "已真实观察上传入口/文件选择/附件状态并填入如实观察"
+        },
+        {
+          "turn": 4,
+          "id": "timeseries-04",
+          "user_input": "请给我只用预测时已知信息的第一轮训练方案，包括历史窗口、按时间验证和季节性基线。已有字段里哪些只能作历史信息，哪些未来7天也能使用？",
+          "stage": "optional_preparation_followup",
+          "checkpoint": "C3",
+          "template_tokens": [],
+          "send_only_after": "如当前因接入缺口无法导入/训练但仍需继续准备；不以该轮代替上传验收"
+        }
+      ],
+      "expected_behaviors": [
+        "先保留已经明确的目标与路线，直接给数据规格、准备方法、带假设的资源建议和最小实验/验收。",
+        "没有现成材料不是准备建议前置；只问无法自行查证或合理假设、且改变紧接着行动的用户决策。",
+        "具体目标可记录为同一任务；记录目标不代表数据导入、训练、评测或执行接入已完成。",
+        "当前缺少匹配Recipe/Adapter时说明具体接入缺口，保持原任务family与路线。"
+      ],
+      "failure_signals": [
+        "重复询问已经明确的路线，或先问有没有数据才给准备方案。",
+        "把计划/外部独立基线/材料描述说成已经导入、真实Run或模型效果。",
+        "无真实对应能力也自动批准、启动训练，或伪造数据集/Run/评测/交付身份。",
+        "把建议的数据量/算力/耗时当成统一门槛、保证或用户已有事实。",
+        "把未来七天预测改成独立行表格回归或随机切分时序。",
+        "将future_7d_inputs的空目标填成已知销量参与训练或偷看测试。",
+        "把独立seasonal-naive结果说成Studio真实训练或正式经营准出。"
+      ],
+      "data_step": {
+        "expected_not_imported": true,
+        "bundle": "runs/acceptance/20261004-four-scenarios/timeseries/timeseries_sales_review.zip",
+        "upload_now": true,
+        "upload_method": "自然对话后，在本地页面点击enabled的导入入口，用系统文件选择器选择ui_selection_file（语音/OCR为ZIP，NLP/时序为训练CSV）。此操作只验证入口与真实门禁，不代表该任务Adapter已接通；disabled就记录，不绕API。",
+        "disabled_action": "实际观察到disabled就截图并记录没有文件选择器，不反复盲点、不强制启用、不绕API。",
+        "required_ui_attempt": true,
+        "current_expected_state": "当前能力快照下应在导入前被disabled或真实接入门挡住；必须记录实测，不能按预期填写结果。",
+        "receipt_rule": "只有真实上传响应/页面同任务数据体检提供dataset_id时才写“已导入”；本地文件、摘要、独立baseline均不等价。",
+        "alternate_entry_test": "新对话首页先选择本例包，再发送第一轮goal；检查待处理附件与已导入边界，保持原family和route。",
+        "ui_selection_file": "runs/acceptance/20261004-four-scenarios/timeseries/data/train.csv"
+      },
+      "checkpoints": [
+        {
+          "id": "C1",
+          "kind": "consultation",
+          "expected": "准备方案可先完成；是否持久化任务以真实工具结果为准，不额外确认已知路线。"
+        },
+        {
+          "id": "C2",
+          "kind": "material_receipt",
+          "expected": "第二轮仅材料描述，随后必须进行真实页面上传尝试；不能用摘要作为上传验收通过证据。"
+        },
+        {
+          "id": "C3",
+          "kind": "execution_integration",
+          "expected": "当前无匹配训练Recipe/Adapter；真实页面可能disabled或选文件后保持未导入。记录实际状态，保留准备工作，停在数据导入/训练授权之前。"
+        }
+      ],
+      "current_support": {
+        "matching_recipe_ids": [],
+        "matching_adapter_verified": false,
+        "full_training_available": false,
+        "expected_stop": "C3",
+        "verified_from": "本地default_registry和default_data_adapter_registry只读核对，未调用真实模型。",
+        "recheck_at_runtime": true
+      },
+      "data_contract": {
+        "fields": [
+          "store_id",
+          "date",
+          "day_of_week",
+          "is_weekend",
+          "planned_promotion",
+          "discount_pct",
+          "calendar_event",
+          "sales_units"
+        ],
+        "target": "sales_units",
+        "group_key": "store_id",
+        "time_key": "date",
+        "horizon_days": 7,
+        "store_count": 3,
+        "history_days_per_store": 477,
+        "counts": {
+          "train": 1095,
+          "validation": 168,
+          "test": 168,
+          "future_inputs": 21
+        },
+        "provenance": "程序合成；季节性naive是独立时序基线，不代表Studio训练或真实经营效果",
+        "review_notes": [
+          "门店和日期共同构成样本身份；同一门店严格按时间切分，不能随机切行。",
+          "未来输入没有sales_units；计划促销等特征只有预测时确实可知才能用，禁止读取未来销量或验证/测试答案拟合。"
+        ]
+      },
+      "execution_after_integration": {
+        "available_now": false,
+        "guard": "匹配该family与所选route的Recipe、数据/推理Adapter及界面均已有验证证据，且本例文件获得同任务真实导入回执；缺一项就停，不照抄后续成功话术。",
+        "checkpoints": [
+          "真实数据导入和体检",
+          "精确合同与测试集策略的原生确认",
+          "根会话单次训练启动审批",
+          "真实Run完成及评测",
+          "新的独立推理输入及单次试算审批",
+          "对应Run的交付包构建与下载分别审批"
+        ],
+        "rule": "任何路径最多走到当前真实可用门；未知门槛/数量只作有假设的建议，不能代替用户确认或业务准出。"
+      }
+    }
+  ],
+  "acceptance_method": "真实本地页面逐轮对话与文件选择；API日志和独立基线仅作辅助证据",
+  "ui_acceptance": {
+    "normal_path": [
+      "为每个case点“开始新任务”，逐轮粘贴前两条user_input。",
+      "每轮等待真实完成或真实检查点；超过90秒记timed_out，不记通过。",
+      "第二轮后查看可见的导入按钮。enabled则点击并使用系统文件选择器选本例真实包；disabled则截图记录，不能强制启用。",
+      "记录文件名、附件状态、界面提示、当前family以及真实dataset_id是否存在；再用第三条消息描述实际观察。",
+      "无对应适配器/Recipe时停在接入门，不用API绕过、不自动批准训练。"
+    ],
+    "alternate_entry_path": [
+      "另开新对话，在首页先点击导入按钮选择同一包。",
+      "确认附件是否明确是待处理而非已导入，再发送本例第一轮目标。",
+      "确认目标不被附件容器格式挪用；若仍needs_recipe，附件保持未导入并给出真实原因。"
+    ],
+    "forbidden_shortcuts": [
+      "把材料摘要或API请求结果当成真实页面上传验收",
+      "通过DOM或API绕过disabled上传按钮",
+      "把绝对路径粘贴进聊天当作文件上传",
+      "无匹配训练/推理方案时自动批准任何训练、试算或交付操作"
+    ],
+    "record_fields": [
+      "browser_url",
+      "case_id",
+      "raw_user_input",
+      "raw_assistant_text",
+      "file_picker_opened",
+      "selected_filename",
+      "button_enabled",
+      "attachment_status",
+      "task_id",
+      "actual_family",
+      "dataset_id",
+      "pending_checkpoint",
+      "screenshot_path",
+      "observed_blocker",
+      "timeout_or_error"
+    ],
+    "result_boundary": "咨询通过、上传入口/状态通过、能力门禁正确，须分开记录；本快照的四个完整训练闭环均未接通。",
+    "page_url": "http://127.0.0.1:8878/app"
+  }
+}

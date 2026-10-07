@@ -529,12 +529,9 @@ body[data-view="home"] .topbar-title>div{display:none}
 @media(max-width:720px){.action-timeline>summary{min-height:64px}.decision-actions.human-choice-list{grid-template-columns:1fr}.human-choice-custom{grid-column:1}}
 
 /* v1.4 Round 2: explicit queued-message and cancellation semantics. */
-.composer-delivery{display:grid;grid-template-columns:auto minmax(0,1fr);gap:5px 9px;align-items:baseline;margin:0 0 7px;padding:8px 10px;border:1px solid rgba(184,117,20,.2);border-radius:10px;color:var(--amber);background:var(--amber-bg);font-size:12px;line-height:1.45}
-.composer-delivery[hidden]{display:none}.composer-delivery b{font-size:12px}.composer-delivery span{color:var(--text)}
-.composer-wrap[data-delivery="queue_after_turn"] .composer{border-color:rgba(184,117,20,.3)}
 .agent-working[data-status="cancelling"]{color:var(--amber)}.agent-working[data-status="cancelling"]>i{color:var(--amber);background:var(--amber-bg)}.agent-working[data-status="cancelling"] button{color:var(--muted)}
 .cancel-reason-field{display:grid;gap:7px;margin-top:14px;color:var(--ink);font-size:13px;font-weight:700}.cancel-reason-field textarea{width:100%;min-height:82px;resize:vertical;padding:9px 10px;border:1px solid var(--line-strong);border-radius:9px;color:var(--ink);background:#fff;font:inherit;font-weight:400;line-height:1.5}.cancel-reason-field textarea:focus{outline:2px solid rgba(98,88,244,.24);border-color:rgba(98,88,244,.46)}
-@media(max-width:720px){.composer-delivery{grid-template-columns:1fr;gap:2px;margin-bottom:5px;padding:7px 9px}.cancel-reason-field textarea{min-height:96px}}
+@media(max-width:720px){.cancel-reason-field textarea{min-height:96px}}
 
 /* Regression gate units and recommendation rationale stay visible at review time. */
 .gate-grid .gate-basis{grid-column:1/-1;margin:3px 1px 0;padding:0;color:var(--muted);font-size:11px;line-height:1.55;text-align:left}

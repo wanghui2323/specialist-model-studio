@@ -19,8 +19,10 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from ..data_adapters import verify_training_dataset_integrity
+from ..errors import ContractError
 from ..io_utils import read_json, write_json
 from ..plugin_api import StrategyProposal
+from ..tabular_values import normalize_tabular_value, tabular_inference_example
 
 
 @dataclass
@@ -49,13 +51,17 @@ def _load_rows(contract: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, np.nda
     dataset = contract["dataset"]
     feature_columns = list(dataset["feature_columns"])
     target_column = str(dataset["target_column"])
+    numeric_columns = set(dataset.get("numeric_columns", []))
     rows: list[list[Any]] = []
     targets: list[float] = []
     row_numbers: list[int] = []
     with Path(dataset["csv_path"]).open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         for row_number, row in enumerate(reader, start=2):
-            rows.append([row.get(column, "") for column in feature_columns])
+            rows.append([
+                normalize_tabular_value(row.get(column), column in numeric_columns)
+                for column in feature_columns
+            ])
             targets.append(float(str(row[target_column]).strip()))
             row_numbers.append(row_number)
     return (
@@ -92,7 +98,9 @@ def _preprocessor(dataset: dict[str, Any]) -> ColumnTransformer:
                 "numeric",
                 Pipeline(
                     [
-                        ("impute", SimpleImputer(strategy="median")),
+                        ("impute", SimpleImputer(
+                            strategy="median", keep_empty_features=True,
+                        )),
                         ("scale", StandardScaler()),
                     ]
                 ),
@@ -105,7 +113,10 @@ def _preprocessor(dataset: dict[str, Any]) -> ColumnTransformer:
                 "categorical",
                 Pipeline(
                     [
-                        ("impute", SimpleImputer(strategy="most_frequent")),
+                        ("impute", SimpleImputer(
+                            missing_values=None, strategy="most_frequent",
+                            keep_empty_features=True,
+                        )),
                         (
                             "encode",
                             OneHotEncoder(handle_unknown="ignore", sparse_output=False),
@@ -162,8 +173,26 @@ def train(contract: dict[str, Any]) -> TrainingContext:
     verify_training_dataset_integrity(contract["dataset"])
     X, y, row_numbers = _load_rows(contract)
     dataset = contract["dataset"]
-    train_idx, validation_idx, test_idx = _split_indices(
-        len(y), dataset["split"], int(dataset["random_seed"])
+    # Identical inputs can have noisy numeric outcomes. Keep their entire group
+    # in one split rather than letting the model see test inputs during fitting.
+    groups: dict[tuple[Any, ...], list[int]] = {}
+    for index, row in enumerate(X):
+        groups.setdefault(tuple(row), []).append(index)
+    report = read_json(Path(dataset["report_path"]))
+    if len(groups) != len(X) and report.get("split_policy") != "random_effective_feature_groups":
+        raise ContractError(
+            "旧版表格包含重复有效特征，请重新导入并确认数据；不能在原合同下更改测试集划分"
+        )
+    group_rows = list(groups.values())
+    group_splits = _split_indices(
+        len(groups), dataset["split"], int(dataset["random_seed"]),
+    )
+    train_idx, validation_idx, test_idx = (
+        np.asarray(
+            sorted(index for group in split for index in group_rows[int(group)]),
+            dtype=np.int64,
+        )
+        for split in group_splits
     )
     candidates = _build_candidates(contract)
     validation_results: dict[str, dict[str, Any]] = {}
@@ -247,6 +276,7 @@ def evaluate(context: TrainingContext, contract: dict[str, Any]) -> EvaluationCo
             "row_count": report["row_count"],
             "feature_count": len(report["feature_columns"]),
             "target_column": report["target_column"],
+            "split_policy": "random_effective_feature_groups",
         },
         "validation_candidates": context.validation_results,
         "clean_test": clean,
@@ -283,6 +313,9 @@ def package(
         {
             "estimator": context.final_model,
             "feature_columns": context.feature_columns,
+            "numeric_columns": list(contract["dataset"]["numeric_columns"]),
+            "categorical_columns": list(contract["dataset"]["categorical_columns"]),
+            "feature_value_policy": "typed_values_missing_none_v1",
             "target_column": context.target_column,
             "task_type": "regression",
         },
@@ -348,14 +381,15 @@ This local model predicts `{context.target_column}` from a user-imported CSV. Of
 
 ## Known limits
 
-- Random row splitting cannot prove generalization across time, sites, machines or populations.
+- Identical effective feature rows are kept in the same split, including rows with different numeric outcomes.
+- Random feature-group splitting cannot prove generalization across time, sites, machines or populations.
 - Review high-error rows and run a domain-appropriate temporal or grouped split before production use.
 - Load Joblib artifacts only from trusted runs after hash verification.
 """,
         encoding="utf-8",
     )
     (artifact_dir / "inference_example.py").write_text(
-        """import csv\nimport joblib\n\nbundle = joblib.load('model.joblib')  # trusted artifact only\nwith open('one-row.csv', encoding='utf-8', newline='') as handle:\n    row = next(csv.DictReader(handle))\nX = [[row.get(name, '') for name in bundle['feature_columns']]]\nprint(bundle['estimator'].predict(X)[0])\n""",
+        tabular_inference_example(),
         encoding="utf-8",
     )
     return metrics

@@ -15,6 +15,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from model_harness.audio_keyword import extract_audio_feature
+from model_harness.errors import ContractError
 from model_harness.io_utils import sha256_file, write_json
 from model_harness.recipes.image_folder_classification import extract_image_feature
 from model_harness.sample_inference import SampleInference, SampleInferenceBlocked
@@ -206,6 +207,13 @@ def _tabular_fixture(root: Path) -> Path:
 
 
 class SampleInferenceTests(unittest.TestCase):
+    def test_model_contract_failure_does_not_blame_user_input_or_expose_private_paths(self):
+        diagnostic = SampleInference._public_error(ContractError("failed at /Users/private/sample.txt"))
+        self.assertIn("model execution", diagnostic)
+        self.assertNotIn("sample input is invalid", diagnostic)
+        self.assertNotIn("/Users", diagnostic)
+        self.assertEqual(SampleInference._public_error(ValueError("bad JSON")), "sample input is invalid")
+
     def test_real_image_audio_and_tabular_samples_predict_and_survive_restart(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

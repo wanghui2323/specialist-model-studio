@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import unittest
 from copy import deepcopy
+from dataclasses import asdict
 
+from model_harness.conversation_actions import classify_conversation_actions
 from model_harness.conversation_payloads import (
     CONVERSATION_EVENT_PAYLOAD_MODE,
     CONVERSATION_RESULT_PREVIEW_MAX_CHARS,
@@ -38,6 +40,175 @@ def result_event(result: object) -> dict[str, object]:
 
 
 class ConversationPayloadCompactionTests(unittest.TestCase):
+    def test_task_read_404_recovers_only_after_paired_same_owner_promotion(self) -> None:
+        def event(sequence, call_id, tool, kind, payload, run):
+            return {
+                "event_id": f"event-{sequence}", "source": "dsh", "seq": sequence,
+                "source_key": f"dsh:root:{sequence}", "source_seq": sequence,
+                "projector_revision": "3.3", "task_id": "task-1",
+                "agent_run_id": run, "session_id": "root", "root_session_id": "root",
+                "turn_id": f"turn-{run}", "call_id": call_id,
+                "actor_role": "orchestrator", "event_type": kind, "type": kind,
+                "payload": {"call_id": call_id, "tool_name": tool, **payload},
+            }
+        promoted = {
+            "task": {"task_id": "task-1", "record_type": "training_task", "status": "needs_recipe"},
+            "conversation": {"conversation_id": "task-1", "task_id": "task-1", "status": "bound"},
+            "promoted": True,
+        }
+        events = [
+            event(1, "read", "model_harness_get_task", "tool_call", {"arguments": '{"task_id":"task-1"}'}, "agent-old"),
+            event(2, "read", "model_harness_get_task", "tool_result", {"is_error": True, "result": [{"type": "text", "text": "Error: Specialist Model Studio 404: missing"}]}, "agent-old"),
+            event(3, "promote", "model_harness_promote_conversation", "tool_call", {"arguments": '{"conversation_id":"task-1"}'}, "agent-new"),
+            event(4, "promote", "model_harness_promote_conversation", "tool_result", {"is_error": False, "result": [{"type": "text", "text": json.dumps(promoted)}]}, "agent-new"),
+        ]
+
+        def project(observed, exists=True):
+            classified = classify_conversation_actions(task_id="task-1", projector_revision="3.3", events=observed)
+            return project_conversation_objects(
+                task_id="task-1", agent_runs=[
+                    {"run_id": "agent-old", "agent_turn_id": "turn-old", "status": "idle_without_final"},
+                    {"run_id": "agent-new", "agent_turn_id": "turn-new", "status": "idle_without_final"},
+                ], actions=[asdict(action) for action in classified], events=observed,
+                training_task_exists=exists, background_actions=[], pending=[], agent_response_running=False,
+            )
+
+        result = project(events)
+        self.assertEqual(result["actions"][0]["status"], "failed")
+        self.assertEqual(result["risks"][0]["status"], "failed")
+        self.assertFalse(result["risks"][0]["active"])
+        self.assertEqual(result["risks"][0]["resolution"], {
+            "kind": "task_created_by_later_promotion", "source_type": "Action",
+            "source_id": result["actions"][1]["action_id"],
+        })
+        self.assertEqual(result["interaction_projection"]["phase"], "idle")
+        self.assertTrue(project(events, exists=False)["risks"][0]["active"])
+
+        for name in ("403", "prose_error", "foreign_read", "foreign_promotion", "prose_success",
+                     "unbound_result", "foreign_result_task", "foreign_result_conversation", "foreign_result_binding",
+                     "missing_pair", "duplicate_event", "different_session", "child_session", "earlier_success",
+                     "identity_error", "training_failure", "promotion_error", "unobserved_result",
+                     "missing_native_order", "earlier_native_success", "mismatched_payload_call"):
+            changed = deepcopy(events)
+            if name in {"403", "prose_error"}:
+                changed[1]["payload"]["result"][0]["text"] = (
+                    "Error: Specialist Model Studio 403: permission denied" if name == "403" else "Task not found; please create it."
+                )
+            elif name == "foreign_read":
+                changed[0]["payload"]["arguments"] = '{"task_id":"task-other"}'
+            elif name == "foreign_promotion":
+                changed[2]["payload"]["arguments"] = '{"conversation_id":"task-other"}'
+            elif name == "prose_success":
+                changed[3]["payload"]["result"][0]["text"] = "The task is registered now."
+            elif name == "unbound_result":
+                changed[3]["payload"]["result"][0]["text"] = json.dumps({**promoted, "task": {"task_id": "task-1", "record_type": "conversation_draft"}})
+            elif name in {"foreign_result_task", "foreign_result_conversation", "foreign_result_binding"}:
+                foreign = deepcopy(promoted)
+                if name == "foreign_result_task":
+                    foreign["task"]["task_id"] = "task-other"
+                else:
+                    foreign["conversation"]["conversation_id" if name == "foreign_result_conversation" else "task_id"] = "task-other"
+                changed[3]["payload"]["result"][0]["text"] = json.dumps(foreign)
+            elif name == "missing_pair":
+                changed.pop(2)
+            elif name == "duplicate_event":
+                changed.append(deepcopy(changed[3]))
+            elif name in {"different_session", "child_session"}:
+                for entry in changed[2:]:
+                    entry["session_id"] = "child"
+                    if name == "different_session":
+                        entry["root_session_id"] = "child"
+            elif name == "earlier_success":
+                changed = changed[2:] + changed[:2]
+                for sequence, entry in enumerate(changed, 1):
+                    entry["seq"] = entry["source_seq"] = sequence
+            elif name == "identity_error":
+                changed[1]["turn_id"] = None
+            elif name == "training_failure":
+                for entry in changed[:2]:
+                    entry["payload"]["tool_name"] = "model_harness_start_task_run"
+            elif name == "promotion_error":
+                changed[3]["payload"]["is_error"] = True
+            elif name == "unobserved_result":
+                changed[3]["source"] = "runtime"
+            elif name == "missing_native_order":
+                changed[3].pop("source_seq")
+            elif name == "earlier_native_success":
+                changed[2]["source_seq"], changed[3]["source_seq"] = -1, 0
+            elif name == "mismatched_payload_call":
+                changed[3]["payload"]["call_id"] = "different-call"
+            with self.subTest(name=name):
+                projection = project(changed)
+                self.assertTrue(any(risk["active"] for risk in projection["risks"]))
+                self.assertFalse(any((risk.get("resolution") or {}).get("kind") == "task_created_by_later_promotion" for risk in projection["risks"]))
+
+    def test_training_start_retires_only_the_proven_earlier_capability_match_failure(self):
+        def action(name, tool, status, sequence):
+            return {
+                "action_id": name, "task_id": "task-1", "agent_run_id": "agent-1",
+                "session_id": "session-1", "turn_id": "turn-1", "call_id": f"call-{name}",
+                "call_event_id": f"event-call-{name}", "result_event_id": f"event-result-{name}",
+                "truth_type": "observed_result", "tool_class": "domain",
+                "tool_name": tool, "status": status,
+                "error": {"code": "tool_result_error"} if status == "failed" else None,
+                "event_result_ref": {
+                    "type": "conversation_event_result", "task_id": "task-1",
+                    "id": f"event-result-{name}", "event_seq": sequence,
+                },
+            }
+        failed = action("capability", "model_harness_match_capability", "failed", 10)
+        started = action("start", "model_harness_start_task_run", "completed", 55)
+        def project(actions):
+            return project_conversation_objects(
+                task_id="task-1", agent_runs=[{"run_id": "agent-1", "agent_turn_id": "agent-turn-1", "status": "idle_without_final"}],
+                actions=actions, background_actions=[], pending=[], agent_response_running=False,
+            )
+        result = project([failed, started])
+        risk = result["risks"][0]
+        self.assertEqual(risk["status"], "failed")
+        self.assertEqual(risk["error"], failed["error"])
+        self.assertFalse(risk["active"])
+        self.assertEqual(risk["lifecycle_status"], "superseded")
+        self.assertEqual(risk["resolution"], {
+            "kind": "capability_resolved_by_training_start", "source_type": "Action", "source_id": "start",
+        })
+        self.assertEqual(result["actions"][0]["status"], "failed")
+        self.assertEqual(result["interaction_projection"]["phase"], "idle")
+        self.assertIsNone(result["primary_attention"])
+        for field, value in [
+            ("task_id", "other-task"), ("agent_run_id", "other-run"),
+            ("truth_type", "observed_call"), ("call_event_id", None),
+            ("result_event_id", None), ("session_id", None),
+            ("event_result_ref", None), ("status", "running"),
+            ("error", {"code": "start_not_confirmed"}),
+        ]:
+            with self.subTest(field=field):
+                candidate = {**started, field: value}
+                blocked = project([failed, candidate])
+                self.assertTrue(blocked["risks"][0]["active"])
+                self.assertEqual(blocked["interaction_projection"]["phase"], "blocked")
+        for ref_override in [
+            {"task_id": "other-task"}, {"id": "unpaired-result"},
+            {"event_seq": 9}, {"event_seq": 10}, {"event_seq": True},
+        ]:
+            with self.subTest(ref_override=ref_override):
+                candidate = {**started, "event_result_ref": {**started["event_result_ref"], **ref_override}}
+                self.assertTrue(project([failed, candidate])["risks"][0]["active"])
+        self.assertTrue(project([started, failed])["risks"][0]["active"], "an earlier start is not recovery")
+        for failed_override in [
+            {"status": "identity_error"}, {"task_id": "other-task"},
+            {"agent_run_id": "other-run"}, {"truth_type": "identity_error"},
+            {"tool_name": "model_harness_build_artifact_bundle"},
+        ]:
+            with self.subTest(failed_override=failed_override):
+                self.assertTrue(project([{**failed, **failed_override}, started])["risks"][0]["active"])
+        delivery_failure = action("delivery", "model_harness_build_artifact_bundle", "failed", 60)
+        delivery_blocked = project([failed, started, delivery_failure])
+        self.assertFalse(delivery_blocked["risks"][0]["active"])
+        self.assertTrue(delivery_blocked["risks"][1]["active"])
+        self.assertEqual(delivery_blocked["interaction_projection"]["phase"], "blocked")
+        self.assertEqual(delivery_blocked["primary_attention"]["object_id"], "risk:delivery")
+
     def test_old_failure_stays_auditable_without_blocking_a_new_unrelated_turn(self) -> None:
         def project(status="failed", scope="agent-old"):
             return project_conversation_objects(

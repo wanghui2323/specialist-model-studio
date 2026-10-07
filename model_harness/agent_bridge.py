@@ -18,6 +18,10 @@ class AgentRuntimeError(RuntimeError):
 
 
 TOOL_LABELS = {
+    "model_harness_get_context_state": "读取目标与已回答事项",
+    "model_harness_record_context_state": "保留目标与决定",
+    "model_harness_read_context_evidence": "按需读取历史证据",
+    "model_harness_inspect_context": "核对本轮上下文",
     "model_harness_list_recipes": "检查可用训练方案",
     "model_harness_list_data_adapters": "检查数据适配器",
     "model_harness_match_capability": "匹配训练能力",
@@ -87,11 +91,19 @@ _AGENT_PUBLIC_ROUTE_ROOTS = (
 )
 _AGENT_PUBLIC_WINDOWS_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
 _AGENT_PUBLIC_EMBEDDED_WINDOWS_PATH = re.compile(
-    r"(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/]|\\\\)[^\s\"'<>]+"
+    r"(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/]|\\\\)[^\s\"'<>`“”‘’「」『』]+"
 )
+_AGENT_PUBLIC_EMBEDDED_KNOWN_ROOT = re.compile(
+    r"(?<![A-Za-z0-9:/])/(?:Users|home|private|tmp|var|etc|Applications|Library|System|Volumes|opt|usr|srv|mnt|media)(?:/[^\s\"'<>`“”‘’「」『』]+)+"
+)
+_AGENT_PUBLIC_EMBEDDED_FILE_URI = re.compile(r"(?:file://|~/)[^\s\"'<>`“”‘’「」『』]+")
 _AGENT_PUBLIC_EMBEDDED_POSIX_PATH = re.compile(
-    r"(?<![\w:/])/[^\s\"'<>]+"
+    r"(?<![\w:/])/[^\s\"'<>`“”‘’「」『』]+"
 )
+_AGENT_PUBLIC_EMBEDDED_HOST_ROOT = re.compile(
+    r"(?<![A-Za-z0-9:/])/(?:Users|tmp|home|private|var|Applications|Volumes|opt|etc|usr|Library|System)(?=/|$)[^\s\"'<>`“”‘’「」『』]*"
+)
+_AGENT_PUBLIC_URL_PREFIX = re.compile(r"https?://[^\s\"'<>`“”‘’「」『』]*$", re.IGNORECASE)
 
 
 def _agent_public_route(value: str) -> bool:
@@ -120,6 +132,12 @@ def _agent_public_text(value: str) -> str:
     projected = _AGENT_PUBLIC_EMBEDDED_WINDOWS_PATH.sub(
         _AGENT_PUBLIC_REDACTED,
         value,
+    )
+    projected = _AGENT_PUBLIC_EMBEDDED_FILE_URI.sub(_AGENT_PUBLIC_REDACTED, projected)
+    projected = _AGENT_PUBLIC_EMBEDDED_KNOWN_ROOT.sub(_AGENT_PUBLIC_REDACTED, projected)
+    projected = _AGENT_PUBLIC_EMBEDDED_HOST_ROOT.sub(
+        lambda match: match.group(0) if _AGENT_PUBLIC_URL_PREFIX.search(projected[:match.start()]) else _AGENT_PUBLIC_REDACTED,
+        projected,
     )
     return _AGENT_PUBLIC_EMBEDDED_POSIX_PATH.sub(
         lambda match: (

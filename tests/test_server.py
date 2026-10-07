@@ -376,12 +376,12 @@ class ServerTests(unittest.TestCase):
                 health = client.get("/health")
                 self.assertEqual(health.status_code, 200)
                 self.assertTrue(health.json()["ok"])
-                self.assertEqual(health.json()["version"], "1.0.0-rc.1")
-                self.assertEqual(health.json()["package_version"], "1.0.0rc1")
+                self.assertEqual(health.json()["version"], "1.0.0-rc.2")
+                self.assertEqual(health.json()["package_version"], "1.0.0rc2")
                 self.assertEqual(
                     health.json()["feature_track"], "v1.0-conversation-native"
                 )
-                self.assertEqual(health.json()["release_status"], "unreleased_rc")
+                self.assertEqual(health.json()["release_status"], "source_preview_rc")
                 self.assertEqual(health.json()["scope"], "backend")
                 self.assertFalse(health.json()["agent_required"])
                 self.assertEqual(health.json()["primary_experience"], "conversation")
@@ -393,7 +393,7 @@ class ServerTests(unittest.TestCase):
                 self.assertEqual(
                     runtime.json()["feature_track"], "v1.0-conversation-native"
                 )
-                self.assertEqual(runtime.json()["release_status"], "unreleased_rc")
+                self.assertEqual(runtime.json()["release_status"], "source_preview_rc")
                 self.assertEqual(
                     runtime.json()["source_execution_policy"],
                     "static_analysis_only_without_verified_isolation",
@@ -425,7 +425,7 @@ class ServerTests(unittest.TestCase):
 
                 openapi = client.get("/openapi.json")
                 self.assertEqual(openapi.status_code, 200)
-                self.assertEqual(openapi.json()["info"]["version"], "1.0.0-rc.1")
+                self.assertEqual(openapi.json()["info"]["version"], "1.0.0-rc.2")
 
                 root = client.get("/", follow_redirects=False)
                 self.assertEqual(root.status_code, 307)
@@ -458,7 +458,7 @@ class ServerTests(unittest.TestCase):
                 console = client.get("/app")
                 self.assertEqual(console.status_code, 200)
                 self.assertIn("Specialist Model Studio · 专业模型智能工作台", console.text)
-                self.assertIn("想训练一个什么模型？", console.text)
+                self.assertIn("你想让模型解决什么问题？", console.text)
                 self.assertIn("说说你想解决的问题。", console.text)
                 self.assertNotIn("先通过对话把目标说清楚", console.text)
                 self.assertNotIn("Workspace Write", console.text)

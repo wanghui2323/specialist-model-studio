@@ -6,6 +6,7 @@ import io
 import math
 import os
 import statistics
+from collections import Counter
 from dataclasses import asdict, dataclass
 from importlib import metadata
 from pathlib import Path
@@ -15,6 +16,7 @@ from uuid import uuid4
 
 from .errors import ContractError, PluginError
 from .io_utils import read_json, sha256_file, write_json
+from .tabular_values import normalize_tabular_value
 
 
 ENTRY_POINT_GROUP = "ai_pm_model_harness.data_adapters"
@@ -22,6 +24,8 @@ MAX_CSV_BYTES = 50 * 1024 * 1024
 MAX_CSV_ROWS = 200_000
 MAX_CSV_COLUMNS = 512
 MIN_CSV_ROWS = 30
+# One dense float64 matrix only; fitting candidates needs additional memory.
+MAX_TABULAR_DENSE_BYTES = 256 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -60,6 +64,13 @@ def verify_training_dataset_integrity(dataset: dict[str, Any]) -> None:
         if kind == "tabular_csv":
             if sha256_file(Path(str(dataset["csv_path"]))) != expected:
                 fail("表格文件与导入时的数据指纹不一致")
+            report = read_json(Path(str(dataset["report_path"])))
+            for name in (
+                "target_column", "feature_columns", "numeric_columns",
+                "categorical_columns", "ignored_columns",
+            ):
+                if dataset.get(name) != report.get(name):
+                    fail(f"{name}与导入时的字段检查不一致，请重新导入以复查重复和资源限制")
             return
 
         if kind not in {"image_folder", "audio_keyword_class_folder"}:
@@ -247,6 +258,8 @@ class TabularCsvAdapter:
             raise ContractError(f"CSV列数超过{MAX_CSV_COLUMNS}列上限")
         if len(set(headers)) != len(headers):
             raise ContractError("CSV表头不能重复")
+        # DictReader otherwise keeps the original whitespace-bearing keys.
+        reader.fieldnames = headers
 
         target_column = str(options.get("target_column", "")).strip()
         if not target_column:
@@ -264,32 +277,26 @@ class TabularCsvAdapter:
         if target_column in ignored_columns:
             raise ContractError("target_column不能同时被忽略")
 
-        rows: list[dict[str, str]] = []
-        rejected_rows: list[dict[str, Any]] = []
-        seen_rows: set[tuple[str, ...]] = set()
-        for row_number, raw in enumerate(reader, start=2):
-            if row_number - 1 > MAX_CSV_ROWS:
-                raise ContractError(f"CSV行数超过{MAX_CSV_ROWS}行上限")
-            row = {header: str(raw.get(header) or "").strip() for header in headers}
-            if not row[target_column]:
-                rejected_rows.append({"row": row_number, "reason": "目标值为空"})
-                continue
-            signature = tuple(row[header] for header in headers)
-            if signature in seen_rows:
-                rejected_rows.append({"row": row_number, "reason": "整行重复"})
-                continue
-            seen_rows.add(signature)
-            rows.append(row)
-        if len(rows) < MIN_CSV_ROWS:
-            raise ContractError(f"至少需要{MIN_CSV_ROWS}行有效数据；当前{len(rows)}行")
-
         feature_columns = [
-            header
-            for header in headers
+            header for header in headers
             if header != target_column and header not in ignored_columns
         ]
         if not feature_columns:
             raise ContractError("除目标列外至少需要一个特征列")
+        rows: list[dict[str, str]] = []
+        rejected_rows: list[dict[str, Any]] = []
+        source_row_numbers: list[int] = []
+        for row_number, raw in enumerate(reader, start=2):
+            if row_number - 1 > MAX_CSV_ROWS:
+                raise ContractError(f"CSV行数超过{MAX_CSV_ROWS}行上限")
+            if None in raw or any(value is None for value in raw.values()):
+                raise ContractError(f"CSV第{row_number}行的字段数量与表头不一致")
+            row = {header: str(raw.get(header) or "").strip() for header in headers}
+            if not row[target_column]:
+                rejected_rows.append({"row": row_number, "reason": "目标值为空"})
+                continue
+            rows.append(row)
+            source_row_numbers.append(row_number)
         numeric_columns = [
             column for column in feature_columns if _numeric(row[column] for row in rows)
         ]
@@ -300,16 +307,96 @@ class TabularCsvAdapter:
         objective = str(options.get("objective", "")).strip().lower()
         if objective == "regression" and not target_is_numeric:
             raise ContractError("回归任务的目标列必须是数值")
+        # A declared classification objective gives numeric-looking labels their
+        # categorical meaning; storage syntax must not override the task.
+        target_is_numeric = target_is_numeric and objective != "classification"
+        numeric_set = set(numeric_columns)
+        seen_rows: set[tuple[Any, ...]] = set()
+        labels_by_features: dict[tuple[Any, ...], str] = {}
+        unique_rows: list[dict[str, str]] = []
+        duplicate_count = 0
+        for row_number, row in zip(source_row_numbers, rows, strict=True):
+            features = tuple(
+                normalize_tabular_value(row[column], column in numeric_set)
+                for column in feature_columns
+            )
+            target = normalize_tabular_value(row[target_column], target_is_numeric)
+            if not target_is_numeric:
+                previous = labels_by_features.get(features)
+                if previous is not None and previous != target:
+                    raise ContractError(
+                        f"CSV第{row_number}行存在标签冲突：相同有效特征对应不同类别；请核查标签或补充区分特征"
+                    )
+                labels_by_features[features] = str(target)
+            signature = (*features, target)
+            if signature in seen_rows:
+                duplicate_count += 1
+                rejected_rows.append({"row": row_number, "reason": "有效特征和目标重复（不含忽略列）"})
+                continue
+            seen_rows.add(signature)
+            unique_rows.append(row)
+        rows = unique_rows
+        if len(rows) < MIN_CSV_ROWS:
+            raise ContractError(f"去重后至少需要{MIN_CSV_ROWS}行有效数据；当前{len(rows)}行")
         target_values = [row[target_column] for row in rows]
-        if objective == "regression" and len(set(target_values)) < 2:
+        if objective == "regression" and len({float(value) for value in target_values}) < 2:
             raise ContractError("回归任务的目标列至少需要两个不同数值")
-        if objective == "classification" and len(set(target_values)) < 2:
+        if not target_is_numeric and len(set(target_values)) < 2:
             raise ContractError("分类任务至少需要两个目标类别")
+        class_counts = dict(sorted(Counter(target_values).items())) if not target_is_numeric else {}
+        if not target_is_numeric:
+            if min(class_counts.values()) < 5:
+                raise ContractError("分类任务去重后每个类别至少需要5行有效数据")
 
         missing_counts = {
             column: sum(1 for row in rows if not row[column])
             for column in feature_columns
         }
+        empty_columns = [
+            name for name, count in missing_counts.items() if count == len(rows)
+        ]
+        if empty_columns:
+            raise ContractError(
+                "以下特征列全部为空，请补充数据或在忽略列中排除：" + ", ".join(empty_columns)
+            )
+        feature_group_count = len({signature[:-1] for signature in seen_rows})
+        if target_is_numeric and feature_group_count < 10:
+            raise ContractError(
+                "回归任务至少需要10组不同的有效特征，才能将相同输入保留在同一数据划分中"
+            )
+        cardinalities = {
+            name: len({row[name] for row in rows if row[name]})
+            for name in categorical_columns
+        }
+        encoded_columns = len(numeric_columns) + sum(cardinalities.values())
+        estimated_dense_bytes = len(rows) * encoded_columns * 8
+        if estimated_dense_bytes > MAX_TABULAR_DENSE_BYTES:
+            raise ContractError(
+                f"独热编码后的单个稠密矩阵预计需要{estimated_dense_bytes / (1024 * 1024):.1f} MiB，"
+                "超过本地256 MiB安全上限；请忽略ID或高基数类别列、减少类别或数据规模"
+            )
+        high_cardinality = [
+            name for name, count in cardinalities.items()
+            if count >= 20 and count / len(rows) >= 0.9
+        ]
+        risks: list[dict[str, str]] = []
+        if any(missing_counts.values()):
+            risks.append({
+                "level": "warning",
+                "message": f"{sum(1 for value in missing_counts.values() if value)}个特征列包含缺失值，训练管线将执行插补",
+            })
+        if duplicate_count:
+            risks.append({
+                "level": "warning",
+                "message": f"已排除{duplicate_count}行有效特征与目标重复的数据，避免重复样本跨训练和测试集",
+            })
+        if high_cardinality:
+            risks.append({
+                "level": "warning",
+                "message": "以下类别列近乎唯一，可能是ID，建议审查并忽略：" + ", ".join(high_cardinality),
+            })
+        if not risks:
+            risks.append({"level": "ok", "message": "未发现阻断训练的数据问题"})
         dataset_id = f"dataset-{uuid4().hex[:10]}"
         temporary_dir = datasets_dir / f".{dataset_id}.tmp"
         final_dir = datasets_dir / dataset_id
@@ -333,6 +420,7 @@ class TabularCsvAdapter:
                 "target_column": target_column,
                 "target_kind": "numeric" if target_is_numeric else "categorical",
                 "target_unique_count": len(set(target_values)),
+                **({"class_counts": class_counts} if not target_is_numeric else {}),
                 "target_summary": (
                     _numeric_target_summary(numeric_targets)
                     if numeric_targets
@@ -348,16 +436,20 @@ class TabularCsvAdapter:
                 "target_transform": "none",
                 "missing_counts": missing_counts,
                 "rejected_count": len(rejected_rows),
+                "duplicate_count": duplicate_count,
+                "duplicate_policy": "effective_features_and_target_excluding_ignored_columns",
+                "split_policy": (
+                    "random_effective_feature_groups"
+                    if target_is_numeric else "stratified_unique_feature_rows"
+                ),
+                "effective_feature_group_count": feature_group_count,
+                "categorical_cardinalities": cardinalities,
+                "encoded_feature_count_estimate": encoded_columns,
+                "dense_matrix_bytes_estimate": estimated_dense_bytes,
+                "dense_matrix_bytes_limit": MAX_TABULAR_DENSE_BYTES,
                 "rejected_rows": rejected_rows[:50],
                 "delimiter": delimiter,
-                "risks": [
-                    {
-                        "level": "warning",
-                        "message": f"{sum(1 for value in missing_counts.values() if value)}个特征列包含缺失值，训练管线将执行插补",
-                    }
-                ]
-                if any(missing_counts.values())
-                else [{"level": "ok", "message": "未发现阻断训练的数据问题"}],
+                "risks": risks,
             }
             write_json(temporary_dir / "dataset_manifest.json", {"headers": headers})
             write_json(temporary_dir / "dataset_report.json", report)

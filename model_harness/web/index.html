@@ -5,47 +5,50 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="Specialist Model Studio：从需求与证据到可验收的专业模型" />
     <title>Specialist Model Studio · 专业模型智能工作台</title>
-    <link rel="icon" href="/app/static/model-harness-mark.svg?v=2.2-one-product" type="image/svg+xml" />
-    <link rel="stylesheet" href="/app/static/styles.css?v=2.4.12-pc-rc" />
-    <link rel="stylesheet" href="/app/static/visual-system.css?v=2.4.12-pc-rc" />
+    <link rel="icon" href="/app/static/model-harness-mark.svg?v=2.4.14-calm" type="image/svg+xml" />
+    <link rel="stylesheet" href="/app/static/styles.css?v=2.4.53-pc-rc" />
+    <link rel="stylesheet" href="/app/static/visual-system.css?v=2.4.53-pc-rc" />
   </head>
   <body data-view="home">
     <a class="skip-link" href="#conversationMain">跳到对话区</a>
     <div class="app-shell">
       <aside class="sidebar" id="sidebar" aria-label="模型任务">
         <div class="brand">
-          <img class="brand-mark" src="/app/static/model-harness-mark.svg?v=2.2-one-product" alt="" />
+          <img class="brand-mark" src="/app/static/model-harness-mark.svg?v=2.4.14-calm" alt="" />
           <div><strong>Specialist Model Studio</strong><span>专业模型智能工作台</span></div>
         </div>
-        <button class="primary-button new-task-button" id="newTaskButton" type="button"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#plus"></use></svg>开始新任务</button>
-        <div class="sidebar-title"><span>模型任务</span><button class="icon-button" id="refreshButton" type="button" aria-label="刷新任务"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#refresh"></use></svg></button></div>
+        <button class="primary-button new-task-button" id="newTaskButton" type="button"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg?v=2.4.15#plus"></use></svg>开始新任务</button>
+        <div class="sidebar-title"><span>模型任务</span><button class="icon-button" id="refreshButton" type="button" aria-label="刷新任务"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg?v=2.4.15#refresh"></use></svg></button></div>
         <nav class="task-list" id="taskList" aria-label="任务列表"></nav>
-        <div class="local-note"><span class="local-dot" aria-hidden="true"></span><div><b>本地工作区</b><small>数据、模型和运行证据留在本机</small></div></div>
+        <div class="local-note"><span class="local-dot" aria-hidden="true"></span><div><b>本地训练与保存</b><small>对话及任务摘要会发送给 AI 服务</small></div></div>
         <div class="runtime-pill" id="runtimePill" data-state="checking"><i></i><span>正在连接 AI 服务</span></div>
       </aside>
 
       <main class="conversation-main" id="conversationMain">
         <header class="topbar">
           <div class="topbar-title">
-            <button class="menu-button" id="menuButton" type="button" aria-label="打开任务列表"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#menu"></use></svg></button>
+            <button class="menu-button" id="menuButton" type="button" aria-label="打开任务列表"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg?v=2.4.15#menu"></use></svg></button>
             <div><span class="authoritative-status" id="taskEyebrow" role="status" aria-live="polite">SPECIALIST MODEL STUDIO</span><h1 id="taskTitle">开始一个模型任务</h1></div>
           </div>
           <button class="workspace-toggle" id="workspaceToggleButton" type="button" aria-label="打开任务证据" aria-controls="inspector" aria-expanded="false" hidden>
-            <svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#panel"></use></svg><span>任务证据</span>
+            <svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg?v=2.4.15#panel"></use></svg><span>任务证据</span>
           </button>
         </header>
 
         <section class="empty-state" id="emptyState">
           <div class="empty-orbit" aria-hidden="true"><span></span><i></i><i></i><i></i></div>
-          <span class="empty-kicker">MODEL TRAINING AGENT</span>
-          <h2>想训练一个什么模型？</h2>
+          <span class="empty-kicker">MODEL WORKBENCH</span>
+          <h2>你想让模型解决什么问题？</h2>
           <p id="homeBoundary">说说你想解决的问题。</p>
           <div class="home-composer-slot" id="homeComposerSlot"></div>
-          <div class="starter-grid" aria-label="示例模型任务">
-            <button type="button" data-prompt="我想在本地设备上把普通话录音转成文字。请先帮我判断是否需要训练。"><b>语音转文字</b><span>先判断本机是否有可执行方案</span></button>
-            <button type="button" data-prompt="我想训练一个模型，识别合同图片里的关键信息。"><b>合同与 OCR</b><span>先明确字段，再检索可用模型</span></button>
-            <button type="button" data-prompt="我想用自己的零件图片训练一个缺陷检测模型。"><b>零件缺陷检测</b><span>先确认分类、定位还是分割</span></button>
-            <button type="button" data-prompt="我想用历史表格数据训练一个设备寿命预测模型。"><b>业务数值预测</b><span>已有表格回归方案，可直接准备数据</span></button>
+          <div class="starter-grid" aria-label="现成训练方案快捷示例">
+            <button type="button" data-prompt="我有一份每套房屋一行的 CSV，包含面积、房龄和成交价，想根据独立房屋记录训练成交价预测模型。" title="用独立记录的 CSV 预测价格或分值"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5v15h16M7 15l4-5 4 3 5-7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><b>业务数值预测</b><span>用独立记录的 CSV 预测价格或分值</span></button>
+            <button type="button" data-prompt="我有一份每个独立样本一行的 CSV，包含检验指标和 0/1 合格标签，想训练表格二分类模型。" title="用带类别标签的 CSV 训练分类模型"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 17l2 2 4-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><b>表格类别判断</b><span>用带类别标签的 CSV 训练分类模型</span></button>
+            <button type="button" data-prompt="我有按品种分文件夹的水果图片，想为每张图片预测一个品种类别。请帮我准备整张图片分类训练。" title="上传按类别分文件夹的图片 ZIP"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM4 16l5-5 4 4 3-3 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="15.5" cy="8.5" r="1.5" fill="currentColor"/></svg><b>整张图片分类</b><span>上传按类别分文件夹的图片 ZIP</span></button>
+          </div>
+          <div class="research-entry">
+            <button type="button" data-prompt="请根据我的目标和数据，帮我确定合适的训练路线、准备要求、资源预算和最小验证步骤。"><b>从我的目标开始准备方案</b><span aria-hidden="true">→</span></button>
+            <p>以上是现成方案的快捷示例。也可以直接描述其他目标，由 AI 逐步准备训练方案。</p>
           </div>
         </section>
 
@@ -62,7 +65,7 @@
                 <span id="taskSpecVersion">v1</span>
               </div>
             </header>
-            <p class="task-spec-summary" id="taskSpecSummary">系统会在确认后根据后端能力注册表判断是可直接训练、需要构建还是当前不支持。</p>
+            <p class="task-spec-summary" id="taskSpecSummary">确认目标后，AI 会结合数据、模型来源和运行条件准备方案；现成方案可加快准备过程。</p>
             <dl class="task-spec-facts" id="taskSpecFacts">
               <div><dt>输入</dt><dd id="taskSpecInput">待确认</dd></div>
               <div><dt>任务目标</dt><dd id="taskSpecObjective">待确认</dd></div>
@@ -90,7 +93,7 @@
             <div class="agent-checkpoint-actions" id="agentCheckpointActions" hidden>
               <button class="checkpoint-workspace-button" id="agentCheckpointWorkspaceButton" type="button">
                 <span><b id="agentCheckpointWorkspaceLabel">打开任务工作区</b><small id="agentCheckpointWorkspaceHint">在右侧继续处理当前步骤</small></span>
-                <svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#panel"></use></svg>
+                <svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg?v=2.4.15#panel"></use></svg>
               </button>
             </div>
           </section>
@@ -103,36 +106,32 @@
             <span id="composerRetryHint">请求没有完成。</span>
             <button id="composerRetryButton" type="button">重试发送</button>
           </div>
-          <div class="composer-delivery" id="composerDelivery" hidden role="status" aria-live="polite">
-            <b id="composerDeliveryLabel">将在本轮结束后继续</b>
-            <span id="composerDeliveryDetail">当前消息只会排队，不会改变正在执行的本轮。</span>
-          </div>
           <form class="composer" id="composerForm">
             <div class="composer-attachment" id="composerAttachment" data-state="pending" role="group" aria-label="所选文件" hidden>
               <span class="attachment-type" id="attachmentType" aria-hidden="true">FILE</span>
               <span class="attachment-copy"><b id="attachmentName"></b><small id="attachmentMeta"></small></span>
               <span class="attachment-status" id="attachmentStatus" role="status" aria-live="polite">待处理</span>
               <button class="attachment-retry" id="retryAttachmentButton" type="button" hidden>重试</button>
-              <button class="attachment-remove" id="removeAttachmentButton" type="button" aria-label="从输入框移除文件">
-                <svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#close"></use></svg>
+              <button class="attachment-remove" id="removeAttachmentButton" type="button" title="从输入框移除文件" aria-label="从输入框移除文件">
+                <svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg?v=2.4.15#close"></use></svg>
               </button>
             </div>
             <textarea id="messageInput" rows="1" maxlength="2000" placeholder="描述你希望模型帮你完成什么…" aria-label="向 Specialist Model Studio 描述模型任务"></textarea>
             <div class="composer-actions">
-              <div><button class="attachment-button" id="datasetButton" type="button" title="导入图片、音频 ZIP 或 CSV"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#paperclip"></use></svg><span class="attachment-label" id="datasetButtonLabel">导入数据</span></button><input id="datasetInput" type="file" accept=".zip,.csv,application/zip,text/csv" hidden /><input id="recipeSampleInput" type="file" accept=".zip,application/zip" hidden /></div>
+              <div><button class="attachment-button" id="datasetButton" type="button" title="导入图片、音频 ZIP 或 CSV"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg?v=2.4.15#paperclip"></use></svg><span class="attachment-label" id="datasetButtonLabel">导入数据</span></button><input id="datasetInput" type="file" accept=".zip,.csv,application/zip,text/csv" hidden /><input id="recipeSampleInput" type="file" accept=".zip,application/zip" hidden /></div>
               <span class="composer-mode" id="composerMode" data-state="checking"><i aria-hidden="true"></i><span id="composerModeLabel">正在连接 AI</span></span>
-              <span class="composer-hint" id="composerHint">Enter 发送 · Shift + Enter 换行</span>
-              <button class="send-button" id="sendButton" type="submit" aria-label="发送消息"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 18V6m0 0-5 5m5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg></button>
+              <span class="composer-hint" id="composerHint" aria-live="polite">Enter 发送 · Shift + Enter 换行</span>
+              <button class="send-button" id="sendButton" type="submit" aria-label="发送消息" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 18V6m0 0-5 5m5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg></button>
             </div>
           </form>
-          <p class="product-boundary">本地优先 · 关键操作需确认 · 结果可追溯</p>
+          <p class="product-boundary">训练文件本地处理 · 对话与任务摘要会发送给配置的 AI 服务</p>
         </footer>
       </main>
 
       <aside class="inspector" id="inspector" aria-label="任务证据与产物" hidden>
         <div class="inspector-sheet-bar">
           <span id="inspectorSheetTitle">方案与证据</span>
-          <button class="icon-button" id="closeInspectorButton" type="button" aria-label="关闭工作区"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg#close"></use></svg></button>
+          <button class="icon-button" id="closeInspectorButton" type="button" title="关闭任务证据，返回对话" aria-label="关闭工作区"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg?v=2.4.15#close"></use></svg></button>
         </div>
         <div class="inspector-empty" id="inspectorEmpty"><span>任务进展会出现在这里</span><p>创建任务后，你可以随时查看方案、数据、运行和验收证据。</p></div>
         <section class="workspace-experience" id="workspaceExperience" data-phase="idle" hidden aria-live="polite">
@@ -141,13 +140,14 @@
             <b id="workspacePhaseBadge">准备中</b>
           </header>
           <p id="workspaceSummary">需要执行或产生结果时，这里会展开对应的协作过程和可视化结果。</p>
-          <section class="workspace-team" id="workspaceTeam" hidden aria-labelledby="workspaceTeamTitle">
-            <div class="workspace-section-heading"><div><span>真实协作</span><h3 id="workspaceTeamTitle">本轮智能体分工</h3></div><b id="workspaceTeamCount">0 位专家</b></div>
-            <div class="workspace-team-list" id="workspaceTeamList"></div>
-          </section>
+          <section class="preparation-progress" id="workspacePreparationProgress" hidden aria-label="训练方案准备事实"></section>
           <section class="workspace-results" id="workspaceResults" hidden aria-labelledby="workspaceResultsTitle">
             <div class="workspace-section-heading"><div><span>结果</span><h3 id="workspaceResultsTitle">本轮产生的结果</h3></div><b id="workspaceResultCount">0 项</b></div>
             <div class="workspace-result-list" id="workspaceResultList"></div>
+          </section>
+          <section class="workspace-team" id="workspaceTeam" hidden aria-labelledby="workspaceTeamTitle">
+            <div class="workspace-section-heading"><div><span>真实协作</span><h3 id="workspaceTeamTitle">本轮智能体分工</h3></div><b id="workspaceTeamCount">0 位专家</b></div>
+            <div class="workspace-team-list" id="workspaceTeamList"></div>
           </section>
           <div class="workspace-experience-actions">
             <button class="secondary-button" id="workspaceTechnicalButton" type="button">查看训练详情</button>
@@ -175,16 +175,16 @@
           </nav>
           <section class="context-panel active" data-context-panel="plan">
             <section class="inspector-card" id="capabilityCard">
-              <div class="card-heading"><span>能力匹配</span><b id="capabilityState">待识别</b></div>
-              <p id="capabilitySummary">创建任务后，系统会匹配可执行训练方案；缺少能力时会给出扩展建议。</p>
-              <section class="capability-axes" id="capabilityAxes" aria-label="诊断与训练双轴能力">
-                <div><span>诊断能力</span><b id="diagnosticCapabilityState">待识别</b><small id="diagnosticCapabilityReason">先确认任务需求。</small></div>
-                <div><span>训练能力</span><b id="trainingCapabilityState">待识别</b><small id="trainingCapabilityReason">尚未验证可执行训练方案。</small></div>
+              <div class="card-heading"><span>训练方案准备</span><b id="capabilityState">待识别</b></div>
+              <p id="capabilitySummary">围绕目标准备数据、实现路线和验证方法；有合适的现成方案时可以直接复用。</p>
+              <section class="capability-axes" id="capabilityAxes" aria-label="方案准备与执行条件">
+                <div><span>方案准备</span><b id="diagnosticCapabilityState">待识别</b><small id="diagnosticCapabilityReason">先确认任务需求。</small></div>
+                <div><span>执行条件</span><b id="trainingCapabilityState">待识别</b><small id="trainingCapabilityReason">尚未验证可执行训练方案。</small></div>
                 <p id="capabilityRecovery">恢复动作：继续通过对话澄清任务。</p>
                 <p id="capabilityNonAction">不会执行：确认前不下载权重、不执行仓库代码、不创建训练 Run。</p>
               </section>
               <div class="capability-facts" id="capabilityFacts"></div>
-              <button class="secondary-button full-button" id="scaffoldRecipeButton" type="button" hidden>生成训练能力扩展包</button>
+              <details class="recipe-extension-details" id="recipeExtensionDetails" hidden><summary>开发者参考（可选）</summary><p>如需查看适配器结构，可以下载参考包；训练目标仍在当前对话中继续推进。</p><button class="secondary-button full-button" id="scaffoldRecipeButton" type="button" hidden>下载适配器参考包</button></details>
             </section>
             <section class="source-search-checkpoint-card" id="modelSourceCheckpointCard" aria-label="模型来源搜索结果" hidden>
               <dl class="source-search-checkpoint-facts" id="modelSourceCheckpointFacts"></dl>
@@ -397,6 +397,7 @@
             <label class="sample-json-field" id="sampleJsonField" hidden>一行表格样本（JSON）
               <textarea id="sampleTrialJson" rows="4" placeholder='{"feature_a": 1.2, "feature_b": 3.4}'></textarea>
             </label>
+            <div id="genericSampleFields" class="generic-sample-fields" hidden></div>
             <div class="sample-trial-actions">
               <button class="secondary-button" id="sampleTrialSelectButton" type="button">选择新样本</button>
               <button class="primary-button" id="sampleTrialRunButton" type="button">执行真实试跑</button>
@@ -419,14 +420,15 @@
 
     <nav class="mobile-view-nav" id="mobileViewNav" aria-label="移动端任务视图" hidden>
       <button id="mobileConversationButton" type="button" data-mobile-view="conversation" class="active" aria-pressed="true"><span aria-hidden="true">○</span>对话</button>
-      <button id="mobileContextButton" type="button" data-mobile-view="context" aria-pressed="false"><span aria-hidden="true">◇</span>工作区</button>
-      <button id="mobileResultButton" type="button" data-mobile-view="result" aria-pressed="false"><span aria-hidden="true">□</span>结果</button>
+      <button id="mobileContextButton" type="button" data-mobile-view="context" aria-pressed="false"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg?v=2.4.15#panel"></use></svg>工作区</button>
+      <button id="mobileResultButton" type="button" data-mobile-view="result" aria-pressed="false"><svg aria-hidden="true"><use href="/app/static/model-harness-icons.svg?v=2.4.15#chart"></use></svg>结果</button>
     </nav>
 
     <div class="sidebar-scrim" id="sidebarScrim" hidden></div>
     <div class="inspector-scrim" id="inspectorScrim" hidden></div>
     <dialog class="decision-dialog" id="decisionDialog" aria-labelledby="dialogTitle" aria-describedby="dialogBody">
       <form method="dialog">
+        <button class="icon-button dialog-close-button" id="closeDialogButton" type="button" title="关闭对话框，不提交" aria-label="关闭对话框，不提交"><svg aria-hidden="true" focusable="false"><use href="/app/static/model-harness-icons.svg?v=2.4.15#close"></use></svg></button>
         <span class="dialog-kicker" id="dialogKicker">需要你的决定</span>
         <h2 id="dialogTitle">确认操作</h2>
         <div id="dialogBody"></div>
@@ -434,8 +436,8 @@
       </form>
     </dialog>
     <script src="/app/static/draft-store.js?v=1.0-agent-native-2" defer></script>
-    <script src="/app/static/conversation-view.js?v=2.4.12-pc-rc" defer></script>
-    <script src="/app/static/interaction-shell.js?v=2.4.12-pc-rc" defer></script>
-    <script src="/app/static/app.js?v=2.4.12-pc-rc" defer></script>
+    <script src="/app/static/conversation-view.js?v=2.4.53-pc-rc" defer></script>
+    <script src="/app/static/interaction-shell.js?v=2.4.53-pc-rc" defer></script>
+    <script src="/app/static/app.js?v=2.4.53-pc-rc" defer></script>
   </body>
 </html>

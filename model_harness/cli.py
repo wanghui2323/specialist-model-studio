@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -11,6 +10,7 @@ from typing import Any
 from . import __version__
 from .errors import ContractError, HarnessError, PluginError
 from .io_utils import read_json
+from .startup_lifecycle import run_owned_launcher, wait_for_writer_release, writer_wait_seconds
 from .source_identity import (
     STUDIO_SOURCE_ROOT_ENV,
     resolve_studio_source_root,
@@ -152,15 +152,13 @@ def _start_studio(args: argparse.Namespace) -> int:
             environment[variable] = str(argument)
 
     try:
-        completed = subprocess.run(
+        return run_owned_launcher(
             ["bash", str(launcher)],
             cwd=repository_root,
             env=environment,
-            check=False,
         )
     except KeyboardInterrupt:
         return 130
-    return int(completed.returncode)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -279,6 +277,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "start":
             return _start_studio(args)
         if args.command == "serve":
+            # Uvicorn may close its listener before background work and the
+            # writer lease finish shutting down. Wait before constructing a new
+            # workspace; the backend still acquires its normal exclusive lease.
+            wait_for_writer_release(
+                args.runs_dir,
+                timeout_seconds=writer_wait_seconds(),
+                on_wait=lambda: print("Waiting for the previous backend writer to finish shutting down...", file=sys.stderr),
+            )
             from .server import serve
 
             serve(

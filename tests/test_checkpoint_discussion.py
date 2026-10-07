@@ -123,9 +123,10 @@ class CheckpointDiscussionTests(unittest.TestCase):
                      "agent_run_id": team["runs"][-1]["run_id"],
                      "turn_id": f"{session}:turn:1", "call_id": "call-1",
                      "payload": {"phase": "requested", "rpc_id": item["rpc_id"],
-                                 "approval_id": item["approval_id"]}}
+                                 "approval_id": item["approval_id"], "origin_source_seq": 100}}
         terminal = {**requested, "event_id": "terminal-1", "source": "dsh",
                     "event_type": "turn_error", "timestamp_utc": 10,
+                    "source_seq": 101,
                     "call_id": None, "status": "failed",
                     "payload": {"reason": "interrupted"}}
         return team, item, requested, terminal
@@ -168,6 +169,41 @@ class CheckpointDiscussionTests(unittest.TestCase):
                            "turn_id": requested["turn_id"]}
                 self.assertEqual(self.runtime._invalidate_pending_after_terminal(
                     task_id=self.task_id, team=team, pending=[pending]), [pending])
+
+    def test_same_turn_continuation_keeps_later_checkpoint_after_old_completed_terminal(self):
+        team, item, requested, terminal = self._persisted_approval()
+        # Real isolated TTS trace: DSH reused root :turn:1 after the child
+        # report. Old turn/end was native seq 4274; new ask was seq 6349.
+        requested["payload"]["origin_source_seq"] = 6349
+        origin = {**requested, "source": "dsh", "event_type": "tool_call",
+                  "event_id": "new-checkpoint-call", "source_seq": 6349,
+                  "payload": {"tool_name": "guarded_action"}}
+        old_end = {**terminal, "source_seq": 4274, "event_type": "turn_finished",
+                   "timestamp_utc": 9999, "status": "observed",
+                   "payload": {"reason": "completed"}}
+        # Deliberately append the old native terminal later in local audit
+        # order, and give it a later timestamp. Neither may erase the new RPC.
+        self._write_audit(origin, requested, old_end)
+        pending = {**item, "agent_run_id": requested["agent_run_id"], "turn_id": requested["turn_id"]}
+        self.assertEqual(self.runtime._invalidate_pending_after_terminal(
+            task_id=self.task_id, team=team, pending=[pending]), [pending])
+        self.assertEqual(self.events.resolved, [])
+        # A genuinely later native terminal of this checkpoint may retire it.
+        self._write_audit({**old_end, "event_id": "later-terminal", "source_seq": 6350,
+                           "timestamp_utc": 9})
+        later_terminal_id = self.runtime.store.list_events(self.task_id)[-1]["event_id"]
+        self.assertEqual(self.runtime._invalidate_pending_after_terminal(
+            task_id=self.task_id, team=team, pending=[pending]), [])
+        self.assertEqual(self.runtime.store.list_events(self.task_id)[-1]["payload"]["terminal_event_id"], later_terminal_id)
+
+    def test_missing_native_boundary_never_uses_wall_clock_or_local_audit_order(self):
+        team, item, requested, terminal = self._persisted_approval()
+        requested["payload"].pop("origin_source_seq")
+        self._write_audit(requested, {**terminal, "timestamp_utc": 9999})
+        pending = {**item, "agent_run_id": requested["agent_run_id"], "turn_id": requested["turn_id"]}
+        self.assertEqual(self.runtime._invalidate_pending_after_terminal(
+            task_id=self.task_id, team=team, pending=[pending]), [pending])
+        self.assertEqual(self.events.resolved, [])
 
     def test_durable_rpc_identity_requires_exact_rpc_approval_call_and_session(self):
         _, item, requested, _ = self._persisted_approval()

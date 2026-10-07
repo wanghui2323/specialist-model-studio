@@ -363,10 +363,13 @@ def validate_contract(
         raise ContractError("diagnostics must be an object")
     if "minimum_test_samples" in diagnostics:
         value = diagnostics["minimum_test_samples"]
-        if isinstance(value, bool) or not isinstance(value, int) or value < 20:
+        minimum = 1 if recipe == "generic-isolated-execution" else 20
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise ContractError(
-                "diagnostics.minimum_test_samples must be an integer >= 20"
+                f"diagnostics.minimum_test_samples must be an integer >= {minimum}"
             )
+        if recipe == "generic-isolated-execution" and value != data.get("execution_spec", {}).get("evaluation", {}).get("minimum_test_samples"):
+            raise ContractError("generic evidence policy must equal the frozen evaluation minimum")
 
     validate_launch_resource_policy(data.get("launch_resource_policy"))
 

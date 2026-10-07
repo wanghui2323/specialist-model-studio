@@ -4,8 +4,10 @@ import json
 from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
-from threading import RLock
+from threading import Condition, Event, RLock
 from typing import Any
+from uuid import uuid4
+from datetime import UTC, datetime
 
 from .evidence import (
     ArtifactBundleBuilder,
@@ -14,7 +16,7 @@ from .evidence import (
     InferenceCheck,
 )
 from .errors import ContractError, HarnessError
-from .io_utils import read_json
+from .io_utils import read_json, write_json
 from .plugins import PluginRegistry, default_registry
 from .runner import execute_run, prepare_run
 from .sample_inference import SampleInference
@@ -40,6 +42,9 @@ class RunService:
         )
         self._futures: dict[str, Future[Path]] = {}
         self._lock = RLock()
+        self._closing = False
+        self._sample_condition = Condition(self._lock)
+        self._sample_jobs: dict[str, dict[str, Any]] = {}
         self.workspace_root: Path | None = None
         self.recovered_runs = self.recover_stale_runs() if recover else []
 
@@ -75,30 +80,32 @@ class RunService:
         parent_run_id: str | None = None,
         workspace_task_id: str | None = None,
     ) -> Path:
-        run_dir = prepare_run(
-            contract,
-            runs_dir=self.runs_dir,
-            run_id=run_id,
-            registry=self.registry,
-            parent_run_id=parent_run_id,
-            workspace_task_id=workspace_task_id,
-            workspace_root=self.workspace_root,
-        )
-        selected_run_id = run_dir.name
-        try:
-            future = self._executor.submit(
-                execute_run,
-                run_dir,
-                self.registry,
-            )
-        except Exception:
-            RunState.load(run_dir).interrupt(
-                "run was persisted but the local service could not schedule execution"
-            )
-            raise
         with self._lock:
+            if self._closing:
+                raise HarnessError("run service is shutting down; new runs are not accepted")
+            run_dir = prepare_run(
+                contract,
+                runs_dir=self.runs_dir,
+                run_id=run_id,
+                registry=self.registry,
+                parent_run_id=parent_run_id,
+                workspace_task_id=workspace_task_id,
+                workspace_root=self.workspace_root,
+            )
+            selected_run_id = run_dir.name
+            try:
+                future = self._executor.submit(
+                    execute_run,
+                    run_dir,
+                    self.registry,
+                )
+            except Exception:
+                RunState.load(run_dir).interrupt(
+                    "run was persisted but the local service could not schedule execution"
+                )
+                raise
             self._futures[selected_run_id] = future
-        return run_dir
+            return run_dir
 
     def status(self, run_id: str) -> dict[str, Any]:
         return read_json(self._run_dir(run_id) / "run_state.json")
@@ -312,6 +319,7 @@ class RunService:
             ),
             "optimization_history": contract.get("optimization_history", []),
             "dataset": contract.get("dataset"),
+            "inference": deepcopy(contract.get("execution_spec", {}).get("inference")) if contract.get("recipe") == "generic-isolated-execution" else None,
             "failure_samples": (
                 read_json(failures_path).get("samples", [])
                 if failures_path.is_file()
@@ -331,12 +339,20 @@ class RunService:
         }
 
     def artifact_path(self, run_id: str, artifact_name: str) -> Path:
-        if not artifact_name or Path(artifact_name).name != artifact_name:
+        if not artifact_name or Path(artifact_name).is_absolute() or ".." in Path(artifact_name).parts or "\\" in artifact_name:
             raise HarnessError("invalid artifact name")
-        artifact_dir = (self._run_dir(run_id) / "artifacts").resolve()
+        run_dir = self._run_dir(run_id)
+        manifest = read_json(run_dir / "run_manifest.json")
+        if artifact_name not in manifest.get("artifacts", {}):
+            raise FileNotFoundError("artifact is not in the verified run manifest")
+        artifact_dir = (run_dir / "artifacts").resolve()
+        raw = artifact_dir / artifact_name
         target = (artifact_dir / artifact_name).resolve()
-        if target.parent != artifact_dir or not target.is_file():
+        if artifact_dir not in target.parents or raw.is_symlink() or not target.is_file():
             raise FileNotFoundError(f"artifact not found: {artifact_name}")
+        from .io_utils import sha256_file
+        if sha256_file(target) != manifest["artifacts"][artifact_name]["sha256"]:
+            raise HarnessError("artifact digest changed")
         return target
 
     def evaluation_report(
@@ -384,11 +400,57 @@ class RunService:
         sample_type: str | None = None,
         expected: Any | None = None,
     ) -> dict[str, Any]:
-        return SampleInference(self._run_dir(run_id)).run(
-            sample,
-            sample_type=sample_type,
-            expected=expected,
-        )
+        run_dir = self._run_dir(run_id)
+        task_id = self.status(run_id)["task_id"]
+        job_id = "sample-job-" + uuid4().hex[:12]
+        cancelled = Event()
+        job = {"action_id": job_id, "action_type": "sample_inference", "task_id": task_id, "run_id": run_id,
+               "status": "running", "domain_status": "running", "running": True, "worker_running": True,
+               "cancel_requested": False, "updated_at_utc": datetime.now(UTC).isoformat(), "cancel_event": cancelled}
+        with self._lock:
+            if self._closing:
+                raise HarnessError("run service is shutting down; new inference is not accepted")
+            self._sample_jobs[job_id] = job
+            try:
+                self._persist_sample_job(job)
+            except Exception:
+                self._sample_jobs.pop(job_id, None)
+                self._sample_condition.notify_all()
+                raise
+        terminal = "failed"
+        try:
+            result = SampleInference(run_dir).run(sample, sample_type=sample_type, expected=expected, cancel_check=cancelled.is_set)
+            terminal = "completed"
+            return result
+        except Exception:
+            terminal = "cancelled" if cancelled.is_set() else "failed"
+            raise
+        finally:
+            with self._lock:
+                job.update(status=terminal, domain_status=terminal, running=False, worker_running=False,
+                           updated_at_utc=datetime.now(UTC).isoformat())
+                try:
+                    self._persist_sample_job(job)
+                finally:
+                    self._sample_jobs.pop(job_id, None)
+                    self._sample_condition.notify_all()
+
+    def _persist_sample_job(self, job: dict[str, Any]) -> None:
+        write_json(self._run_dir(job["run_id"]) / "evidence" / "sample_jobs" / (job["action_id"] + ".json"),
+                   {key: value for key, value in job.items() if key != "cancel_event"})
+
+    def sample_inference_background_actions(self, task_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            return [{key: value for key, value in job.items() if key != "cancel_event"}
+                    for job in self._sample_jobs.values() if job["task_id"] == task_id]
+
+    def cancel_sample_inferences(self, task_id: str) -> None:
+        with self._lock:
+            for job in self._sample_jobs.values():
+                if job["task_id"] == task_id:
+                    job["cancel_event"].set()
+                    job.update(cancel_requested=True, status="cancel_requested", updated_at_utc=datetime.now(UTC).isoformat())
+                    self._persist_sample_job(job)
 
     def sample_inference_checks(self, run_id: str) -> list[dict[str, Any]]:
         return SampleInference(self._run_dir(run_id)).list()
@@ -549,7 +611,45 @@ class RunService:
         return child
 
     def close(self, wait: bool = True) -> None:
+        """Request owned-worker cancellation, then retain ownership until exit.
+
+        HTTP/SSE drain limits are independent of worker shutdown. Running
+        trusted in-process training may only acknowledge cancellation at a safe
+        checkpoint; never mark it stopped or release the server lease early.
+        """
+        errors = []
+        with self._lock:
+            self._closing = True
+            owned = [(run_id, future) for run_id, future in self._futures.items() if not future.done()]
+            for job in self._sample_jobs.values():
+                job["cancel_event"].set()
+                job.update(cancel_requested=True, status="cancel_requested", updated_at_utc=datetime.now(UTC).isoformat())
+                try:
+                    self._persist_sample_job(job)
+                except Exception as exc:
+                    errors.append(type(exc).__name__)
+        for run_id, future in owned:
+            try:
+                state = RunState.load(self._run_dir(run_id))
+                if state.cancel_requested:
+                    if future.cancel():
+                        state.cancel(str(state.data.get("cancel_reason") or "service shutting down"))
+                    continue
+                task_id = str(state.data.get("task_id") or "")
+                task_path = (self.workspace_root or self.runs_dir / "_workspace") / "tasks" / task_id / "task.json"
+                self.cancel(run_id, reason="service shutting down", workspace_task_id=task_id if task_path.is_file() else None,
+                            actor="system", cancellation_kind="service_shutdown", scope="training_run")
+            except Exception as exc:
+                errors.append(type(exc).__name__)
+        # All owned executor futures still drain even if recording one stop
+        # request failed. Cancellation requests alone are never terminal proof.
         self._executor.shutdown(wait=wait, cancel_futures=False)
+        if wait:
+            with self._sample_condition:
+                while self._sample_jobs:
+                    self._sample_condition.wait()
+        if errors:
+            raise HarnessError("owned worker shutdown records could not all be persisted: " + ", ".join(sorted(set(errors))))
 
     def _run_dir(self, run_id: str) -> Path:
         if not run_id or Path(run_id).name != run_id:

@@ -1,6 +1,6 @@
 {
   "name": "specialist-model-studio-dsh-plugin",
-  "version": "1.0.0-rc.1",
+  "version": "1.0.0-rc.2",
   "private": true,
   "description": "DeepSeek Harness tools for Specialist Model Studio",
   "type": "module",
@@ -12,6 +12,12 @@
   "files": [
     "index.js",
     "client.js",
+    "consultation-policy.js",
+    "conversation-context.js",
+    "model-context.js",
+    "context-snapshot.js",
+    "context-budget.js",
+    "codex-cli-adapter.js",
     "cordis.patch.yml",
     "presets/model-training/*"
   ],
@@ -23,10 +29,11 @@
   },
   "scripts": {
     "test": "node --test test/*.test.js",
-    "check": "node --check index.js && node --check client.js"
+    "check": "node --check index.js && node --check client.js && node --check codex-cli-adapter.js"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6"
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.8"
   }
 }

@@ -139,6 +139,10 @@ class TabularClassificationPlugin:
         if int(report.get("row_count", 0)) < 30:
             raise ContractError("tabular-classification requires at least 30 valid rows")
         counts = _class_counts(Path(dataset["csv_path"]), str(dataset.get("target_column")))
+        # Older inspected datasets lack this additive field. When supplied,
+        # the Agent-visible count summary must agree with the actual CSV.
+        if "class_counts" in report and report["class_counts"] != dict(counts):
+            raise ContractError("分类类别数量与导入报告不一致，请重新导入以复查数据")
         if len(counts) < 2:
             raise ContractError("tabular-classification requires at least two classes")
         if min(counts.values()) < 5:

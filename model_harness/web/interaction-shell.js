@@ -39,6 +39,10 @@
   const EXPECTED_APPROVAL_CONTROL_GATES = new Set([
     "task_spec_confirmation_required",
     "task_spec_needs_confirmation",
+    "training_contract_confirmation_required",
+    "training_plan_approval_required",
+    "model_source_binding_approval_required",
+    "recipe_registration_approval_required",
     "awaiting_confirmation",
     "awaiting_human_confirmation",
     "needs_confirmation",

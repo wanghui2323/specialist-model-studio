@@ -1,6 +1,6 @@
 const STATUS_LABELS = {
   draft: "任务草稿", needs_clarification: "等待澄清", needs_confirmation: "等待确认",
-  awaiting_data: "等待数据", needs_recipe: "等待能力构建",
+  awaiting_data: "等待数据", needs_recipe: "准备训练方案",
   data_ready: "数据已就绪", ready: "合同已确认", running: "真实训练中",
   completed: "本轮已完成", failed: "运行异常", cancelled: "训练已取消", interrupted: "训练已中断",
 };
@@ -18,12 +18,12 @@ const EVENT_LABELS = {
 const ui = Object.fromEntries([
   "sidebar", "sidebarScrim", "menuButton", "newTaskButton", "refreshButton", "taskList", "taskEyebrow", "taskTitle", "runtimePill", "conversationMain",
   "emptyState", "conversation", "conversationIntro", "messageList",
-  "workspaceToggleButton", "workspaceExperience", "workspaceEyebrow", "workspaceTitle", "workspacePhaseBadge", "workspaceSummary", "workspaceTeam", "workspaceTeamTitle", "workspaceTeamCount", "workspaceTeamList", "workspaceResults", "workspaceResultsTitle", "workspaceResultCount", "workspaceResultList", "workspaceTechnicalButton", "workspaceTruthNote", "agentCheckpoint", "agentCheckpointStage", "agentCheckpointTitle", "agentCheckpointState", "agentCheckpointSummary", "agentCheckpointBody", "agentCheckpointActions", "agentCheckpointWorkspaceButton", "agentCheckpointWorkspaceLabel", "agentCheckpointWorkspaceHint", "homeComposerSlot", "homeBoundary", "composerWrap",
-  "agentWorking", "agentWorkingLabel", "cancelAgentButton", "composerForm", "composerNotice", "composerRetry", "composerRetryHint", "composerRetryButton", "composerDelivery", "composerDeliveryLabel", "composerDeliveryDetail", "messageInput", "sendButton", "composerMode", "composerModeLabel",
+  "workspaceToggleButton", "workspaceExperience", "workspaceEyebrow", "workspaceTitle", "workspacePhaseBadge", "workspaceSummary", "workspacePreparationProgress", "workspaceTeam", "workspaceTeamTitle", "workspaceTeamCount", "workspaceTeamList", "workspaceResults", "workspaceResultsTitle", "workspaceResultCount", "workspaceResultList", "workspaceTechnicalButton", "workspaceTruthNote", "agentCheckpoint", "agentCheckpointStage", "agentCheckpointTitle", "agentCheckpointState", "agentCheckpointSummary", "agentCheckpointBody", "agentCheckpointActions", "agentCheckpointWorkspaceButton", "agentCheckpointWorkspaceLabel", "agentCheckpointWorkspaceHint", "homeComposerSlot", "homeBoundary", "composerWrap",
+  "agentWorking", "agentWorkingLabel", "cancelAgentButton", "composerForm", "composerNotice", "composerRetry", "composerRetryHint", "composerRetryButton", "composerHint", "messageInput", "sendButton", "composerMode", "composerModeLabel",
   "composerAttachment", "attachmentType", "attachmentName", "attachmentMeta", "attachmentStatus", "retryAttachmentButton", "removeAttachmentButton", "datasetButton", "datasetButtonLabel", "datasetInput", "recipeSampleInput", "inspectorDatasetButton", "inspectorEmpty", "inspectorContent", "objectViewer", "objectViewerTitle", "objectViewerState", "objectViewerSummary", "objectViewerOverview", "objectViewerIdentity", "objectViewerJson", "taskStatus", "contextTabs",
   "capabilityState", "capabilitySummary", "capabilityFacts", "capabilityAxes", "diagnosticCapabilityState", "diagnosticCapabilityReason", "trainingCapabilityState", "trainingCapabilityReason", "capabilityRecovery", "capabilityNonAction", "datasetCard", "datasetCount", "datasetSummary", "contractCard", "contractState",
-  "scaffoldRecipeButton",
-  "gateGrid", "confirmations", "confirmContractButton", "approveRunProposalButton", "runEventCount", "inspectorEvents", "resultCard",
+  "scaffoldRecipeButton", "recipeExtensionDetails",
+  "gateGrid", "confirmations", "confirmContractButton", "approveRunProposalButton", "runEventCount", "inspectorEvents", "resultCard", "closeDialogButton",
   "gateResult", "metricGrid", "runId", "artifactCount", "artifactList", "decisionDialog", "dialogKicker", "dialogTitle", "dialogBody", "dialogActions",
   "taskSpecCard", "taskSpecHeading", "taskSpecStatus",
   "taskSpecVersion", "taskSpecSummary", "taskSpecFacts", "taskSpecInput", "taskSpecObjective", "taskSpecOutput", "taskSpecConstraints", "taskSpecClarification",
@@ -36,7 +36,7 @@ const ui = Object.fromEntries([
   "evaluationEvidenceCard", "evaluationConclusion", "evidenceDimensions", "evaluationReasons", "candidateComparisonCard", "candidateCount",
   "candidatePolicy", "candidateList", "failureSampleCard", "failureSampleCount", "failureSampleList", "runHistoryCard", "runHistoryCount",
   "runHistoryList", "sampleTrialCard", "sampleTrialState", "sampleTrialSummary", "sampleTrialInput", "sampleJsonField", "sampleTrialJson",
-  "sampleTrialSelectButton", "sampleTrialRunButton", "sampleInferenceList", "artifactBundleCard", "artifactBundleState", "artifactBundleSummary",
+  "genericSampleFields", "sampleTrialSelectButton", "sampleTrialRunButton", "sampleInferenceList", "artifactBundleCard", "artifactBundleState", "artifactBundleSummary",
   "buildArtifactBundleButton", "artifactBundleList",
   "modelSourceCard", "modelSourceState", "modelSourceSummary", "modelSourceBlocker", "modelSourceBlockerTitle", "modelSourceBlockerMessage",
   "modelSourceRetryButton", "modelSourceBinding", "modelSourceFacts", "modelSourceFiles", "modelSourceFileList", "modelSourcePending",
@@ -53,13 +53,14 @@ const ui = Object.fromEntries([
   "baseImageDigestInput", "resourceFeasibilityReasons", "checkResourceFeasibilityButton", "contractConfirmationNote",
 ].map((id) => [id, document.getElementById(id)]));
 const state = {
-  tasks: [], task: null, selectedTaskId: null, conversationRecord: null, conversation: null, runEvents: [], runtimeReady: false, pollTimer: null,
+  tasks: [], task: null, selectedTaskId: null, selectionLoadingOwnerId: null, conversationRecord: null, conversation: null, runEvents: [], runtimeReady: false, pollTimer: null,
   conversationStream: null, conversationStreamCursor: null, conversationStreamRevision: null, conversationStreamTaskId: null, conversationStreamDegraded: false, conversationFallbackTimer: null, conversationReconnectTimer: null,
   conversationReconcileInFlight: false, conversationReconcileSeq: 0, conversationReconcilePromise: null,
   pendingMessage: null, messageSubmission: null, messageRequestSequence: 0, composerRetryAction: null, composerRetryKind: null, composerAttachment: null, cancelRequestInFlight: false, lastRenderKey: "", selectionToken: 0, hfCapability: null, hfModels: [], hfCard: null,
   modelAssetVerification: null, evidenceRunId: null, evidenceLoaded: false, evaluationReport: null, sampleInferences: [], artifactBundles: [],
   refreshInFlight: false, refreshSeq: 0,
   evidenceErrors: {},
+  materialsOwnerId: null, materialInspections: [], materialsLoadedAt: 0, materialsLoadSeq: 0, materialContinuations: new Map(),
   modelSourceProviders: [], modelSourceCandidates: [], modelSourceResolutions: [], modelSourceSearches: [], modelSourceSearch: null, modelSourceMode: "search", modelSourceOperationSeq: 0, modelSourceLoadedTaskId: null, modelSourceCandidateRenderKey: "", modelSourceCheckpointRenderKey: "", modelSourceSearchInFlight: false,
   checkpointCard: null, workspaceAutoKey: null, workspaceProjection: null, workspaceDismissedKey: null, inspectorAutoOpened: false, inspectorOpener: null, inspectorMode: "closed", activeObjectRef: null, activeObjectPayload: null, objectViewerRequestSeq: 0, productRuntime: null, runtimeIssue: null, taskSpecFamilies: [], taskSpecFamiliesError: null, taskSpecRevisions: [], taskSpecDescriptionMode: false, taskSpecQuickReplyKey: "", taskSpecAlternativesOpen: false,
   actionTimelineDisclosure: new Map(), actionResultCache: new Map(), actionResultRequests: new Map(),
@@ -78,7 +79,7 @@ const DraftStore = window.ModelHarnessDraftStore;
 const ConversationView = window.ModelHarnessConversationView;
 const InteractionShell = window.ModelHarnessInteractionShell;
 const STAGE_LABELS = {
-  task_understanding: "确认任务理解", capability_resolution: "解决能力缺口", data_preparation: "准备训练数据",
+  task_understanding: "确认任务理解", capability_resolution: "准备训练方案", data_preparation: "准备训练数据",
   contract_review: "审阅训练合同", ready_to_run: "准备启动训练", evaluation: "审阅评测结果", run_recovery: "处理运行异常",
   source_discovery: "查找模型来源", source_resolution: "确认固定版本", source_snapshot: "读取来源清单", repository_analysis: "审阅仓库分析",
   training_plan: "确认训练计划", resource_probe: "检查本机资源", environment_lock: "冻结训练环境", resource_fit: "判断训练可行性",
@@ -97,6 +98,7 @@ const EVIDENCE_STATUS_LABELS = {
 };
 const INSPECTOR_FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), details > summary, [tabindex]:not([tabindex="-1"])';
 const inspectorMedia = window.matchMedia("(max-width:899px)");
+const sidebarMedia = window.matchMedia("(max-width:980px)");
 const dockedWorkspaceMedia = window.matchMedia("(min-width:1280px)");
 
 function structuredErrorMessage(value, fallback = "请求失败") {
@@ -166,10 +168,9 @@ function timestampMs(value) { const normalized = typeof value === "number" && va
 function formatElapsed(value) { const seconds = Math.max(0, Math.floor(Number(value || 0) / 1000)); if (seconds < 1) return "不足 1 秒"; if (seconds < 60) return `${seconds} 秒`; const minutes = Math.floor(seconds / 60); const remainder = seconds % 60; if (minutes < 60) return remainder ? `${minutes} 分 ${remainder} 秒` : `${minutes} 分钟`; const hours = Math.floor(minutes / 60); const minuteRemainder = minutes % 60; return minuteRemainder ? `${hours} 小时 ${minuteRemainder} 分` : `${hours} 小时`; }
 function syncAiTurnElapsedLabels(root = document) {
   root.querySelectorAll?.("[data-ai-turn-status-label]").forEach((label) => {
-    const startedAt = Number(label.dataset.startedAt); const endedAt = Number(label.dataset.endedAt); const live = label.dataset.elapsedLive === "true"; const base = label.dataset.baseLabel || label.textContent || "";
-    if (!Number.isFinite(startedAt)) { label.textContent = base; return; }
-    const finish = live ? Date.now() : Number.isFinite(endedAt) ? endedAt : startedAt;
-    label.textContent = `${base} · ${live ? "" : "已处理 "}${formatElapsed(Math.max(0, finish - startedAt))}`;
+    // Whole-turn timestamps include human waits and cannot prove active work.
+    // Keep only the observed state here; operation timings stay in the evidence.
+    label.textContent = label.dataset.baseLabel || label.textContent || "";
   });
 }
 function formatRelativeTime(value) {
@@ -183,11 +184,25 @@ function formatRelativeTime(value) {
 }
 function shortId(value) { return value && value.length > 24 ? `${value.slice(0, 12)}…${value.slice(-8)}` : value || "—"; }
 function clearNoticeDismissTimer() { if (state.noticeDismissTimer !== null) { window.clearTimeout(state.noticeDismissTimer); state.noticeDismissTimer = null; } }
-function showNotice(message, tone = "error") { clearNoticeDismissTimer(); delete ui.composerNotice.dataset.runtimeSetup; delete ui.composerNotice.dataset.noticeScope; ui.composerNotice.hidden = false; ui.composerNotice.dataset.tone = tone; ui.composerNotice.textContent = message; }
-function showConnectionNotice(message, tone = "error") { showNotice(message, tone); ui.composerNotice.dataset.noticeScope = "connection"; }
+function showNotice(message, tone = "error") { clearNoticeDismissTimer(); state.noticeSequence = (state.noticeSequence || 0) + 1; delete ui.composerNotice.dataset.runtimeSetup; delete ui.composerNotice.dataset.noticeScope; delete ui.composerNotice.dataset.noticeOwnerId; delete ui.composerNotice.dataset.noticeSelectionToken; ui.composerNotice.hidden = false; ui.composerNotice.dataset.tone = tone; ui.composerNotice.textContent = message; }
+function showConnectionNotice(message, tone = "error", ownerId = null, token = state.selectionToken) { showNotice(message, tone); ui.composerNotice.dataset.noticeScope = "connection"; ui.composerNotice.dataset.noticeOwnerId = ownerId || ""; ui.composerNotice.dataset.noticeSelectionToken = String(token); }
 function showRuntimeSetupNotice(message) { clearNoticeDismissTimer(); delete ui.composerNotice.dataset.noticeScope; ui.composerNotice.dataset.runtimeSetup = "true"; ui.composerNotice.hidden = false; ui.composerNotice.dataset.tone = "error"; ui.composerNotice.textContent = message; }
 function hideNotice() { clearNoticeDismissTimer(); delete ui.composerNotice.dataset.runtimeSetup; delete ui.composerNotice.dataset.noticeScope; ui.composerNotice.hidden = true; ui.composerNotice.textContent = ""; }
-function clearConnectionNotice() { if (ui.composerNotice.dataset.noticeScope === "connection") hideNotice(); }
+function clearConnectionNotice(ownerId = null, token = state.selectionToken, noticeSequence = null) {
+  const notice = ui.composerNotice.dataset;
+  if (notice.noticeScope !== "connection" || (notice.noticeOwnerId || "") !== (ownerId || "")) return;
+  if (ownerId && (state.selectedTaskId !== ownerId || state.selectionToken !== token || notice.noticeSelectionToken !== String(token))) return;
+  if (noticeSequence !== null && noticeSequence !== (state.noticeSequence || 0)) return;
+  const failure = state.lastWorkspaceConnectionFailure;
+  if (failure?.notice_sequence === state.noticeSequence) failure.recovered_at = Date.now();
+  hideNotice();
+}
+function showSelectedWorkspaceReadError(error, ownerId, token) {
+  if (state.selectedTaskId !== ownerId || state.selectionToken !== token) return;
+  if (!isWorkspaceConnectionError(error)) { showNotice(error.message); return; }
+  showConnectionNotice(error.message, "error", ownerId, token);
+  state.lastWorkspaceConnectionFailure = { owner_id: ownerId, selection_token: token, notice_sequence: state.noticeSequence, error, observed_at: Date.now(), recovered_at: null };
+}
 function prepareHomeAvailabilityProbe() {
   if (ui.composerNotice.dataset.noticeScope === "connection") showConnectionNotice("正在重新检查训练工作台连接…", "ok");
   else if (ui.composerNotice.dataset.runtimeSetup !== "true") hideNotice();
@@ -196,7 +211,27 @@ function showTransientNotice(message, tone = "ok", durationMs = 6_000) {
   showNotice(message, tone);
   state.noticeDismissTimer = window.setTimeout(() => { state.noticeDismissTimer = null; ui.composerNotice.hidden = true; ui.composerNotice.textContent = ""; }, durationMs);
 }
-function setButtonBusy(button, busy, busyText) { if (!button.dataset.label) button.dataset.label = button.textContent; button.disabled = busy; button.textContent = busy ? busyText : button.dataset.label; }
+function setButtonBusy(button, busy, busyText) {
+  if (busy) {
+    if (!button.busyChildren) button.busyChildren = [...button.childNodes];
+    button.replaceChildren(document.createTextNode(busyText || "处理中"));
+    button.setAttribute("aria-busy", "true");
+  } else {
+    if (button.busyChildren) { button.replaceChildren(...button.busyChildren); delete button.busyChildren; }
+    button.removeAttribute("aria-busy");
+  }
+  button.disabled = busy;
+  if (ui.closeDialogButton && ui.dialogActions?.contains(button)) ui.closeDialogButton.disabled = Boolean(ui.dialogActions.querySelector('[aria-busy="true"]'));
+}
+function closeDecisionDialog() {
+  if (ui.dialogActions.querySelector('[aria-busy="true"]')) return;
+  ui.decisionDialog.close();
+}
+function createUiIcon(name) {
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.setAttribute("viewBox", "0 0 24 24"); icon.setAttribute("aria-hidden", "true"); icon.setAttribute("focusable", "false");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use"); use.setAttribute("href", `/app/static/model-harness-icons.svg?v=2.4.15#${name}`); icon.append(use); return icon;
+}
 function clearComposerRetry(kind = null) {
   if (kind && state.composerRetryKind !== kind) return;
   state.composerRetryAction = null; state.composerRetryKind = null; ui.composerRetry.hidden = true; ui.composerRetryHint.textContent = ""; ui.composerRetryButton.textContent = "重试"; delete ui.composerRetryButton.dataset.label;
@@ -210,28 +245,386 @@ async function invokeComposerRetry() {
   try { await action(); }
   finally { if (!ui.composerRetry.hidden) setButtonBusy(ui.composerRetryButton, false, ""); }
 }
-const COMPOSER_ATTACHMENT_STATUS = { pending: "待核对", validating: "校验中", ready: "已导入", failed: "失败" };
+const COMPOSER_ATTACHMENT_STATUS = { pending: "待核对", validating: "校验中", ready: "已导入", failed: "失败", inspected: "已检查材料", rejected: "检查未通过" };
 function attachmentTypeLabel(file) {
   const extension = String(file?.name || "").split(".").pop()?.toUpperCase();
-  if (extension === "CSV" || extension === "ZIP") return extension;
+  if (["CSV", "JSONL", "ZIP"].includes(extension)) return extension;
   return String(file?.type || "FILE").split("/").pop()?.slice(0, 8).toUpperCase() || "FILE";
+}
+function syncPendingAttachmentAvailability(attachment = state.composerAttachment) {
+  // A lost upload response is not proof that the file is still local. Keep
+  // receipt reconciliation, successful imports and continuation retries intact.
+  if (!attachment || attachment.status !== "pending" || attachment.dataset_id || attachment.material_id || ["reconcile", "continuation", "material_reconcile", "material_continuation"].includes(attachment.retry_stage)) return;
+  if (attachment.task_id && attachment.task_id !== state.selectedTaskId) return;
+  if (materialInspectionMode()) {
+    attachment.waiting_on = "material_inspection"; attachment.waiting_action = "inspect_material"; attachment.waiting_action_label = "检查材料";
+    attachment.error = "可先上传并检查材料；这不会导入训练数据或启动执行"; attachment.retry_stage = "upload"; attachment.can_retry = true;
+    return;
+  }
+  const availability = datasetUploadAvailability();
+  if (availability.blocked) {
+    attachment.waiting_on = availability.code;
+    attachment.waiting_action = availability.action || null;
+    attachment.waiting_action_label = availability.actionLabel || null;
+    attachment.error = availability.reason;
+    attachment.retry_stage = "upload";
+    attachment.can_retry = Boolean(availability.action);
+  } else if (attachment.waiting_on) {
+    delete attachment.waiting_on;
+    delete attachment.waiting_action;
+    delete attachment.waiting_action_label;
+    attachment.error = null;
+    attachment.retry_stage = "upload";
+    attachment.can_retry = true;
+  }
 }
 function renderComposerAttachment() {
   const attachment = state.composerAttachment; ui.composerAttachment.hidden = !attachment;
   if (!attachment) return;
-  const status = COMPOSER_ATTACHMENT_STATUS[attachment.status] || COMPOSER_ATTACHMENT_STATUS.pending;
+  syncPendingAttachmentAvailability(attachment);
+  const waiting = attachment.status === "pending" && attachment.waiting_on && !attachment.dataset_id && !["reconcile", "material_reconcile"].includes(attachment.retry_stage);
+  const status = waiting ? "尚未上传" : COMPOSER_ATTACHMENT_STATUS[attachment.status] || COMPOSER_ATTACHMENT_STATUS.pending;
+  ui.composerAttachment.dataset.waiting = String(Boolean(waiting));
   ui.composerAttachment.dataset.state = attachment.status || "pending"; ui.attachmentType.textContent = attachmentTypeLabel(attachment.file); ui.attachmentName.textContent = attachment.file?.name || "未命名文件"; ui.attachmentName.title = attachment.file?.name || "";
   const details = [attachment.file?.type || attachmentTypeLabel(attachment.file), formatBytes(attachment.file?.size)];
-  if (attachment.dataset_id) details.push("已写入当前任务"); if (attachment.error) details.push(attachment.error);
+  if (attachment.dataset_id) details.push("已写入当前任务"); if (attachment.material_id) details.push(`材料检查结果 · ${materialFactSummary(attachment.material)}`); if (attachment.note) details.push(attachment.note); if (attachment.error) details.push(attachment.error);
   ui.attachmentMeta.textContent = details.filter(Boolean).join(" · "); ui.attachmentMeta.title = attachment.error || ""; ui.attachmentStatus.textContent = status; ui.attachmentStatus.dataset.state = attachment.status || "pending";
-  const canRetry = (attachment.status === "failed" && attachment.can_retry === true) || attachment.retry_stage === "continuation" || (attachment.status === "pending" && attachment.can_retry === true);
-  ui.retryAttachmentButton.hidden = !canRetry; ui.retryAttachmentButton.textContent = attachment.retry_stage === "continuation" ? "重试续接" : attachment.retry_stage === "reconcile" ? "核对导入" : attachment.status === "pending" ? "继续处理" : "重试导入";
-  ui.removeAttachmentButton.disabled = attachment.status === "validating"; ui.removeAttachmentButton.title = attachment.status === "validating" ? "正在校验，返回结果前不能移除" : attachment.dataset_id ? "从输入框移除；已导入的数据不会被删除" : "从输入框移除文件";
+  const canRetry = (attachment.status === "failed" && attachment.can_retry === true) || ["continuation", "material_continuation"].includes(attachment.retry_stage) || (attachment.status === "pending" && attachment.can_retry === true);
+  ui.retryAttachmentButton.hidden = !canRetry; ui.retryAttachmentButton.textContent = attachment.retry_stage === "material_dataset_review" ? "重新确认导入" : attachment.retry_stage === "material_continuation" ? "重试AI续接" : attachment.retry_stage === "material_reconcile" ? "核对检查" : waiting && attachment.waiting_action_label ? attachment.waiting_action_label : attachment.retry_stage === "continuation" ? "重试续接" : attachment.retry_stage === "reconcile" ? "核对导入" : attachment.upload_mode === "materials" ? attachment.status === "failed" ? "重试检查" : "检查材料" : attachment.status === "pending" ? "继续处理" : "重试导入";
+  ui.removeAttachmentButton.disabled = attachment.status === "validating"; ui.removeAttachmentButton.title = attachment.status === "validating" ? "正在校验，返回结果前不能移除" : attachment.dataset_id ? "从输入框移除；已导入的数据不会被删除" : attachment.material_id ? "从输入框移除；材料检查记录仍然保留" : "从输入框移除文件";
   ui.removeAttachmentButton.setAttribute("aria-label", ui.removeAttachmentButton.title);
 }
 function updateComposerAttachment(attachment, patch) {
   if (!attachment || state.composerAttachment?.request_id !== attachment.request_id) return false;
   Object.assign(attachment, patch); renderComposerAttachment(); return true;
+}
+const MATERIAL_UPLOAD_LIMIT = 25 * 1024 * 1024;
+function materialInspectionMode(task = state.task, taskId = state.selectedTaskId) {
+  if (!taskId || !task || task.task_id !== taskId) return false;
+  if (task.control?.next_action?.id === "stage_recipe_samples") return false;
+  const nativeUpload = dataUploadQuestionCheckpoint(currentHumanCheckpoint(state.conversation));
+  if (nativeUpload && task.recipe_id && datasetUploadFormat(task, null)) return false;
+  return task.record_type === "conversation_draft" || task.status === "needs_recipe" || task.capability_decision?.status !== "resolved" || !datasetUploadFormat(task, null);
+}
+function materialOwnerPath(ownerId = state.selectedTaskId, scope = null) {
+  const selectedScope = scope || (state.task?.record_type === "conversation_draft" ? "conversations" : "tasks");
+  return `/${selectedScope}/${encodeURIComponent(ownerId)}`;
+}
+function materialInspectionMatches(record, ownerId, attachment = null) {
+  return Boolean(record && record.object_type === "MaterialInspection" && record.owner_id === ownerId
+    && /^material-[a-f0-9]{24}$/.test(record.material_id || "") && ["inspected", "rejected"].includes(record.status)
+    && /^[a-f0-9]{64}$/.test(record.file?.sha256 || "") && record.dataset_imported === false && record.execution_authorized === false
+    && (!attachment || (record.request_id === attachment.request_id && record.file.name === attachment.file.name && record.file.bytes === attachment.file.size)));
+}
+function resetMaterialInspections(ownerId = null) {
+  state.materialsOwnerId = ownerId; state.materialInspections = []; state.materialsLoadedAt = 0; state.materialsLoadSeq = (state.materialsLoadSeq || 0) + 1;
+  renderMaterialHistory();
+}
+function rememberMaterialInspection(record) {
+  if (!materialInspectionMatches(record, state.selectedTaskId)) return;
+  if (state.materialsOwnerId !== record.owner_id) resetMaterialInspections(record.owner_id);
+  state.materialInspections = [record, ...(state.materialInspections || []).filter(item => item.material_id !== record.material_id)];
+  renderMaterialHistory();
+}
+async function loadMaterialInspections(ownerId = state.selectedTaskId, { force = false } = {}) {
+  if (!ownerId || ownerId !== state.selectedTaskId) return;
+  if (state.materialsOwnerId !== ownerId) resetMaterialInspections(ownerId);
+  if (!force && Date.now() - (state.materialsLoadedAt || 0) < 15_000) return;
+  const seq = ++state.materialsLoadSeq;
+  try {
+    const response = await request(`${materialOwnerPath(ownerId)}/materials`, { timeoutMs: 10_000 });
+    if (ownerId !== state.selectedTaskId || seq !== state.materialsLoadSeq) return;
+    if (response.owner_id !== ownerId || !Array.isArray(response.materials)) throw new Error("材料列表身份不匹配");
+    const known = new Map((state.materialInspections || []).map(record => [record.material_id, record]));
+    state.materialInspections = response.materials.filter(record => materialInspectionMatches(record, ownerId)).map(record => record.detail_available && known.get(record.material_id)?.detail_available !== true && known.get(record.material_id)?.report ? known.get(record.material_id) : record).sort((left, right) => String(right.created_at || "").localeCompare(String(left.created_at || "")));
+    state.materialsLoadedAt = Date.now(); renderMaterialHistory(); void flushDeferredMaterialContinuations();
+  } catch (_error) { /* Existing task state stays usable; uploads show their own precise errors. */ }
+}
+function materialReadEvidence(record, conversation = state.conversation) {
+  if (conversation?.task_id !== record.owner_id) return null;
+  const byId = new Map(), ambiguous = new Set();
+  for (const event of conversation.events || []) { if (byId.has(event.event_id)) ambiguous.add(event.event_id); byId.set(event.event_id, event); }
+  const objectValue = value => { try { if (typeof value === "string") return objectValue(JSON.parse(value)); if (Array.isArray(value)) return value.length === 1 && value[0]?.type === "text" ? objectValue(value[0].text) : null; return value && typeof value === "object" ? value : null; } catch (_error) { return null; } };
+  for (const action of conversation.actions || []) {
+    if (action.task_id !== record.owner_id || action.tool_name !== "model_harness_get_material" || action.status !== "completed" || action.truth_type !== "observed_result" || action.error) continue;
+    if (ambiguous.has(action.call_event_id) || ambiguous.has(action.result_event_id)) continue;
+    const call = byId.get(action.call_event_id), result = byId.get(action.result_event_id);
+    if (!call || !result || call.event_type !== "tool_call" || result.event_type !== "tool_result" || call.source !== "dsh" || result.source !== "dsh") continue;
+    if (!["task_id", "agent_run_id", "session_id", "turn_id", "call_id"].every(key => typeof action[key] === "string" && action[key] && call[key] === action[key] && result[key] === action[key])) continue;
+    if (![call, result].every(event => event.payload?.tool_name === action.tool_name && event.payload?.call_id === action.call_id)) continue;
+    if (!Number.isInteger(call.seq) || !Number.isInteger(result.seq) || call.seq >= result.seq || result.payload.is_error !== false) continue;
+    const args = objectValue(call.payload.arguments);
+    if (args?.owner_id !== record.owner_id || args?.material_id !== record.material_id) continue;
+    const value = objectValue(result.payload.result)?.material;
+    if (value?.owner_id === record.owner_id && value?.material_id === record.material_id && ["inspected", "rejected"].includes(value.status)) return { action_id: action.action_id, result_event_id: result.event_id };
+    // A compact result still carries the canonical successful call/result pair.
+    // Never infer consumption from prose, file names or the shortened preview.
+    const ref = result.payload.event_result_ref;
+    if (result.payload.result_truncated === true && ref?.task_id === record.owner_id && ref.id === result.event_id && action.event_result_ref?.id === ref.id) return { action_id: action.action_id, result_event_id: result.event_id };
+  }
+  return null;
+}
+function materialReplyInProgress(record) {
+  return !state.conversation || state.conversation.task_id !== record.owner_id
+    || state.conversation.execution_state_observed === false
+    || state.conversation.agent_response_running === true
+    || state.pendingMessage?.task_id === record.owner_id
+    || (state.messageSubmission?.task_id === record.owner_id && state.messageSubmission.status === "sending");
+}
+async function flushDeferredMaterialContinuations() {
+  const ownerId = state.selectedTaskId;
+  if (!ownerId || state.materialAutoFlushOwner || state.materialsOwnerId !== ownerId) return;
+  state.materialAutoFlushOwner = ownerId;
+  try {
+    for (const record of state.materialInspections || []) {
+      if (state.selectedTaskId !== ownerId) return;
+      const continuation = materialContinuation(record);
+      if (!continuation.auto_requested || continuation.delivery_started || continuation.status !== "waiting_turn") continue;
+      await continueMaterialInspection(record, state.composerAttachment?.material_id === record.material_id ? state.composerAttachment : null);
+    }
+  } finally { if (state.materialAutoFlushOwner === ownerId) state.materialAutoFlushOwner = null; }
+}
+function materialContinuationKey(record) { return `specialist-model-studio:material-message:${record.owner_id}:${record.material_id}`; }
+function materialContinuation(record) {
+  const key = materialContinuationKey(record);
+  state.materialContinuations ||= new Map();
+  let saved = state.materialContinuations.get(key);
+  if (!saved) { try { saved = JSON.parse(localStorage.getItem(key) || "null"); } catch (_error) {} }
+  if (saved?.owner_id === record.owner_id && saved?.material_id === record.material_id && saved.request_id && saved.message) return saved;
+  const label = record.status === "rejected" ? "材料检查发现问题" : "材料已检查";
+  return { owner_id: record.owner_id, material_id: record.material_id, request_id: `material-message-${record.material_id}`, status: "pending", message: `${label}（material_id=${record.material_id}）。请结合当前目标解读报告并继续。` };
+}
+function storeMaterialContinuation(record, continuation) {
+  const key = materialContinuationKey(record); state.materialContinuations ||= new Map(); state.materialContinuations.set(key, continuation);
+  try { localStorage.setItem(key, JSON.stringify({ ...continuation, in_flight: false })); } catch (_error) {}
+}
+async function continueMaterialInspection(record, attachment = null, { discussCheckpoint = false } = {}) {
+  if (!materialInspectionMatches(record, state.selectedTaskId)) return;
+  const continuation = materialContinuation(record);
+  if (continuation.status === "accepted" || continuation.in_flight) return;
+  if (!discussCheckpoint && !continuation.delivery_started) {
+    continuation.auto_requested = true;
+    const observedRead = materialReadEvidence(record);
+    if (observedRead) {
+      continuation.status = "accepted"; continuation.handled_by_tool = observedRead; storeMaterialContinuation(record, continuation);
+      if (attachment) updateComposerAttachment(attachment, { retry_stage: null, can_retry: false, error: null, note: null });
+      renderMaterialHistory(); return;
+    }
+    // Uploading while composing must not start a turn with the previous goal.
+    // The next submitted message refreshes the task-owned material facts.
+    if (ui.messageInput.value.trim()) {
+      continuation.auto_requested = false; continuation.status = "awaiting_message"; storeMaterialContinuation(record, continuation);
+      if (attachment) updateComposerAttachment(attachment, { retry_stage: null, can_retry: false, note: "材料已检查，可随下方要求一起继续" });
+      renderMaterialHistory(); return;
+    }
+    if (materialReplyInProgress(record)) {
+      continuation.status = "waiting_turn"; storeMaterialContinuation(record, continuation);
+      if (attachment) updateComposerAttachment(attachment, { retry_stage: null, can_retry: false, note: null });
+      renderMaterialHistory(); return;
+    }
+  }
+  const checkpoint = currentHumanCheckpoint(state.conversation);
+  if (checkpoint && !continuation.delivery_started && !discussCheckpoint) {
+    continuation.status = "deferred"; storeMaterialContinuation(record, continuation);
+    if (attachment) updateComposerAttachment(attachment, { retry_stage: null, can_retry: false, note: "报告已就绪，当前确认仍待处理" });
+    renderMaterialHistory(); return;
+  }
+  if (!state.runtimeReady) {
+    continuation.status = "failed"; continuation.error = "AI 连接恢复后可重新发送检查报告"; storeMaterialContinuation(record, continuation);
+    if (attachment) updateComposerAttachment(attachment, { retry_stage: "material_continuation", can_retry: true, error: "材料检查已保留；AI 连接恢复后可续接" });
+    renderMaterialHistory(); return;
+  }
+  delete continuation.error;
+  if (!continuation.delivery_started) continuation.checkpoint_rpc_id = discussCheckpoint ? checkpoint?.rpc_id || null : null;
+  continuation.delivery_started = true; continuation.in_flight = true; continuation.status = "pending"; storeMaterialContinuation(record, continuation);
+  if (attachment) updateComposerAttachment(attachment, { retry_stage: null, can_retry: false, error: null, note: null, continuation_in_flight: true });
+  try {
+    const response = await request(conversationTransportPath(record.owner_id, "messages"), { method: "POST", timeoutMs: 30_000, json: { message: continuation.message, mode: DEFAULT_CONVERSATION_MESSAGE_MODE, request_id: continuation.request_id, ...(continuation.checkpoint_rpc_id ? { checkpoint_rpc_id: continuation.checkpoint_rpc_id } : {}) } });
+    if (response?.accepted !== true || ["failed", "cancelled", "canceled", "rejected", "interrupted"].includes(runtimeStatusToken(response.status))) throw new Error("AI 尚未确认接收材料检查消息");
+    continuation.status = "accepted";
+    if (attachment && attachment.task_id === state.selectedTaskId) updateComposerAttachment(attachment, { retry_stage: null, can_retry: false, error: null });
+  } catch (error) {
+    const receipt = error.payload?.detail;
+    // The backend compares the original message before returning a terminal
+    // receipt. A lost acknowledgement must not create another report message.
+    if (receipt?.code === "composer_request_terminal" && receipt.request_id === continuation.request_id && ["completed", "succeeded"].includes(receipt.status)) {
+      continuation.status = "accepted";
+      if (attachment) updateComposerAttachment(attachment, { retry_stage: null, can_retry: false, error: null });
+    } else {
+      continuation.status = "failed"; continuation.error = error.message;
+      if (attachment) updateComposerAttachment(attachment, { retry_stage: "material_continuation", can_retry: true, error: `材料已保存，报告消息暂未确认：${error.message}` });
+    }
+  } finally {
+    continuation.in_flight = false; storeMaterialContinuation(record, continuation);
+    if (attachment) attachment.continuation_in_flight = false;
+    if (record.owner_id === state.selectedTaskId) { renderMaterialHistory(); await refreshSelected({ force: true }); }
+  }
+}
+async function completeMaterialInspection(response, attachment, ownerId) {
+  const record = response?.material;
+  if (!materialInspectionMatches(record, ownerId, attachment)) throw new Error("材料回执与当前会话、文件或请求身份不一致");
+  if (state.selectedTaskId !== ownerId || state.composerAttachment !== attachment) return;
+  updateComposerAttachment(attachment, { status: record.status, material_id: record.material_id, material: record, error: record.status === "rejected" ? "材料检查发现阻断问题，请展开报告查看" : null, retry_stage: null, can_retry: false });
+  rememberMaterialInspection(record);
+  await continueMaterialInspection(record, attachment);
+}
+async function uploadMaterial(file, attachment = state.composerAttachment) {
+  if (state.selectionLoadingOwnerId && state.selectionLoadingOwnerId === state.selectedTaskId) return;
+  const ownerId = state.selectedTaskId;
+  if (!ownerId || !attachment || attachment.task_id !== ownerId || state.composerAttachment !== attachment || attachment.status === "validating" || attachment.reconciling || attachment.continuation_in_flight) return;
+  if (attachment.material_id) { await continueMaterialInspection(attachment.material, attachment); return; }
+  attachment.upload_mode = "materials"; attachment.material_scope ||= state.task?.record_type === "conversation_draft" ? "conversations" : "tasks";
+  const fail = (message, retryable) => updateComposerAttachment(attachment, { status: "failed", error: message, retry_stage: "material_upload", can_retry: retryable });
+  if (!/\.(csv|jsonl|zip)$/i.test(file?.name || "")) { fail("材料检查接受 CSV、JSONL 或 ZIP，请选择对应文件", false); return; }
+  if (file.size > MATERIAL_UPLOAD_LIMIT) { fail("材料文件超过 25 MB，请拆分后重新选择", false); return; }
+  const base = materialOwnerPath(ownerId, attachment.material_scope);
+  const reconcile = async () => {
+    const response = await request(`${base}/material-requests/${encodeURIComponent(attachment.request_id)}`, { timeoutMs: 15_000 });
+    await completeMaterialInspection(response, attachment, ownerId); return response;
+  };
+  const uncertain = message => updateComposerAttachment(attachment, { status: "pending", error: message, retry_stage: "material_reconcile", can_retry: true });
+  if (attachment.retry_stage === "material_reconcile") {
+    try { attachment.reconciling = true; await reconcile(); return; }
+    catch (error) { if (error.status !== 404) { uncertain(`暂不能确认材料回执：${error.message}`); return; } }
+    finally { attachment.reconciling = false; }
+  }
+  updateComposerAttachment(attachment, { status: "validating", error: null, waiting_on: null, retry_stage: null, can_retry: false });
+  try {
+    let response;
+    try { response = await request(`${base}/materials`, { method: "POST", timeoutMs: 60_000, body: file, headers: { "content-type": file.type || "application/octet-stream", "x-filename": encodeURIComponent(file.name), "x-request-id": attachment.request_id } }); }
+    catch (error) {
+      if (!Number.isFinite(error.status) || error.status === 0 || error.status === 408 || error.status >= 500 || error.retryable === true) {
+        try { await reconcile(); return; }
+        catch (_receiptError) { uncertain("检查响应中断，材料是否已保存尚未确认；可核对服务端回执"); return; }
+      }
+      fail(`材料未完成检查：${error.message}`, ![409, 413, 422].includes(error.status)); return;
+    }
+    try { await completeMaterialInspection(response, attachment, ownerId); }
+    catch (_invalidResponse) {
+      try { await reconcile(); }
+      catch (_receiptError) { uncertain("检查响应未能核验，可核对服务端回执；不会重复创建材料记录"); }
+    }
+  } catch (error) { fail(error.message, false); }
+}
+function reusableDatasetMaterial(record) {
+  const format = datasetUploadFormat(state.task, null);
+  return materialInspectionMatches(record, state.selectedTaskId) && record.status === "inspected"
+    && /^[a-f0-9]{64}$/.test(record.inspection_sha256 || "") && Boolean(state.task?.recipe_id)
+    && !materialInspectionMode() && !datasetUploadAvailability().blocked
+    && ["csv", "zip"].includes(format) && record.file.name.toLowerCase().endsWith(`.${format}`);
+}
+function appendReusableMaterialButton(container, record) {
+  if (!reusableDatasetMaterial(record)) return;
+  const button = document.createElement("button"); button.type = "button"; button.className = "text-button";
+  button.textContent = "使用已上传文件"; button.setAttribute("aria-label", `使用已上传文件 ${record.file.name}`);
+  button.addEventListener("click", async () => { button.disabled = true; try { await useMaterialAsDataset(record); } finally { button.disabled = false; } }); container.append(button);
+}
+function materialDatasetPendingKey(record) { return `specialist-model-studio:material-dataset-pending:${record.owner_id}:${record.material_id}:${record.inspection_sha256}`; }
+function saveMaterialDatasetPending(attachment, status = "pending") {
+  if (!attachment?.source_material) return;
+  const saved = { request_id: attachment.request_id, base_spec_revision: attachment.base_spec_revision, options: attachment.options || {}, status, storage_key: attachment.material_dataset_storage_key };
+  try { localStorage.setItem(materialDatasetPendingKey(attachment.source_material), JSON.stringify(saved)); } catch (_error) {}
+}
+function restoreMaterialDatasetPending(record) {
+  try { const saved = JSON.parse(localStorage.getItem(materialDatasetPendingKey(record)) || "null"); return saved && ["pending", "needs_review"].includes(saved.status) && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(saved.request_id || "") && Number.isInteger(saved.base_spec_revision) && saved.base_spec_revision >= 1 ? saved : null; } catch (_error) { return null; }
+}
+function materialDatasetRequestId(record, options, attachment) {
+  const fingerprint = JSON.stringify([record.inspection_sha256, options.targetColumn || "", options.ignoredColumns || "", options.delimiter || ""]);
+  const key = `specialist-model-studio:material-dataset:${record.owner_id}:${record.material_id}:${fingerprint}`;
+  state.materialDatasetRequests ||= new Map();
+  let identity = attachment.force_new_material_request ? null : state.materialDatasetRequests.get(key);
+  let savedRevision = null, needsReview = false;
+  if (!attachment.force_new_material_request) {
+    try { identity ||= localStorage.getItem(key); savedRevision = Number(localStorage.getItem(`${key}:revision`)); needsReview = localStorage.getItem(`${key}:needs-review`) === "true"; } catch (_error) {}
+  }
+  if (!identity || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(identity)) identity = createConversationRequestId();
+  if (Number.isInteger(savedRevision) && savedRevision >= 1) attachment.base_spec_revision = savedRevision;
+  attachment.material_dataset_storage_key = key; attachment.material_dataset_needs_review = needsReview;
+  state.materialDatasetRequests.set(key, identity);
+  try { localStorage.setItem(key, identity); localStorage.setItem(`${key}:revision`, String(attachment.base_spec_revision)); if (attachment.force_new_material_request) localStorage.setItem(`${key}:needs-review`, "false"); } catch (_error) {}
+  attachment.force_new_material_request = false;
+  return identity;
+}
+function requireMaterialDatasetReview(attachment, reason) {
+  if (attachment.material_dataset_storage_key) { try { localStorage.setItem(`${attachment.material_dataset_storage_key}:needs-review`, "true"); } catch (_error) {} }
+  attachment.material_dataset_needs_review = true;
+  saveMaterialDatasetPending(attachment, "needs_review");
+  updateComposerAttachment(attachment, { status: "failed", error: `导入条件已变化：${reason}。请重新确认当前任务与字段选择`, retry_stage: "material_dataset_review", can_retry: true });
+}
+async function reviewMaterialDatasetImport(attachment) {
+  const ownerId = attachment.task_id; await refreshSelected({ force: true });
+  if (state.selectedTaskId !== ownerId || state.composerAttachment !== attachment || !reusableDatasetMaterial(attachment.source_material)) return;
+  const revision = state.task?.current_spec_revision;
+  if (!Number.isInteger(revision) || revision < 1) { showNotice("尚未读到当前任务版本，请刷新后再确认导入。", "error"); return; }
+  attachment.base_spec_revision = revision; attachment.force_new_material_request = true; attachment.material_dataset_needs_review = false;
+  delete attachment.upload_context;
+  updateComposerAttachment(attachment, { status: "pending", options: {}, error: null, retry_stage: null, can_retry: false });
+  await uploadDataset(attachment.file, { attachment });
+}
+async function useMaterialAsDataset(record) {
+  if (!reusableDatasetMaterial(record)) { showNotice("当前材料与训练数据入口不匹配，或还有确认待处理；请先核对当前任务。", "error"); return; }
+  const revision = state.task?.current_spec_revision;
+  if (!Number.isInteger(revision) || revision < 1) { showNotice("尚未读到当前任务版本，请刷新后再使用这份材料。", "error"); return; }
+  const current = state.composerAttachment;
+  if (current?.status === "validating" || current?.continuation_in_flight) return;
+  if (current?.source_material?.material_id === record.material_id && current.task_id === record.owner_id) { await retryComposerAttachment(); return; }
+  const attachment = { task_id: record.owner_id, request_id: createConversationRequestId(), file: { name: record.file.name, size: record.file.bytes }, source_material: record, base_spec_revision: revision, upload_mode: "material_dataset", status: "pending", options: {}, dataset_id: null, error: null, can_retry: false };
+  const saved = restoreMaterialDatasetPending(record);
+  if (saved) { attachment.request_id = saved.request_id; attachment.base_spec_revision = saved.base_spec_revision; attachment.options = saved.options || {}; attachment.material_dataset_storage_key = saved.storage_key; }
+  state.composerAttachment = attachment; renderComposerAttachment();
+  if (saved?.status === "needs_review") { requireMaterialDatasetReview(attachment, "上一次请求已要求重新核对"); return; }
+  await uploadDataset(attachment.file, { ...attachment.options, attachment });
+}
+function renderMaterialHistory() {
+  if (!ui.composerWrap?.insertBefore || typeof document === "undefined") return;
+  let history = document.getElementById("materialInspectionHistory");
+  if (!history) { history = document.createElement("details"); history.id = "materialInspectionHistory"; history.className = "material-inspection-history"; ui.composerWrap.insertBefore(history, ui.composerForm); }
+  const records = state.materialsOwnerId === state.selectedTaskId ? state.materialInspections || [] : [];
+  history.hidden = !records.length; if (!records.length) { history.replaceChildren(); delete history.dataset.renderKey; return; }
+  const key = JSON.stringify(records.map(record => [record.material_id, record.status, record.detail_available, record.detail_error, materialContinuation(record).status, materialContinuation(record).in_flight, reusableDatasetMaterial(record)]));
+  if (history.dataset.renderKey === key) return;
+  history.dataset.renderKey = key; const openIds = new Set([...history.querySelectorAll("details[open]")].map(item => item.dataset.materialId)); history.replaceChildren();
+  const heading = document.createElement("summary"); heading.textContent = `已上传文件 · ${records.length} 份`; history.append(heading);
+  const labels = { file_count: "文件", row_count: "表格记录合计", image_count: "图片", wav_count: "音频", paired_reference_count: "配对引用", missing_reference_count: "缺失引用", total_audio_seconds: "音频秒数" };
+  records.forEach(record => {
+    const details = document.createElement("details"); details.className = "material-inspection-report"; details.dataset.materialId = record.material_id; details.open = openIds.has(record.material_id);
+    details.addEventListener("toggle", () => { if (details.open && record.detail_available) void loadMaterialDetail(record); });
+    const summary = document.createElement("summary"); summary.textContent = `${record.file.name} · ${record.status === "inspected" ? "已检查材料" : "检查未通过"}`; details.append(summary);
+    const facts = document.createElement("p"); facts.textContent = Object.entries(labels).filter(([key]) => Number.isFinite(record.report?.facts?.[key])).map(([key, label]) => `${label} ${record.report.facts[key]}`).join(" · "); details.append(facts);
+    if (Number.isFinite(record.report?.facts?.row_count) && record.report.facts.row_count > 0) { const note = document.createElement("p"); note.textContent = "表格记录合计包含检查到的各份清单，不代表去重后的训练样本数。"; details.append(note); }
+    if (record.detail_available) { const note = document.createElement("p"); note.textContent = record.detail_error || "正在读取完整检查报告…"; details.append(note); }
+    (record.report?.tables || []).slice(0, 10).forEach(table => { const item = document.createElement("p"); item.textContent = `${table.file}：${table.row_count} 行，${table.column_count} 列；${(table.columns || []).join("、")}`; details.append(item); });
+    [...(record.report?.errors || []).map(item => ({ ...item, severity: "问题" })), ...(record.report?.warnings || []).map(item => ({ ...item, severity: "提示" }))].slice(0, 32).forEach(issue => { const item = document.createElement("p"); item.className = issue.severity === "问题" ? "material-inspection-error" : "material-inspection-note"; item.textContent = `${issue.severity}：${issue.message}${issue.file ? `（${issue.file}）` : ""}`; details.append(item); });
+    if (record.report?.facts?.preview_truncated) { const note = document.createElement("p"); note.textContent = "报告明细已按安全上限截断；统计数量仍按完整检查记录显示。"; details.append(note); }
+    if (materialContinuation(record).error) { const note = document.createElement("p"); note.textContent = `材料已保存，报告消息尚未确认：${materialContinuation(record).error}`; details.append(note); }
+    if (materialContinuation(record).status === "deferred") { const note = document.createElement("p"); note.textContent = "报告已就绪，当前确认仍待处理。选择让 AI 读取报告会先讨论材料，不会批准执行或提交答案。"; details.append(note); }
+    const identity = document.createElement("small"); identity.textContent = `材料编号 ${record.material_id} · SHA-256 ${record.file.sha256}`; details.append(identity);
+    if (!["accepted", "waiting_turn"].includes(materialContinuation(record).status)) { const action = document.createElement("button"); action.type = "button"; action.className = "text-button"; action.textContent = materialContinuation(record).in_flight ? "正在发送检查报告…" : "让 AI 读取检查报告"; action.disabled = Boolean(materialContinuation(record).in_flight); action.addEventListener("click", async () => { action.disabled = true; action.setAttribute("aria-busy", "true"); try { await continueMaterialInspection(record, null, { discussCheckpoint: true }); } finally { action.disabled = false; action.removeAttribute("aria-busy"); } }); details.append(action); }
+    appendReusableMaterialButton(details, record);
+    history.append(details);
+  });
+}
+function materialFactSummary(record) {
+  const facts = record?.report?.facts || {};
+  return [["file_count", "文件"], ["row_count", "表格记录合计"], ["image_count", "图片"], ["wav_count", "音频"], ["paired_reference_count", "配对"]].filter(([key]) => Number.isFinite(facts[key]) && facts[key] > 0).map(([key, label]) => `${label} ${facts[key]}`).concat(`问题 ${record?.report?.error_count ?? record?.report?.errors?.length ?? 0}`).join(" · ");
+}
+async function loadMaterialDetail(record) {
+  if (record.owner_id !== state.selectedTaskId || record.details_loading || !record.detail_available) return;
+  record.details_loading = true;
+  try {
+    const response = await request(`${materialOwnerPath(record.owner_id)}/materials/${encodeURIComponent(record.material_id)}`, { timeoutMs: 15_000 });
+    if (!materialInspectionMatches(response?.material, record.owner_id) || response.material.material_id !== record.material_id) throw new Error("检查报告身份不一致");
+    if (record.owner_id === state.selectedTaskId) rememberMaterialInspection(response.material);
+  } catch (error) { record.detail_error = `完整报告暂未读取：${error.message}。收起后可重新展开。`; renderMaterialHistory(); }
+  finally { record.details_loading = false; }
+}
+function renderMaterialControls() {
+  if (!materialInspectionMode()) return;
+  const busy = state.composerAttachment?.task_id === state.selectedTaskId && state.composerAttachment.status === "validating";
+  ui.datasetButton.disabled = busy || Boolean(state.selectionLoadingOwnerId && state.selectionLoadingOwnerId === state.selectedTaskId); ui.datasetButtonLabel.textContent = busy ? "检查中" : "上传材料";
+  ui.datasetButton.title = "上传 CSV、JSONL 或 ZIP 做只读材料检查，不会导入训练数据或授权执行";
+  ui.inspectorDatasetButton.disabled = ui.datasetButton.disabled; ui.inspectorDatasetButton.textContent = "上传材料并检查"; ui.inspectorDatasetButton.title = ui.datasetButton.title;
+  ui.datasetInput.accept = ".csv,.jsonl,.zip";
 }
 function datasetUploadReceiptMatches(response, taskId, requestId) {
   const receipt = response?.dataset_upload; const task = response?.task;
@@ -248,48 +641,67 @@ async function reconcileDatasetUploadReceipt(taskId, attachment) {
 }
 async function reconcileComposerDatasetUpload(task) {
   const attachment = state.composerAttachment;
-  if (!attachment || attachment.task_id !== task?.task_id || attachment.dataset_id || attachment.retry_stage !== "reconcile") return false;
+  if (!attachment || attachment.task_id !== task?.task_id || attachment.dataset_id || attachment.retry_stage !== "reconcile" || attachment.reconciling) return false;
+  attachment.reconciling = true;
   try {
     const response = await reconcileDatasetUploadReceipt(task.task_id, attachment);
-    updateComposerAttachment(attachment, { status: "ready", dataset_id: response.dataset_upload.dataset_id, error: null, retry_stage: null, can_retry: false });
-    showNotice(`已根据服务端回执确认数据集 ${shortId(response.dataset_upload.dataset_id)}；没有重复上传。`, "ok");
+    if (state.selectedTaskId !== task.task_id || state.composerAttachment !== attachment) return false;
+    await completeDatasetUpload(response, attachment, task.task_id, attachment.options || {}, attachment.upload_context);
     return true;
   } catch (_error) {
     updateComposerAttachment(attachment, { status: "pending", error: "仍在等待服务端回执；可再次核对或安全重试原请求", retry_stage: "reconcile", can_retry: true });
     return false;
-  }
+  } finally { attachment.reconciling = false; }
 }
 function clearComposerAttachment({ force = false } = {}) {
   if (!force && state.composerAttachment?.status === "validating") { showNotice("文件正在校验。请等待真实请求返回后再移除，避免误判是否已经导入。", "ok"); return; }
   const importedDatasetId = state.composerAttachment?.dataset_id || null;
+  const inspectedMaterialId = state.composerAttachment?.material_id || null;
   state.composerAttachment = null; ui.datasetInput.value = ""; renderComposerAttachment();
-  if (!force) showNotice(importedDatasetId ? "文件条目已从输入框移除；已经导入当前任务的数据仍然保留。" : "文件已从输入框移除。", "ok");
+  if (!force) showNotice(importedDatasetId ? "文件条目已从输入框移除；已经导入当前任务的数据仍然保留。" : inspectedMaterialId ? "文件条目已移除；材料检查记录仍可在当前对话中查看。" : "文件已从输入框移除。", "ok");
 }
-function syncComposerAttachmentOwner(taskId) {
+function syncComposerAttachmentOwner(taskId, { adoptAttachment = null } = {}) {
+  if (state.materialsOwnerId !== taskId) resetMaterialInspections(taskId);
   const attachment = state.composerAttachment; if (!attachment) return;
   if (!taskId) { if (attachment.task_id) clearComposerAttachment({ force: true }); return; }
-  if (!attachment.task_id) { attachment.task_id = taskId; renderComposerAttachment(); return; }
+  if (!attachment.task_id) {
+    if (attachment !== adoptAttachment) { clearComposerAttachment({ force: true }); return; }
+    attachment.task_id = taskId; renderComposerAttachment(); return;
+  }
   if (attachment.task_id !== taskId) clearComposerAttachment({ force: true });
 }
 function stageComposerAttachment(file) {
   if (!file) return;
+  if (state.selectionLoadingOwnerId && state.selectionLoadingOwnerId === state.selectedTaskId) { ui.datasetInput.value = ""; showNotice("正在加载当前对话，稍后再上传文件。", "ok"); return; }
   if (state.composerAttachment?.status === "validating") { showNotice("当前文件仍在校验，返回结果前没有替换它。", "ok"); ui.datasetInput.value = ""; return; }
   const attachment = { file, task_id: state.selectedTaskId, request_id: createConversationRequestId(), status: "pending", options: {}, dataset_id: null, error: null, retry_stage: null, can_retry: false, continuation: null };
   state.composerAttachment = attachment; renderComposerAttachment(); ui.datasetInput.value = "";
-  if (!state.selectedTaskId) { updateComposerAttachment(attachment, { can_retry: true, retry_stage: "upload", error: "发送任务目标后再导入" }); showNotice("文件已放入输入框，尚未上传。先发送任务目标；任务理解确认后再继续处理这个文件。", "ok"); return; }
-  void uploadDataset(file, { attachment });
+  if (!state.selectedTaskId) { updateComposerAttachment(attachment, { upload_mode: "materials", can_retry: false, retry_stage: "upload", error: "发送目标后会自动上传并检查材料" }); return; }
+  if (materialInspectionMode()) void uploadMaterial(file, attachment);
+  else void uploadDataset(file, { attachment });
+}
+async function resumeNewConversationAttachment(attachment, ownerId) {
+  if (!attachment || state.composerAttachment !== attachment || state.selectedTaskId !== ownerId || attachment.task_id !== ownerId || attachment.status !== "pending" || attachment.material_id || attachment.dataset_id) return;
+  await uploadMaterial(attachment.file, attachment);
 }
 async function retryComposerAttachment() {
   const attachment = state.composerAttachment;
   if (!attachment?.file || !attachment.request_id) { showNotice("没有可重试的文件请求；请重新选择文件。", "error"); return; }
+  if (attachment.status === "validating" || attachment.reconciling || attachment.continuation_in_flight) return;
   if (!state.selectedTaskId) { showNotice("请先发送任务目标创建任务；文件仍保持待处理。", "ok"); return; }
   if (attachment.task_id && attachment.task_id !== state.selectedTaskId) { showNotice("这个文件请求属于另一项任务，已拒绝跨任务重试。请移除后重新选择。", "error"); return; }
   attachment.task_id = state.selectedTaskId;
+  renderComposerAttachment();
+  if (attachment.retry_stage === "material_dataset_review") { await reviewMaterialDatasetImport(attachment); return; }
+  if (attachment.retry_stage === "material_continuation") { await continueMaterialInspection(attachment.material, attachment); return; }
+  if (attachment.upload_mode === "materials" || attachment.waiting_action === "inspect_material") { await uploadMaterial(attachment.file, attachment); return; }
+  if (attachment.status === "pending" && attachment.retry_stage === "upload" && attachment.waiting_action === "review_task_spec") { await openTaskSpecDialog(); return; }
   if (attachment.retry_stage === "continuation") { await retryAttachmentContinuation(attachment); return; }
   if (attachment.retry_stage === "reconcile") {
     const reconciled = await reconcileComposerDatasetUpload(state.task);
-    if (reconciled) return;
+    if (reconciled) { await refreshSelected({ force: true }); return; }
   }
+  if (attachment.dataset_id || attachment.task_id !== state.selectedTaskId) return;
   await uploadDataset(attachment.file, { ...attachment.options, attachment });
 }
 function formatBytes(value) { if (!Number.isFinite(value)) return "大小未知"; if (value < 1024) return `${value} B`; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`; if (value < 1024 ** 4) return `${(value / 1024 ** 3).toFixed(1)} GB`; return `${(value / 1024 ** 4).toFixed(1)} TB`; }
@@ -310,6 +722,33 @@ function dataUploadQuestionCheckpoint(item) {
   const questions = Array.isArray(item.questions) ? item.questions : [];
   const ids = new Set(questions.map((question) => question?.id));
   return [...DATA_UPLOAD_QUESTION_IDS].some((id) => ids.has(id)) ? item : null;
+}
+function datasetUploadFormat(task = state.task, checkpoint = currentHumanCheckpoint(state.conversation)) {
+  const adapter = task?.data_adapter_id || task?.capability_request?.data_adapter;
+  if (adapter === "tabular-csv") return "csv";
+  if (["image-folder-zip", "audio-keyword-class-folder-zip"].includes(adapter)) return "zip";
+  if (["tabular-regression", "tabular-classification"].includes(task?.recipe_id)) return "csv";
+  if (["image-folder-classification", "audio-keyword-classification"].includes(task?.recipe_id)) return "zip";
+  return checkpoint?.questions?.some((question) => question.id === "csv_upload") ? "csv" : null;
+}
+function datasetUploadAvailability(task = state.task, checkpoint = currentHumanCheckpoint(state.conversation), taskId = state.selectedTaskId) {
+  if (!taskId) return { blocked: true, code: "goal", reason: "发送目标后会自动上传并检查材料" };
+  if (state.selectionLoadingOwnerId === taskId) return { blocked: true, code: "loading", reason: "正在加载当前对话，稍后再上传文件" };
+  if (!task || task.task_id !== taskId) return { blocked: true, code: "loading", reason: "正在核对当前任务的数据入口；文件尚未上传" };
+  if (task.record_type === "conversation_draft") return { blocked: true, code: "task_intake", reason: "目标正在整理，任务的数据入口还未确定；文件尚未上传" };
+  if (task.status === "needs_recipe") {
+    const preparingRecipe = task.control?.next_action?.id === "stage_recipe_samples";
+    return { blocked: true, code: "integration", reason: preparingRecipe ? "请先通过“上传构建样例”准备训练能力；这个文件尚未导入" : "当前训练数据入口尚待验证；可以先上传材料检查，并继续准备训练方案" };
+  }
+  const uploadCheckpoint = dataUploadQuestionCheckpoint(checkpoint);
+  if (task.capability_decision?.status !== "resolved" && !uploadCheckpoint) {
+    const decision = task.capability_decision || {};
+    const canReview = Boolean(task.task_spec && ["needs_confirmation", "needs_clarification"].includes(decision.status) && (decision.selected_family || decision.candidates?.length) && !checkpoint?.rpc_id);
+    return { blocked: true, code: "task_output", reason: "先明确并确认任务的输入与输出；文件尚未上传，可以继续在对话中说明目标", action: canReview ? "review_task_spec" : null, actionLabel: canReview ? decision.status === "needs_clarification" ? "明确任务输出" : "确认任务理解" : null };
+  }
+  if (task.status === "running" && !uploadCheckpoint) return { blocked: true, code: "running", reason: "当前训练正在运行，结束后再导入新数据；文件尚未上传" };
+  if (checkpoint?.rpc_id && isPendingHumanCheckpoint(checkpoint) && !uploadCheckpoint) return { blocked: true, code: "checkpoint", reason: "请先处理当前对话中的确认；文件尚未上传" };
+  return { blocked: false, code: null, reason: null };
 }
 function dataUploadCheckpointAnswers(item, datasetId, targetColumn) {
   if (!dataUploadQuestionCheckpoint(item) || !datasetId) return [];
@@ -345,9 +784,19 @@ function syncTaskSpecCheckpointOwnership(conversation = state.conversation) {
     else if (!ownedByDsh && control.dataset.disabledByDshCheckpoint === "true") { control.disabled = false; delete control.dataset.disabledByDshCheckpoint; }
   });
   [ui.datasetButton, ui.inspectorDatasetButton].filter(Boolean).forEach((control) => {
-    if (ownedByDsh && !control.disabled) { control.disabled = true; control.dataset.disabledByDshCheckpoint = "true"; }
-    else if (!ownedByDsh && control.dataset.disabledByDshCheckpoint === "true") { control.disabled = false; delete control.dataset.disabledByDshCheckpoint; }
+    if (materialInspectionMode()) { delete control.dataset.disabledByDshCheckpoint; return; }
+    if (ownedByDsh) {
+      if (!control.disabled) { control.disabled = true; control.dataset.disabledByDshCheckpoint = "true"; }
+      control.title = datasetUploadAvailability(state.task, currentHumanCheckpoint(conversation)).reason || (dataUploadQuestionCheckpoint(currentHumanCheckpoint(conversation)) ? "请使用对话中准备数据卡片的文件选择按钮" : "请先处理当前对话中的确认；文件导入暂不可用");
+    } else if (control.dataset.disabledByDshCheckpoint === "true") {
+      const availability = datasetUploadAvailability(state.task, null);
+      const recipeSamplesNeeded = control === ui.datasetButton && state.task?.control?.next_action?.id === "stage_recipe_samples";
+      control.disabled = recipeSamplesNeeded ? false : availability.blocked;
+      control.title = recipeSamplesNeeded ? "上传按类别整理的 PCM WAV 样例 ZIP" : availability.reason || "导入图片、音频 ZIP 或 CSV";
+      delete control.dataset.disabledByDshCheckpoint;
+    }
   });
+  renderMaterialControls();
 }
 function syncLegacyConfirmationControls(task = state.task, conversation = state.conversation) {
   const checkpoint = currentHumanCheckpoint(conversation);
@@ -443,34 +892,23 @@ function conversationHasActiveWork(conversation) {
   return conversationAgentResponseRunning(conversation) || conversationHasBackgroundTraining(conversation);
 }
 const DEFAULT_CONVERSATION_MESSAGE_MODE = "queue_after_turn";
-const OPTIONAL_CONVERSATION_MESSAGE_MODES = ["intervene_current", "stop_and_replace"];
-function advertisedConversationModes(conversation = state.conversation) {
-  const advertised = Array.isArray(conversation?.supported_modes)
-    ? conversation.supported_modes
-    : Array.isArray(state.productRuntime?.agent?.supported_modes)
-      ? state.productRuntime.agent.supported_modes
-      : [];
-  return new Set(advertised.map((mode) => String(mode || "").trim()).filter(Boolean));
-}
 function syncComposerDelivery(conversation = state.conversation) {
-  const checkpoint = currentHumanCheckpoint(conversation);
-  const agentQueued = Boolean(state.runtimeReady && state.selectedTaskId && !checkpoint && conversationAgentResponseRunning(conversation));
-  const backgroundRunning = Boolean(state.runtimeReady && state.selectedTaskId && !checkpoint && !agentQueued && conversationHasBackgroundTraining(conversation));
-  ui.composerDelivery.hidden = !agentQueued && !backgroundRunning;
-  ui.composerWrap.dataset.delivery = agentQueued ? DEFAULT_CONVERSATION_MESSAGE_MODE : backgroundRunning ? "background-training" : "immediate-when-idle";
-  if (!agentQueued && !backgroundRunning) return;
-  if (backgroundRunning) {
-    ui.composerDeliveryLabel.textContent = "后台操作正在进行，可继续对话";
-    ui.composerDeliveryDetail.textContent = "你仍可继续和 AI 交流；新消息会开启新的对话回合，不会排队等待后台操作结束。具体操作以本轮执行记录为准。";
-    return;
-  }
-  const supported = advertisedConversationModes(conversation);
-  const unopened = OPTIONAL_CONVERSATION_MESSAGE_MODES.filter((mode) => !supported.has(mode));
-  const unopenedLabels = unopened.map((mode) => mode === "intervene_current" ? "实时干预" : "停止并替换");
-  ui.composerDeliveryLabel.textContent = "将在本轮结束后继续";
-  ui.composerDeliveryDetail.textContent = unopenedLabels.length
-    ? `当前消息只会排队，不会改变正在执行的本轮；${unopenedLabels.join("、")}尚未开放。`
-    : "当前消息按排队模式提交；只有后端明确声明支持的模式才允许另行选择。";
+  if (state.selectionLoadingOwnerId && state.selectionLoadingOwnerId === state.selectedTaskId) { ui.composerHint.textContent = "正在加载对话 · 草稿会保存"; ui.sendButton.disabled = true; return; }
+  const queued = Boolean(state.runtimeReady && state.selectedTaskId && !currentHumanCheckpoint(conversation) && conversationAgentResponseRunning(conversation));
+  const showQueueHint = queued && Boolean(ui.messageInput.value.trim());
+  ui.composerHint.textContent = showQueueHint ? "等待回复后发送" : "Enter 发送 · Shift + Enter 换行";
+  ui.composerHint.dataset.delivery = showQueueHint ? "queued" : "immediate";
+  ui.sendButton.setAttribute("aria-label", showQueueHint ? "等待回复后发送" : "发送消息");
+  ui.sendButton.title = showQueueHint ? "等待当前回复结束后发送这条消息" : "发送消息";
+}
+function queuedConversationMessages(conversation) {
+  const observed = new Set((conversation?.items || [])
+    .filter((item) => item.type === "user_message" || item.category === "user_message" || (item.kind === "message" && item.role === "user"))
+    .map((item) => item.agent_run_id).filter(Boolean));
+  return (conversation?.runs || [])
+    .filter((run) => run.status === "queued" && run.user_message && !observed.has(run.run_id))
+    .map((run) => ({ kind: "message", role: "user", text: run.user_message, time: run.queued_at_utc,
+      agent_run_id: run.run_id, request_id: run.composer_request?.request_id, delivery: "queued" }));
 }
 function createConversationRequestId() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -501,15 +939,16 @@ function beginTaskCreationSubmission(text) {
   const previous = state.messageSubmission;
   if (previous?.task_id === null && previous.text === text && previous.status === "failed" && previous.create_request_id) {
     previous.status = "sending";
-    if (previous.new_request_required === true) previous.request_id = createConversationRequestId();
+    if (previous.new_request_required === true) previous.request_id = `${previous.request_id.startsWith("material-intake-") ? "material-intake-" : ""}${createConversationRequestId()}`;
     previous.new_request_required = false;
     return previous;
   }
+  const pendingMaterial = !state.selectedTaskId && state.composerAttachment?.file && !state.composerAttachment.task_id && !state.composerAttachment.material_id && !state.composerAttachment.dataset_id;
   const submission = {
     task_id: null,
     text,
     create_request_id: createConversationRequestId(),
-    request_id: createConversationRequestId(),
+    request_id: `${pendingMaterial ? "material-intake-" : ""}${createConversationRequestId()}`,
     status: "sending",
     new_request_required: false,
   };
@@ -518,7 +957,8 @@ function beginTaskCreationSubmission(text) {
 }
 async function postQueuedConversationMessage(taskId, text) {
   const submission = beginMessageSubmission(taskId, text);
-  state.pendingMessage = { task_id: taskId, text, time: Date.now() };
+  const waitingForReply = conversationAgentResponseRunning(state.conversation) && !submission.checkpoint_rpc_id;
+  state.pendingMessage = { task_id: taskId, text, time: Date.now(), request_id: submission.request_id };
   renderConversation(true);
   try {
     const response = await request(conversationTransportPath(taskId, "messages"), {
@@ -531,7 +971,13 @@ async function postQueuedConversationMessage(taskId, text) {
       error.payload = response;
       throw error;
     }
+    if (state.pendingMessage?.request_id === submission.request_id) {
+      state.pendingMessage.agent_run_id = response.agent_run_id;
+      state.pendingMessage.delivery = waitingForReply && status === "queued" ? "queued" : "sent";
+    }
     if (state.messageSubmission?.request_id === submission.request_id) state.messageSubmission = null;
+    clearObservedPendingMessage(taskId, state.conversation);
+    renderConversation(true);
     return response;
   } catch (error) {
     if (state.messageSubmission?.request_id === submission.request_id) {
@@ -543,8 +989,42 @@ async function postQueuedConversationMessage(taskId, text) {
     throw error;
   }
 }
+function pendingExecutionIntegration(task, conversation = null, projection = null) {
+  if (task?.capability_status !== "needs_recipe" && task?.status !== "needs_recipe") return null;
+  if (conversation?.task_id && conversation.task_id !== task?.task_id) return null;
+  const failed = new Set(["failed", "error", "identity_error", "blocked", "blocked_security", "blocked_environment", "blocked_resources", "blocked_platform"]);
+  if ([task.status, task.current_result?.status, task.current_recipe_build?.status, task.repository_analysis?.status, task.resource_feasibility?.decision].some((value) => failed.has(value))) return null;
+  const active = (values) => Array.isArray(values) ? values.filter((item) => item?.active !== false) : [];
+  const gapCodes = new Set(["recipe_unavailable", "verified_recipe_unavailable"]);
+  const code = (item) => typeof item === "string" ? item : item?.code || item?.reason_code;
+  const blockers = [...active(task.blockers), ...active(task.control?.blocked_by), ...active(task.repository_analysis?.downstream_blockers), ...active(task.resource_feasibility?.blockers)];
+  if (blockers.some((item) => !gapCodes.has(code(item)))) return null;
+  const canonicalPhase = conversation?.interaction_projection?.phase;
+  if (canonicalPhase && !["idle", "blocked"].includes(canonicalPhase)) return null;
+  if (canonicalPhase === "blocked" && conversation?.interaction_projection?.subject?.object_type === "Risk") return null;
+  if (conversation?.projection_health === "observation_degraded" || conversation?.projection_health?.status === "observation_degraded" || conversation?.projection_errors?.length) return null;
+  if (conversation?.running === true || conversation?.execution_running === true || conversation?.agent_response_running === true || conversation?.background_action_running === true || conversation?.pending?.length) return null;
+  if (active(conversation?.risks).length) return null;
+  if (!Array.isArray(conversation?.risks) && (conversation?.actions || []).some((item) => ["failed", "identity_error"].includes(item?.status))) return null;
+  if (projection && !["idle", "blocked"].includes(projection.phase)) return null;
+  if (projection?.observation?.turn_failure || projection?.observation?.task_failure || projection?.observation?.degraded) return null;
+  const explicitBlocker = projection?.observation?.blocker;
+  if (explicitBlocker && !gapCodes.has(code(explicitBlocker))) return null;
+  return {
+    label: "准备训练方案", tone: "needs_recipe", phase: "idle",
+    reason_code: "execution_integration_pending", can_cancel: false,
+    summary: "围绕当前目标继续准备数据要求、训练路线、资源预算和验证步骤；实际运行需完成方案验证与授权。",
+  };
+}
+function completedTrainingStatus(task) {
+  const result = task?.current_result, report = result?.evaluation_report;
+  if (task?.status !== "completed" || result?.status !== "completed" || !report || report.run_status !== "completed" || report.task_id !== task.task_id || report.run_id !== result.run_id || result.run_id !== task.current_run_id || !/^[a-f0-9]{64}$/.test(report.report_sha256 || "")) return null;
+  if (report.conclusion === "quality_failed") return { label: "训练完成，质量未达标", tone: "needs_confirmation" };
+  if (report.release_ready === true) return { label: "独立评估通过", tone: "completed" };
+  return { label: "评估完成，仍需审阅", tone: "needs_confirmation" };
+}
 function workflowStatus(task, conversation = null) {
-  if ((conversation && state.conversationStreamDegraded) || conversation?.projection_health?.status === "observation_degraded") return { label: "需要重新连接", tone: "failed" };
+  if ((conversation && state.conversationStreamDegraded) || conversation?.projection_health === "observation_degraded" || conversation?.projection_health?.status === "observation_degraded") return { label: "需要重新连接", tone: "failed" };
   if (backgroundCancellationPending(conversation)) return { label: "正在停止", tone: "cancelling" };
   const checkpoint = currentHumanCheckpoint(conversation);
   if (checkpoint?.kind === "question") return { label: "等待你的回答", tone: "needs_confirmation" };
@@ -554,7 +1034,10 @@ function workflowStatus(task, conversation = null) {
   if (conversation?.interaction_state === "waiting_for_human") return { label: "等待你的决定", tone: "needs_confirmation" };
   if (isConversationDraft(state.conversationRecord, task)) return { label: "等待你的消息", tone: "idle" };
   if (RUNNING_STATUSES.has(task.current_result?.status)) return { label: "后台操作进行中", tone: "running" };
+  const trainingOutcome = completedTrainingStatus(task); if (trainingOutcome) return trainingOutcome;
   if (["running", "completed", "failed", "cancelled", "interrupted"].includes(task.status)) return { label: STATUS_LABELS[task.status] || task.status, tone: task.status };
+  const integrationPending = pendingExecutionIntegration(task, conversation);
+  if (integrationPending) return integrationPending;
   const stage = task.control?.current_stage; const blocked = task.control?.blocked_by?.[0]; const analysisStatus = task.repository_analysis?.status; const planStatus = task.training_plan?.effective_status;
   if (stage === "task_understanding") return { label: task.capability_decision?.status === "needs_confirmation" ? "等待确认" : "等待澄清", tone: "needs_clarification" };
   if (stage === "capability_resolution" || stage === "source_discovery") {
@@ -590,7 +1073,7 @@ function canonicalInteractionPresentation(conversation = state.conversation) {
 }
 function interactionPresentation(task, conversation = state.conversation, projection = null) {
   if (isConversationDraft(state.conversationRecord, task)) {
-    if ((conversation && state.conversationStreamDegraded) || conversation?.projection_health?.status === "observation_degraded") return { label: "需要重新连接", tone: "failed", phase: "observation_degraded", reason_code: "observation_degraded", can_cancel: false };
+    if ((conversation && state.conversationStreamDegraded) || conversation?.projection_health === "observation_degraded" || conversation?.projection_health?.status === "observation_degraded") return { label: "需要重新连接", tone: "failed", phase: "observation_degraded", reason_code: "observation_degraded", can_cancel: false };
     if (backgroundCancellationPending(conversation)) return { label: "正在停止", tone: "cancelling", phase: "stopping", reason_code: "stopping", can_cancel: false };
     const checkpoint = currentHumanCheckpoint(conversation);
     if (checkpoint?.kind === "question") return { label: "等待你的回答", tone: "needs_confirmation", phase: "clarifying", reason_code: "waiting_question", can_cancel: false };
@@ -601,7 +1084,11 @@ function interactionPresentation(task, conversation = state.conversation, projec
     return { label: "等待你的消息", tone: "idle", phase: "idle", reason_code: "conversation_idle", can_cancel: false };
   }
   const canonical = canonicalInteractionPresentation(conversation);
-  if (canonical?.phase === "blocked" && completedTaskOutranksStaleBlock(task, conversation)) return { label: "本轮已完成", tone: "completed", phase: "completed", reason_code: "task_completed", can_cancel: false };
+  const trainingOutcome = completedTrainingStatus(task);
+  const integrationPending = pendingExecutionIntegration(task, conversation, projection);
+  if ((!canonical || canonical.phase === "blocked") && integrationPending) return integrationPending;
+  if (canonical?.phase === "blocked" && completedTaskOutranksStaleBlock(task, conversation)) return { ...(trainingOutcome || { label: "本轮已完成", tone: "completed" }), phase: "completed", reason_code: "task_completed", can_cancel: false };
+  if (canonical?.phase === "completed" && trainingOutcome) return { ...canonical, ...trainingOutcome };
   if (canonical) return canonical;
   const projectionStatus = projection ? ({
     clarifying: { label: "等待你的回答", tone: "needs_confirmation" },
@@ -728,15 +1215,16 @@ function renderRuntimeMode(mode) {
   ui.runtimePill.dataset.state = checking ? "checking" : ready ? "ready" : "error";
   ui.runtimePill.querySelector("span").textContent = pillText; ui.runtimePill.title = pillText; ui.runtimePill.setAttribute("aria-label", pillText);
   ui.composerMode.dataset.state = checking ? "checking" : ready ? "agent" : "local"; ui.composerModeLabel.textContent = composerText; ui.composerMode.title = ready ? "当前对话可用；只有发生真实工具调用或专家委派时，具体角色才会出现在执行过程里" : providerMissing ? "模型服务尚未配置，因此不会创建任务或启动对话" : checking ? composerText : "当前只允许查看任务事实和手动打开证据面板；不会用固定流程冒充智能协作";
-  ui.messageInput.disabled = false; ui.sendButton.disabled = !ready; ui.composerWrap.dataset.runtime = ready ? "agent" : checking ? "checking" : "unavailable";
+  ui.messageInput.disabled = false; ui.sendButton.disabled = !ready || Boolean(state.selectionLoadingOwnerId && state.selectionLoadingOwnerId === state.selectedTaskId) || state.conversation?.execution_state_observed === false; ui.composerWrap.dataset.runtime = ready ? "agent" : checking ? "checking" : "unavailable";
   if (!ready) ui.messageInput.placeholder = checking ? "正在连接 AI…" : providerMissing ? "请先在本机配置模型服务，再开始训练任务" : incompatible ? "AI 服务版本不兼容，请重启正式服务" : "AI 未连接，暂时不能创建或继续对话";
   else ui.messageInput.placeholder = state.selectedTaskId ? "继续询问或补充下一步要求…" : "告诉我，你希望模型帮你完成什么？";
   if (providerMissing) showRuntimeSetupNotice("模型服务尚未配置。请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动；在此之前不会创建训练任务。");
   else if (ui.composerNotice.dataset.runtimeSetup === "true") hideNotice();
   syncComposerDelivery();
+  if (state.selectionLoadingOwnerId && state.selectionLoadingOwnerId === state.selectedTaskId) renderSelectionLoading();
 }
 function compatibleAgentRuntime(agent) {
-  return agent?.available === true && agent.real_agent === true && agent.implementation === "dsh_native_subagents" && agent.conversation_schema_version === "2.0" && agent.conversation_projector_revision === "3.3" && agent.synthesis_verdict_version === "1.0" && agent.conversation_action_schema_version === "1.0" && agent.task_truth_source === "TrainingTask";
+  return agent?.available === true && agent.real_agent === true && agent.implementation === "dsh_native_subagents" && agent.conversation_schema_version === "2.0" && agent.conversation_projector_revision === "3.4" && agent.synthesis_verdict_version === "1.0" && agent.conversation_action_schema_version === "1.0" && agent.task_truth_source === "TrainingTask";
 }
 function agentProviderReady(agent) { return agent?.provider?.ready === true && agent.provider.active === true && agent.provider.configured === true; }
 function applyAgentRuntimeStatus(agent) {
@@ -747,10 +1235,7 @@ function applyAgentRuntimeStatus(agent) {
 }
 function runtimeDisplayMode() { return state.runtimeReady ? "agent" : state.runtimeIssue === "incompatible" ? "incompatible" : state.runtimeIssue === "provider" ? "provider" : "local"; }
 function renderProductBoundary() {
-  const byomExecutionAvailable = state.productRuntime?.byom_execution_available === true;
-  if (ui.homeBoundary) ui.homeBoundary.textContent = byomExecutionAvailable
-    ? "说说你想解决的问题。确认后可以开始训练。"
-    : "说说你想解决的问题。";
+  if (ui.homeBoundary) ui.homeBoundary.textContent = "说说你想解决的问题。可以从目标开始，也可以先提供材料。";
 }
 async function loadRuntime() {
   if (state.runtimeRetryTimer) window.clearTimeout(state.runtimeRetryTimer);
@@ -817,11 +1302,23 @@ async function loadTaskSpecFamilies() {
   try { state.taskSpecFamilies = (await request("/task-spec/families")).families || []; state.taskSpecFamiliesError = null; return true; }
   catch (error) { state.taskSpecFamilies = []; state.taskSpecFamiliesError = error.message; return false; }
 }
-async function loadTasks({ selectFromUrl = false } = {}) {
+async function taskListPayload() {
+  const pending = state.taskListLoadPromise || request("/tasks", { timeoutMs: 12_000 });
+  state.taskListLoadPromise = pending;
+  try { return await pending; }
+  finally { if (state.taskListLoadPromise === pending) state.taskListLoadPromise = null; }
+}
+async function refreshTaskListIfDue({ force = false } = {}) {
+  if (document.visibilityState !== "visible" || state.taskListLoadPromise || (!force && Date.now() - (state.taskListRefreshedAt || 0) < 20_000)) return false;
+  state.taskListRefreshedAt = Date.now();
+  try { await loadTasks({ preserveRows: true }); return true; }
+  catch (_error) { return false; }
+}
+async function loadTasks({ selectFromUrl = false, preserveRows = false } = {}) {
   let payload;
-  try { payload = await request("/tasks", { timeoutMs: 12_000 }); state.homeTasksReachable = true; if (state.runtimeReady) clearConnectionNotice(); }
+  try { payload = await taskListPayload(); state.homeTasksReachable = true; state.taskListRefreshedAt = Date.now(); if (state.runtimeReady) clearConnectionNotice(); }
   catch (error) { state.homeTasksReachable = false; throw error; }
-  state.tasks = payload.tasks || []; renderTaskList();
+  state.tasks = payload.tasks || []; renderTaskList({ preserveRows });
   if (selectFromUrl && !state.selectedTaskId) {
     const params = new URL(location.href).searchParams;
     const requestedConversation = params.get("conversation");
@@ -833,7 +1330,22 @@ async function loadTasks({ selectFromUrl = false } = {}) {
     showNotice(`找不到训练任务 ${requested}。没有替你打开其他任务，请从左侧明确选择或新建任务。`);
   }
 }
-function renderTaskList() {
+function renderTaskList({ preserveRows = false } = {}) {
+  const rows = preserveRows ? [...ui.taskList.querySelectorAll(".task-row")] : [];
+  if (rows.length === state.tasks.length && rows.length && state.tasks.every((task) => rows.some((row) => row.dataset.taskId === task.task_id))) {
+    state.tasks.forEach((task) => {
+      const row = rows.find((item) => item.dataset.taskId === task.task_id);
+      const button = row.querySelector(".task-item"), status = row.querySelector(".task-workflow"), time = row.querySelector("time"), archive = row.querySelector(".task-archive-button");
+      button.querySelector("b").textContent = task.name; button.setAttribute("aria-current", String(task.task_id === state.selectedTaskId));
+      const workflow = taskListStatus(task, task.task_id === state.selectedTaskId ? state.conversation : null), dot = status.querySelector("i");
+      dot.dataset.status = workflow.tone; status.replaceChildren(dot, document.createTextNode(workflow.label));
+      time.dateTime = task.updated_at_utc || ""; time.textContent = formatRelativeTime(task.updated_at_utc);
+      if (archive.getAttribute("aria-busy") !== "true") archive.disabled = task.status === "running";
+      archive.title = archive.disabled ? "任务运行中，不能归档" : `归档任务：${task.name}`; archive.setAttribute("aria-label", archive.title);
+    });
+    return;
+  }
+  const focused = ui.taskList.contains(document.activeElement) ? { task_id: document.activeElement.dataset.taskId, action: document.activeElement.dataset.action } : null;
   clear(ui.taskList);
   if (!state.tasks.length) { const empty = document.createElement("div"); empty.className = "task-empty"; empty.textContent = "还没有模型任务。先描述一个真实问题。"; ui.taskList.append(empty); return; }
   state.tasks.forEach((task) => {
@@ -847,23 +1359,78 @@ function renderTaskList() {
     const archive = document.createElement("button"); archive.type = "button"; archive.className = "task-archive-button icon-button"; archive.dataset.action = "archive-task"; archive.dataset.taskId = task.task_id;
     archive.disabled = task.status === "running"; archive.title = archive.disabled ? "任务运行中，不能归档" : `归档任务：${task.name}`; archive.setAttribute("aria-label", archive.title);
     archive.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16v12H4zM3 4h18v3.5H3zM9 11h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-    button.addEventListener("click", () => selectTask(task.task_id)); archive.addEventListener("click", () => confirmTaskArchive(task)); row.append(button, archive); ui.taskList.append(row);
+    button.addEventListener("click", () => selectTask(task.task_id)); archive.addEventListener("click", () => confirmTaskArchive(state.tasks.find((item) => item.task_id === task.task_id) || task, archive)); row.append(button, archive); ui.taskList.append(row);
   });
+  if (focused) [...ui.taskList.querySelectorAll("button[data-task-id]")].find((button) => button.dataset.taskId === focused.task_id && button.dataset.action === focused.action)?.focus({ preventScroll: true });
 }
 function syncSelectedTaskListStatus(conversation = state.conversation, projection = null) {
   const task = state.tasks.find((item) => item.task_id === state.selectedTaskId); if (!task) return;
   const button = [...ui.taskList.querySelectorAll(".task-item")].find((item) => item.dataset.taskId === task.task_id); const status = button?.querySelector(".task-workflow"); const dot = status?.querySelector("i"); if (!status || !dot) return;
   const workflow = conversation?.task_id === task.task_id && projection ? interactionPresentation(task, conversation, projection) : taskListStatus(task, conversation); dot.dataset.status = workflow.tone; status.replaceChildren(dot, document.createTextNode(workflow.label));
 }
-function confirmTaskArchive(task) {
+function taskArchiveActivity(task, conversation) {
+  if (!conversation || conversation.task_id !== task?.task_id) return "unknown";
+  const canonical = conversation.interaction_projection;
+  if (canonical?.schema_version === "1.0") {
+    if (canonical.phase === "observation_degraded") return "unknown";
+    if (canonical.phase === "stopping" || canonical.background?.stopping === true) return "stopping";
+    if (["agent_working", "background_working", "waiting_question", "waiting_approval"].includes(canonical.phase) || canonical.background?.running === true) return "active";
+    if (["idle", "completed", "stopped", "blocked", "failed"].includes(canonical.phase)) return null;
+  }
+  // Only current snapshot flags may block archiving. Historical AgentRuns or
+  // a stale pending card in an idle conversation are not active execution.
+  if (conversation.projection_health?.status === "observation_degraded") return "unknown";
+  if (conversation.agent_response_running === true || conversation.background_action_running === true || conversation.execution_running === true || conversation.running === true) return "active";
+  if (conversation.interaction_state === "waiting_for_human" && (conversation.pending || []).some(isPendingHumanCheckpoint)) return "active";
+  return null;
+}
+async function taskArchiveSnapshot(task) {
+  const response = await request(`/tasks/${encodeURIComponent(task.task_id)}/conversation`, { timeoutMs: 12_000 });
+  const activity = taskArchiveActivity(task, response?.conversation);
+  if (activity === "unknown") throw new Error("当前执行状态还不能核对，请恢复连接并刷新后再归档。");
+  return activity;
+}
+function openTaskArchiveStopDialog(task) {
+    openSimpleDialog({
+      kicker: "归档前停止当前轮", title: `先停止“${task.name}”的当前轮？`,
+      body: "这个任务仍有 AI 执行或待确认操作。先停止当前轮，待服务端确认全部停止后再归档；已有数据、运行记录和产物都会保留。",
+      allowLabel: "请求停止当前轮",
+      onAllow: async () => {
+        await request(`/tasks/${encodeURIComponent(task.task_id)}/conversation/cancel`, { method: "POST", json: { reason: "用户准备归档任务，先停止当前执行和待确认操作" } });
+        if (state.selectedTaskId === task.task_id) await refreshSelected({ force: true }); else await loadTasks();
+        showNotice("停止请求已提交。请等待当前轮停止后再次归档；任务目前仍保留在列表中。", "ok");
+      },
+    });
+}
+async function confirmTaskArchive(task, trigger = null) {
   if (task.status === "running") { showNotice("真实训练运行中，暂不能归档任务。请等待运行结束或先取消训练。"); return; }
+  if (state.archiveChecks?.has(task.task_id)) return;
+  (state.archiveChecks ||= new Set()).add(task.task_id);
+  if (trigger) setButtonBusy(trigger, true, "核对中");
+  let activity;
+  try { activity = await taskArchiveSnapshot(task); }
+  catch (error) { showNotice(error.message); return; }
+  finally { state.archiveChecks.delete(task.task_id); if (trigger) setButtonBusy(trigger, false, ""); }
+  if (activity === "stopping") { showNotice("当前轮正在停止。请等待服务端确认全部停止后再归档。", "ok"); return; }
+  if (activity === "active") {
+    openTaskArchiveStopDialog(task);
+    return;
+  }
   openSimpleDialog({
     kicker: "任务归档", title: `归档“${task.name}”？`,
     body: "任务只会从默认列表隐藏；数据、Run、指标和产物都会保留。归档后不能再启动新的训练运行。",
     allowLabel: "确认归档",
     onAllow: async () => {
+      if (await taskArchiveSnapshot(task)) throw new Error("任务又进入执行或待确认状态。请先停止当前轮，再重试归档。");
       const archivedSelected = task.task_id === state.selectedTaskId;
-      await request(`/tasks/${encodeURIComponent(task.task_id)}/archive`, { method: "POST" });
+      try { await request(`/tasks/${encodeURIComponent(task.task_id)}/archive`, { method: "POST" }); }
+      catch (error) {
+        if (error.status === 409 && error.message.includes("当前消息仍可能在排队")) {
+          ui.decisionDialog.close();
+          showComposerRetry({ label: "停止当前轮", hint: "服务端确认这个任务仍有已接受的排队消息。先停止当前轮，再归档。", kind: "archive", action: () => openTaskArchiveStopDialog(task) });
+        }
+        throw error;
+      }
       await loadTasks();
       if (archivedSelected) {
         const nextTaskId = state.tasks[0]?.task_id;
@@ -874,9 +1441,11 @@ function confirmTaskArchive(task) {
   });
 }
 function enterHomeState({ focusComposer = true } = {}) {
+  state.selectionLoadingOwnerId = null; ui.datasetInput.disabled = false;
   syncComposerAttachmentOwner(null); clearComposerRetry();
+  ui.datasetButton.disabled = false; ui.datasetButtonLabel.textContent = "导入数据"; ui.datasetButton.title = "先选择 CSV、JSONL 或 ZIP；发送目标后检查材料或导入训练数据"; ui.datasetInput.accept = ".csv,.jsonl,.zip";
   history.replaceState(null, "", location.pathname); document.body.dataset.view = "home"; ui.homeComposerSlot.append(ui.composerWrap); ui.emptyState.hidden = false; ui.conversation.hidden = true;
-  ui.inspector.hidden = true; ui.workspaceToggleButton.hidden = true; ui.mobileViewNav.hidden = true; ui.agentCheckpoint.hidden = true; ui.inspectorEmpty.hidden = false; ui.inspectorContent.hidden = true; ui.taskEyebrow.textContent = "SPECIALIST MODEL STUDIO"; ui.taskTitle.textContent = "开始一个训练任务";
+  ui.inspector.hidden = true; ui.workspaceToggleButton.hidden = true; ui.mobileViewNav.hidden = true; ui.agentCheckpoint.hidden = true; ui.inspectorEmpty.hidden = false; ui.inspectorContent.hidden = true; ui.taskEyebrow.textContent = "SPECIALIST MODEL STUDIO"; ui.taskTitle.textContent = "开始一个模型任务";
   renderRuntimeMode(runtimeDisplayMode()); syncComposerDelivery(null); restoreDraft(null); renderTaskList(); closeSidebar(); closeInspector(); if (focusComposer && state.runtimeReady) ui.messageInput.focus();
 }
 function openNewTask() {
@@ -885,30 +1454,50 @@ function openNewTask() {
   resetHfDiscovery(); resetModelSourceDiscovery(); resetRunEvidence();
   enterHomeState();
 }
+function renderSelectionLoading() {
+  if (!state.selectionLoadingOwnerId || state.selectionLoadingOwnerId !== state.selectedTaskId) return;
+  const ownerId = state.selectedTaskId;
+  const selected = state.task?.task_id === ownerId ? state.task : state.tasks.find(task => task.task_id === ownerId);
+  ui.taskTitle.textContent = selected?.name || state.conversationRecord?.title || "正在加载对话";
+  ui.taskEyebrow.textContent = "正在加载"; ui.taskEyebrow.dataset.status = "neutral";
+  ui.taskStatus.textContent = "正在加载对话"; ui.taskStatus.dataset.status = "neutral";
+  clear(ui.messageList); ui.messageList.dataset.ownerId = ownerId; ui.messageList.setAttribute("aria-busy", "true");
+  const loading = document.createElement("p"); loading.className = "conversation-loading"; loading.dataset.state = "loading"; loading.setAttribute("role", "status");
+  loading.textContent = state.conversationStreamDegraded ? "对话暂未加载，请刷新重试；草稿会保留。" : "正在加载这项任务的对话…";
+  ui.messageList.append(loading);
+  ui.conversationIntro.hidden = true; ui.agentCheckpoint.hidden = true; ui.agentWorking.hidden = true; ui.cancelAgentButton.hidden = true;
+  ui.workspaceExperience.hidden = true; ui.inspectorContent.hidden = true; ui.workspaceToggleButton.disabled = true;
+  checkpointCards.forEach(card => { card.hidden = true; });
+  ui.sendButton.disabled = true; ui.datasetButton.disabled = true; ui.inspectorDatasetButton.disabled = true; ui.datasetInput.disabled = true;
+  ui.messageInput.disabled = false; ui.messageInput.placeholder = "可以先写草稿，加载完成后再发送…";
+  ui.composerHint.textContent = "正在加载对话 · 草稿会保存";
+}
 async function selectTask(taskId, { saveCurrentDraft = true } = {}) {
-  if (taskId !== state.selectedTaskId) { if (saveCurrentDraft) saveDraft(); restoreCheckpointCard(); resetHfDiscovery(); resetModelSourceDiscovery(); resetRunEvidence(); state.conversation = null; state.workspaceAutoKey = null; state.workspaceDismissedKey = null; state.workspaceProjection = null; state.inspectorAutoOpened = false; state.taskSpecRevisions = []; state.taskSpecDescriptionMode = false; state.taskSpecQuickReplyKey = ""; state.taskSpecAlternativesOpen = false; }
+  const switchingOwner = taskId !== state.selectedTaskId;
+  if (switchingOwner) { if (saveCurrentDraft) saveDraft(); restoreCheckpointCard(); resetHfDiscovery(); resetModelSourceDiscovery(); resetRunEvidence(); state.task = null; state.conversation = null; state.runEvents = []; state.workspaceAutoKey = null; state.workspaceDismissedKey = null; state.workspaceProjection = null; state.inspectorAutoOpened = false; state.taskSpecRevisions = []; state.taskSpecDescriptionMode = false; state.taskSpecQuickReplyKey = ""; state.taskSpecAlternativesOpen = false; }
   syncComposerAttachmentOwner(taskId); clearComposerRetry(); stopPolling(); hideNotice(); const token = ++state.selectionToken; state.selectedTaskId = taskId; state.conversationRecord = null; state.lastRenderKey = ""; state.pendingMessage = state.pendingMessage?.task_id === taskId ? state.pendingMessage : null; history.replaceState(null, "", `${location.pathname}?task=${encodeURIComponent(taskId)}`);
   document.body.dataset.view = "task"; ui.conversationMain.append(ui.composerWrap); renderTaskList(); ui.emptyState.hidden = true; ui.conversation.hidden = false; ui.inspector.hidden = false; ui.workspaceToggleButton.hidden = false; ui.mobileViewNav.hidden = false; ui.inspectorEmpty.hidden = true; ui.inspectorContent.hidden = false; closeSidebar(); closeInspector();
-  restoreDraft(taskId); await refreshSelected({ force: true, token });
+  restoreDraft(taskId); if (switchingOwner) { state.selectionLoadingOwnerId = taskId; if (ui.decisionDialog.open) ui.decisionDialog.close(); renderSelectionLoading(); } await refreshSelected({ force: true, token });
   if (state.selectedTaskId === taskId && state.selectionToken === token) {
     startConversationStream(taskId, token);
     state.pollTimer = window.setInterval(() => refreshSelected({ includeConversation: false }), 6000);
   }
 }
-async function selectConversation(conversationId, { saveCurrentDraft = true, record = null } = {}) {
-  if (conversationId !== state.selectedTaskId) {
+async function selectConversation(conversationId, { saveCurrentDraft = true, record = null, pendingAttachment = null } = {}) {
+  const switchingOwner = conversationId !== state.selectedTaskId;
+  if (switchingOwner) {
     if (saveCurrentDraft) saveDraft();
     restoreCheckpointCard(); resetHfDiscovery(); resetModelSourceDiscovery(); resetRunEvidence();
-    state.conversation = null; state.workspaceAutoKey = null; state.workspaceDismissedKey = null; state.workspaceProjection = null; state.inspectorAutoOpened = false;
+    state.conversation = null; state.runEvents = []; state.workspaceAutoKey = null; state.workspaceDismissedKey = null; state.workspaceProjection = null; state.inspectorAutoOpened = false;
     state.taskSpecRevisions = []; state.taskSpecDescriptionMode = false; state.taskSpecQuickReplyKey = ""; state.taskSpecAlternativesOpen = false;
   }
-  syncComposerAttachmentOwner(conversationId); clearComposerRetry(); stopPolling(); hideNotice();
+  syncComposerAttachmentOwner(conversationId, { adoptAttachment: pendingAttachment }); clearComposerRetry(); stopPolling(); hideNotice();
   const token = ++state.selectionToken; state.selectedTaskId = conversationId; state.conversationRecord = record || { conversation_id: conversationId, status: "unbound", title: "新对话" }; state.task = conversationDraftTask(state.conversationRecord); state.lastRenderKey = "";
   state.pendingMessage = state.pendingMessage?.task_id === conversationId ? state.pendingMessage : null;
   history.replaceState(null, "", `${location.pathname}?conversation=${encodeURIComponent(conversationId)}`);
   document.body.dataset.view = "conversation"; ui.conversationMain.append(ui.composerWrap); renderTaskList(); ui.emptyState.hidden = true; ui.conversation.hidden = false;
   ui.inspector.hidden = true; ui.workspaceToggleButton.hidden = true; ui.mobileViewNav.hidden = true; ui.inspectorEmpty.hidden = false; ui.inspectorContent.hidden = true; ui.agentCheckpoint.hidden = true; closeSidebar(); closeInspector();
-  restoreDraft(conversationId); await refreshSelected({ force: true, token });
+  restoreDraft(conversationId); if (switchingOwner) { state.selectionLoadingOwnerId = conversationId; if (ui.decisionDialog.open) ui.decisionDialog.close(); renderSelectionLoading(); } await refreshSelected({ force: true, token });
   if (state.selectedTaskId === conversationId && state.selectionToken === token) {
     startConversationStream(conversationId, token);
     state.pollTimer = window.setInterval(() => refreshSelected({ includeConversation: false }), 6000);
@@ -917,18 +1506,21 @@ async function selectConversation(conversationId, { saveCurrentDraft = true, rec
 async function refreshSelected({ force = false, token = state.selectionToken, includeConversation = true } = {}) {
   const taskId = state.selectedTaskId; if (!taskId || token !== state.selectionToken) return;
   if (state.refreshInFlight && !force) return;
-  const seq = ++state.refreshSeq; state.refreshInFlight = true;
+  const seq = ++state.refreshSeq; const noticeSequence = state.noticeSequence || 0; state.refreshInFlight = true;
   let promotedFromConversation = false;
   try {
     if (isConversationDraft()) {
       try {
         const owner = await request(`/conversations/${encodeURIComponent(taskId)}`);
         if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
+        if (owner.conversation?.conversation_id !== taskId || (owner.task && owner.task.task_id !== taskId)) throw new Error("返回的对话不属于当前任务，请刷新重试");
         state.conversationRecord = owner.conversation;
+        clearConnectionNotice(taskId, token, noticeSequence);
         if (!owner.task) {
           state.task = conversationDraftTask(owner.conversation);
           checkpointCards.forEach((card) => { card.hidden = true; }); ui.agentCheckpoint.hidden = true;
           if (includeConversation) await reconcileConversation(taskId, token, { render: false });
+          await loadMaterialInspections(taskId, { force });
           renderConversation(force);
           return;
         }
@@ -938,12 +1530,13 @@ async function refreshSelected({ force = false, token = state.selectionToken, in
         document.body.dataset.view = "task"; ui.inspector.hidden = false; ui.workspaceToggleButton.hidden = false; ui.mobileViewNav.hidden = false; ui.inspectorEmpty.hidden = true; ui.inspectorContent.hidden = false;
       } catch (error) {
         if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
-        showNotice(error.message); return;
+        showSelectedWorkspaceReadError(error, taskId, token); return;
       }
     }
     try {
       const previousSpecRevision = state.task?.task_id === taskId ? state.task.current_spec_revision : null;
-      const response = await request(`/tasks/${encodeURIComponent(taskId)}`); if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return; state.task = response.task; await reconcileComposerDatasetUpload(response.task); if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
+      const response = await request(`/tasks/${encodeURIComponent(taskId)}`); if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return; if (response.task?.task_id !== taskId) throw new Error("返回的任务身份不一致，请刷新重试"); state.task = response.task;
+      clearConnectionNotice(taskId, token, noticeSequence);
       const sourceStage = ["capability_resolution", "source_discovery", "source_resolution", "source_snapshot", "repository_analysis"].includes(response.task.control?.current_stage);
       const specChanged = previousSpecRevision !== null && previousSpecRevision !== response.task.current_spec_revision;
       if (force || state.modelSourceLoadedTaskId !== taskId || specChanged || (sourceStage && !state.modelSourceSearchInFlight)) {
@@ -987,9 +1580,14 @@ async function refreshSelected({ force = false, token = state.selectionToken, in
       }
     } catch (error) {
       if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
-      showNotice(error.message); return;
+      showSelectedWorkspaceReadError(error, taskId, token); return;
     }
     if (includeConversation) await reconcileConversation(taskId, token, { render: false });
+    if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
+    await loadMaterialInspections(taskId, { force });
+    if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
+    await reconcileComposerDatasetUpload(state.task);
+    if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
     renderConversation(force); if (force) {
       await loadTasks();
       if (state.selectedTaskId !== taskId || token !== state.selectionToken || seq !== state.refreshSeq) return;
@@ -1018,7 +1616,14 @@ function mergeConversationStreamEntries(current = [], changed = []) {
 }
 function clearObservedPendingMessage(taskId, conversation) {
   if (state.pendingMessage?.task_id !== taskId || !Array.isArray(conversation?.items)) return;
-  if (conversation.items.some((item) => (item.role === "user" && item.text === state.pendingMessage.text) || (item.category === "user_message" && (item.text || item.payload?.text) === state.pendingMessage.text))) state.pendingMessage = null;
+  const pending = state.pendingMessage;
+  const observed = conversation.items.some((item) => {
+    if (!(item.role === "user" || item.category === "user_message" || item.type === "user_message")) return false;
+    if (pending.request_id && !pending.agent_run_id) return false;
+    return pending.agent_run_id ? item.agent_run_id === pending.agent_run_id : (item.text || item.payload?.text) === pending.text;
+  });
+  const queued = pending.request_id && queuedConversationMessages(conversation).some((item) => item.request_id === pending.request_id);
+  if (observed || queued) state.pendingMessage = null;
 }
 function clientDegradedConversation(conversation, message) {
   if (!conversation) return conversation;
@@ -1036,9 +1641,18 @@ function clientDegradedConversation(conversation, message) {
 function isCanonicalConversationSnapshot(value) {
   if (!value || typeof value !== "object" || String(value.schema_version) !== "2.0" || value.event_payload_mode !== "compact-v1" || value.action_schema_version !== "1.0" || value.synthesis_verdict_version !== "1.0") return false;
   if (!(value.session_id === null || typeof value.session_id === "string") || !(value.team_id === null || typeof value.team_id === "string")) return false;
-  if (![value.running, value.execution_running, value.can_cancel_agent].every((field) => typeof field === "boolean")) return false;
-  if ([value.agent_response_running, value.background_action_running].some((field) => field !== undefined && typeof field !== "boolean")) return false;
-  if (!["working", "waiting_for_human", "cancelling", "idle", "terminal"].includes(value.interaction_state)) return false;
+  const persisted = value.observation_source === "persisted_projection";
+  const readOnlyOffline = persisted && value.projection_health === "observation_degraded" && value.execution_state_observed === false && value.pending_observed === false
+    && value.interaction_state === "observation_degraded" && value.interaction_projection?.phase === "observation_degraded"
+    && value.can_cancel_agent === false && value.interaction_projection?.can_cancel === false
+    && value.agent_response_running === null && [null, true].includes(value.running) && [null, true].includes(value.execution_running)
+    && typeof value.background_action_running === "boolean" && Array.isArray(value.pending) && value.pending.length === 0 && Array.isArray(value.human_checkpoints) && value.human_checkpoints.length === 0;
+  if (persisted && !readOnlyOffline) return false;
+  if (!readOnlyOffline) {
+    if (![value.running, value.execution_running, value.can_cancel_agent].every((field) => typeof field === "boolean")) return false;
+    if ([value.agent_response_running, value.background_action_running].some((field) => field !== undefined && typeof field !== "boolean")) return false;
+    if (!["working", "waiting_for_human", "cancelling", "idle", "terminal"].includes(value.interaction_state)) return false;
+  }
   if (value.interaction_projection !== undefined && (value.interaction_projection?.schema_version !== "1.0" || typeof value.interaction_projection?.phase !== "string" || typeof value.interaction_projection?.can_cancel !== "boolean")) return false;
   if (!["items", "events", "actions", "pending", "runs", "agents", "delegations", "projection_errors"].every((field) => Array.isArray(value[field]))) return false;
   if (value.work_items !== undefined && !Array.isArray(value.work_items)) return false;
@@ -1046,8 +1660,9 @@ function isCanonicalConversationSnapshot(value) {
   return value.stream_health && typeof value.stream_health === "object" && ["healthy", "observation_degraded"].includes(value.projection_health);
 }
 function acceptConversationSnapshot(taskId, token, remoteConversation) {
-  if (state.selectedTaskId !== taskId || state.selectionToken !== token || !isCanonicalConversationSnapshot(remoteConversation)) return false;
+  if (state.selectedTaskId !== taskId || state.selectionToken !== token || remoteConversation?.task_id !== taskId || !isCanonicalConversationSnapshot(remoteConversation)) return false;
   state.conversation = remoteConversation;
+  if (state.selectionLoadingOwnerId === taskId) { state.selectionLoadingOwnerId = null; state.selectionReadyOwnerId = taskId; }
   if (state.conversationStreamDegraded) state.conversation = clientDegradedConversation(state.conversation, "实时事件流尚未恢复，当前由串行轮询对账。");
   clearObservedPendingMessage(taskId, state.conversation);
   return true;
@@ -1062,12 +1677,13 @@ function markConversationStreamDegraded(message) {
 async function reconcileConversation(taskId, token, { render = true } = {}) {
   if (state.selectedTaskId !== taskId || state.selectionToken !== token) return false;
   if (state.conversationReconcileInFlight) return state.conversationReconcilePromise;
-  const seq = ++state.conversationReconcileSeq; const cursorBefore = state.conversationStreamCursor; state.conversationReconcileInFlight = true;
+  const seq = ++state.conversationReconcileSeq; const noticeSequence = state.noticeSequence || 0; const cursorBefore = state.conversationStreamCursor; state.conversationReconcileInFlight = true;
   const operation = (async () => {
     try {
       const remoteConversation = (await request(conversationTransportPath(taskId, "snapshot"))).conversation;
       if (seq !== state.conversationReconcileSeq || cursorBefore !== state.conversationStreamCursor) return false;
       if (!acceptConversationSnapshot(taskId, token, remoteConversation)) { markConversationStreamDegraded("全量对话返回了不兼容的证据合同。"); return false; }
+      if (state.conversation?.projection_health === "healthy") clearConnectionNotice(taskId, token, noticeSequence);
       if (render) renderConversation(true);
       return true;
     } catch (error) {
@@ -1182,6 +1798,7 @@ function startConversationStream(taskId, token) {
     try {
       const data = parseConversationStreamData(event); acceptConversationStreamEnvelope(data);
       if (!state.conversation) throw new Error("状态事件缺少可对账快照");
+      if (state.conversation.execution_state_observed === false || [data.running, data.execution_running, data.agent_response_running].includes(null)) { void reconcileConversation(taskId, token); return; }
       state.conversation = { ...state.conversation, running: data.running, execution_running: data.execution_running, agent_response_running: data.agent_response_running === true, background_action_running: data.background_action_running === true, interaction_state: data.interaction_state, interaction_projection: data.interaction_projection || state.conversation.interaction_projection || null, can_cancel_agent: data.can_cancel_agent, active_event: data.active_event, pending: data.pending || [], runs: data.runs || [], agent_turns: data.agent_turns || [], training_runs: data.training_runs || [], background_actions: data.background_actions || [], human_checkpoints: data.human_checkpoints || [], risks: data.risks || [], primary_attention: data.primary_attention || null, supported_modes: data.supported_modes || state.conversation.supported_modes || [], agents: data.agents || [], delegations: data.delegations || [], work_items: data.work_items || state.conversation.work_items || [], work_item_schema_version: data.work_item_schema_version || state.conversation.work_item_schema_version, projection_health: data.projection_health, projection_errors: data.projection_errors || [], stream_health: data.stream_health || {} };
       if (state.conversationStreamDegraded) state.conversation = clientDegradedConversation(state.conversation, "实时事件流正在恢复并等待全量对账。");
       renderConversation(false);
@@ -1209,8 +1826,8 @@ function syncConversationComposerPlaceholder(conversation = state.conversation, 
   else if (uploadCheckpoint) ui.messageInput.placeholder = "还没准备好数据？可以先讨论格式或下一步…";
   else if (checkpoint?.kind === "question") ui.messageInput.placeholder = "继续提问或补充想法；发送后暂缓当前问题…";
   else if (checkpoint?.kind === "approval") ui.messageInput.placeholder = "有疑问可以先讨论；发送不会批准执行…";
-  else if (conversationAgentResponseRunning(conversation)) ui.messageInput.placeholder = "补充下一步要求；消息将在本轮结束后处理…";
-  else if (conversationHasBackgroundTraining(conversation)) ui.messageInput.placeholder = "继续和 AI 交流；后台操作不会阻塞新消息…";
+  else if (conversationAgentResponseRunning(conversation)) ui.messageInput.placeholder = "继续输入…";
+  else if (conversationHasBackgroundTraining(conversation)) ui.messageInput.placeholder = "继续提问或补充信息…";
   else if (isConversationDraft(state.conversationRecord, task)) ui.messageInput.placeholder = "继续补充你的目标、场景或限制…";
   else if (state.taskSpecDescriptionMode && stageKey(task) === "task_understanding") ui.messageInput.placeholder = "直接告诉 AI：模型接收什么、应该输出什么…";
   else ui.messageInput.placeholder = "继续提问、补充信息或调整目标…";
@@ -1222,13 +1839,14 @@ function renderTask(task) {
   syncAgentCheckpoint(task); syncWorkspaceForTask(task);
   syncConversationComposerPlaceholder(state.conversation, task);
   syncComposerDelivery(state.conversation);
+  if (state.selectionLoadingOwnerId === state.selectedTaskId) renderSelectionLoading();
 }
 function stageKey(task) { return task.control?.current_stage || "task_understanding"; }
 function stageLabel(value) { if (value?.startsWith("run_")) return "训练与评测"; return STAGE_LABELS[value] || value || "确认任务理解"; }
 function nextActionDescription(action, blocked) {
-  if (blocked?.message) return blocked.message;
+  if (blocked?.message && !["recipe_unavailable", "verified_recipe_unavailable"].includes(blocked.code)) return blocked.message;
   const descriptions = {
-    upload_dataset: "导入与任务规格匹配的数据，后端会执行真实体检。", review_capability_gap: "先联网选择模型或训练仓库；也可以查看仍缺失的训练能力。",
+    upload_dataset: "导入与任务规格匹配的数据，后端会执行真实体检。", review_capability_gap: "结合目标和已有材料准备训练路线、数据要求与验证方法，按需查证模型来源和资源。",
     confirm_training_contract: "确认数据授权、标签或目标字段与离线验收门槛。", start_training_run: "启动后端真实训练，并持续记录事件、指标与产物。",
     view_run_progress: "查看当前 Run 的真实状态；页面不会用动画模拟训练进度。", review_evaluation: "检查独立评测、失败样本与可追溯模型产物。",
     inspect_run_failure: "先阅读失败、取消或中断证据，再决定是否恢复。", retry_training_run: "旧 Run 的状态、错误和事件会保留；确认后由后端基于同一冻结合同创建新的 Run。", clarify_task_spec: "明确模型唯一输出，系统才会匹配训练能力。",
@@ -1294,7 +1912,7 @@ async function patchTaskSpecChoice(candidate, { confirm = false } = {}) {
   const buttons = [...ui.taskSpecQuickReplies.querySelectorAll("button")]; buttons.forEach((button) => { button.disabled = true; });
   try {
     const response = await request(`/tasks/${encodeURIComponent(task.task_id)}/spec`, { method: "PATCH", json: { base_revision: spec.revision, selected_family: candidate.family, ...(confirm ? { confirm: true } : {}), user_note: confirm ? `用户确认后端候选：${candidate.label}` : `用户选择后端候选：${candidate.label}` } });
-    state.taskSpecDescriptionMode = false; state.taskSpecQuickReplyKey = ""; state.taskSpecAlternativesOpen = false; await refreshTaskSpecView(response.task); showNotice(`需求版本 v${response.task.current_spec_revision} 已保存；下一步将按这个输出匹配训练能力。`, "ok");
+    state.taskSpecDescriptionMode = false; state.taskSpecQuickReplyKey = ""; state.taskSpecAlternativesOpen = false; await refreshTaskSpecView(response.task); showNotice(`需求版本 v${response.task.current_spec_revision} 已保存；下一步将围绕这个目标继续准备训练方案。`, "ok");
   } catch (error) { showNotice(error.message); state.taskSpecQuickReplyKey = ""; if (error.status === 409) await refreshSelected({ force: true }); else renderTaskSpecQuickReplies(state.task, { force: true }); }
 }
 async function refreshTaskSpecView(task) {
@@ -1308,6 +1926,7 @@ function startTaskSpecDescription() {
 }
 function datasetDetail(task) {
   const report = task.dataset_report; if (!report) return ["等待数据集", "尚未执行数据体检"];
+  if (report.kind === "generic_files") { const parts = [["train", "训练"], ["validation", "验证"], ["test", "独立测试"]].filter(([split]) => report.split_counts?.[split]).map(([split, label]) => { const count = report.split_counts[split]; return `${label} ${count.file_count} 份文件${count.csv_row_count ? ` / ${count.csv_row_count} 行` : ""}`; }); return [`${report.total_files} 份文件`, parts.join(" · ")]; }
   if (typeof report.total_images === "number") return [`${report.total_images} 张图片`, `${report.class_count} 类 · 排除 ${report.rejected_count || 0} 张`];
   if (typeof report.total_audio === "number") return [`${report.total_audio} 段音频`, `${report.class_count} 类 · ${report.speaker_count} 个说话人分组 · 排除 ${report.rejected_count || 0} 段`];
   return [`${report.row_count || 0} 行数据`, `${report.feature_count || Math.max((report.column_count || 1) - 1, 0)} 个特征 · 目标 ${report.target_column || "—"}`];
@@ -1340,7 +1959,7 @@ function checkpointWorkspaceContext(task, card = checkpointCardFor(task)) {
 }
 function checkpointWorkspaceCopy(task, card, blocked) {
   if (card === ui.modelSourceCard) return ["搜索并选择模型来源", "在右侧联网搜索、比较候选并确认固定版本"];
-  if (card === ui.capabilityCard) return ["查看训练方案", "在右侧核对能力匹配与尚未补齐的模块"];
+  if (card === ui.capabilityCard) return ["查看方案准备", "在右侧核对目标、材料与方案准备进展"];
   if (card === ui.repositoryAnalysisCard) return [blocked ? "处理仓库分析阻断" : "查看仓库分析", "在右侧核对入口、依赖、许可证与静态风险证据"];
   if (card === ui.trainingPlanCard) return ["核对训练计划", "在右侧检查入口、资源预算与不可变 Plan Digest"];
   if (card === ui.resourceFeasibilityCard) return [blocked ? "查看当前电脑缺少什么" : "检查本机训练条件", "在右侧查看资源事实、环境阻断与恢复动作"];
@@ -1350,7 +1969,7 @@ function checkpointWorkspaceCopy(task, card, blocked) {
 }
 function syncAgentCheckpoint(task) {
   const hasRuntimeCheckpoint = (state.conversation?.pending || []).some((item) => item?.rpc_id && (item.kind === "approval" || item.kind === "question"));
-  if (state.runtimeReady || hasRuntimeCheckpoint) { restoreCheckpointCard(); clear(ui.agentCheckpointBody); ui.agentCheckpointActions.hidden = true; ui.agentCheckpoint.hidden = true; return; }
+  if (state.runtimeReady || hasRuntimeCheckpoint || state.conversation?.session_id) { restoreCheckpointCard(); clear(ui.agentCheckpointBody); ui.agentCheckpointActions.hidden = true; ui.agentCheckpoint.hidden = true; return; }
   const card = checkpointCardFor(task);
   if (!card || card.hidden) { restoreCheckpointCard(); clear(ui.agentCheckpointBody); ui.agentCheckpointActions.hidden = true; ui.agentCheckpoint.hidden = true; return; }
   const inline = checkpointIsInline(card);
@@ -1399,10 +2018,10 @@ function renderCapabilityAxes(task) {
   const decision = task.capability_decision || {}; const analysis = task.repository_analysis; const binding = task.model_binding; const searches = state.modelSourceSearches.filter((item) => item.base_spec_revision === task.current_spec_revision); const activeBlocker = (task.blockers || []).find((item) => item.active !== false);
   if (analysis?.status === "complete") { ui.diagnosticCapabilityState.textContent = "静态诊断已完成"; ui.diagnosticCapabilityState.dataset.state = "completed"; ui.diagnosticCapabilityReason.textContent = `已绑定不可变来源并形成仓库分析 ${shortId(analysis.analysis_id || analysis.analysis_digest)}。`; }
   else if (binding || searches.length) { ui.diagnosticCapabilityState.textContent = "诊断进行中"; ui.diagnosticCapabilityState.dataset.state = "running"; ui.diagnosticCapabilityReason.textContent = binding ? "来源已固定，正在等待或检查静态分析证据。" : "已有公开目录搜索证据，仍需人工选择并固定版本。"; }
-  else { ui.diagnosticCapabilityState.textContent = decision.status === "resolved" ? "可开始诊断" : "等待需求确认"; ui.diagnosticCapabilityState.dataset.state = decision.status === "resolved" ? "available" : "pending"; ui.diagnosticCapabilityReason.textContent = decision.status === "resolved" ? "可以搜索公开来源并做不执行代码的静态分析。" : "先通过对话明确模型唯一输出。"; }
-  const trainingCapability = ConversationView.trainingCapabilityProjection(task); ui.trainingCapabilityState.textContent = trainingCapability.label; ui.trainingCapabilityState.dataset.state = trainingCapability.state; ui.trainingCapabilityState.dataset.code = trainingCapability.code; ui.trainingCapabilityReason.textContent = trainingCapability.reason;
-  ui.capabilityRecovery.textContent = `恢复动作：${task.control?.next_action?.description || task.control?.next_action?.label || (activeBlocker?.recovery_actions || [])[0]?.label || "继续在对话中补充当前缺失证据。"}`;
-  ui.capabilityNonAction.textContent = task.capability_status === "matched" ? "不会执行：未完成数据、合同和人工审批前，不创建训练 Run。" : "不会执行：不下载权重、不执行第三方源码、不安装依赖、不创建训练 Run。";
+  else { const goalEstablished = Boolean(task.task_spec?.business_goal && !["needs_clarification", "needs_confirmation"].includes(decision.status)); ui.diagnosticCapabilityState.textContent = goalEstablished ? "准备方案" : "整理目标"; ui.diagnosticCapabilityState.dataset.state = "pending"; ui.diagnosticCapabilityReason.textContent = goalEstablished ? "结合已有材料准备数据规范、训练路线和验证步骤，按需查证公开来源。" : "明确会影响方案的目标信息，同时可以上传材料供检查。"; }
+  const trainingCapability = ConversationView.trainingCapabilityProjection(task); const integrationPending = pendingExecutionIntegration(task, state.conversation?.task_id === task.task_id ? state.conversation : null); ui.trainingCapabilityState.textContent = integrationPending?.label || trainingCapability.label; ui.trainingCapabilityState.dataset.state = integrationPending ? "pending" : trainingCapability.state; ui.trainingCapabilityState.dataset.code = trainingCapability.code; ui.trainingCapabilityReason.textContent = integrationPending?.summary || trainingCapability.reason;
+  ui.capabilityRecovery.textContent = integrationPending ? "下一步：结合当前目标和已有材料继续准备方案，无需先选择目录中的其他任务类型。" : `下一步：${task.control?.next_action?.description || task.control?.next_action?.label || (activeBlocker?.recovery_actions || [])[0]?.label || "继续在对话中补充当前缺失证据。"}`;
+  ui.capabilityNonAction.textContent = integrationPending ? "运行条件：方案、数据与资源通过核验后，再确认具体执行。" : task.capability_status === "matched" ? "不会执行：未完成数据、合同和人工审批前，不创建训练 Run。" : "不会执行：不下载权重、不执行第三方源码、不安装依赖、不创建训练 Run。";
 }
 function renderCapability(task) {
   const request = task.capability_request || {}; const build = task.recipe_request; const recipeBuild = task.current_recipe_build; const decision = task.capability_decision || {}; const binding = task.model_binding; const analysis = task.repository_analysis; const analysisAttempt = bindingAnalysisAttempt(task); clear(ui.capabilityFacts);
@@ -1422,15 +2041,17 @@ function renderCapability(task) {
   }
   else if (decision.status === "needs_clarification") { ui.capabilityState.textContent = "待澄清"; ui.capabilitySummary.textContent = decision.question || "需要先明确模型唯一输出，尚未匹配训练方案。"; }
   else if (decision.status === "needs_confirmation") { ui.capabilityState.textContent = "待确认"; ui.capabilitySummary.textContent = "后端已形成候选任务规格；确认前不会绑定训练方案或生成运行。"; }
-  else if (task.capability_status === "matched") { ui.capabilityState.textContent = "已匹配"; ui.capabilitySummary.textContent = `已选择 ${task.recipe_id}；该训练方案将接入统一的数据、合同、运行、评测和产物闭环。`; }
-  else if (task.capability_status === "needs_recipe") { ui.capabilityState.textContent = "待扩展"; ui.capabilitySummary.textContent = "现有训练方案无法覆盖该能力。系统已记录能力扩展请求，并且不会伪造训练进度。"; }
+  else if (task.capability_status === "matched" && task.recipe_source === "qualified-execution") { ui.capabilityState.textContent = "工程方案已启用"; ui.capabilitySummary.textContent = "本任务的工程实现已通过隔离验证，已形成数据集与训练合同；正式训练需确认合同和执行范围。"; }
+  else if (task.capability_status === "matched") { ui.capabilityState.textContent = "现成方案可复用"; ui.capabilitySummary.textContent = `已有 ${task.recipe_id} 可复用；继续核对当前目标、数据和评测要求。`; }
+  else if (task.capability_status === "needs_recipe" || task.status === "needs_recipe") { const pending = pendingExecutionIntegration(task, state.conversation?.task_id === task.task_id ? state.conversation : null); ui.capabilityState.textContent = pending?.label || "执行条件待处理"; ui.capabilitySummary.textContent = pending?.summary || "请先核查当前阻断证据与恢复动作，再继续模型研究或接入执行方案。"; }
   else { ui.capabilityState.textContent = "待识别"; ui.capabilitySummary.textContent = "继续描述输入数据、预测目标和运行限制，以匹配或扩展训练方案。"; }
   renderCapabilityAxes(task); addFact("数据模态", request.modality); addFact("任务目标", request.objective); addFact("输出类型", request.target_kind); addFact("训练方案", task.recipe_id); addFact("数据导入方式", task.data_adapter_id || request.data_adapter); if (build) addFact("扩展请求", build.request_id || build.recipe_request_id);
-  if (task.staged_assets?.latest) addFact("构建样例", `${task.staged_assets.latest.status} · ${task.staged_assets.latest.report?.file_count || 0} 个 WAV`);
+  if (task.staged_assets?.latest) addFact("构建样例", `${task.staged_assets.latest.status} · ${task.staged_assets.latest.report?.file_count || 0} 份样例`);
   if (recipeBuild) { addFact("扩展构建记录", `${recipeBuild.status} · ${shortId(recipeBuild.attempt_id)}`); addFact("候选摘要", recipeBuild.candidate_digest ? shortId(recipeBuild.candidate_digest) : "未生成"); addFact("验证摘要", recipeBuild.validation_digest ? shortId(recipeBuild.validation_digest) : "未生成"); }
   if (task.recipe_version_id) addFact("方案版本", shortId(task.recipe_version_id));
-  ui.scaffoldRecipeButton.hidden = Boolean(task.model_binding) || task.capability_status !== "needs_recipe" || decision.selected_family === "audio_classification";
-  ui.scaffoldRecipeButton.textContent = build?.status === "scaffold_ready" ? "重新生成训练能力扩展包" : "生成训练能力扩展包";
+  ui.scaffoldRecipeButton.hidden = Boolean(task.model_binding || recipeBuild) || task.capability_status !== "needs_recipe" || task.control?.next_action?.id === "stage_recipe_samples";
+  ui.scaffoldRecipeButton.textContent = build?.status === "scaffold_ready" ? "重新下载适配器参考包" : "下载适配器参考包";
+  if (ui.recipeExtensionDetails) ui.recipeExtensionDetails.hidden = ui.scaffoldRecipeButton.hidden;
 }
 function modelSourceBlocker(task) {
   const stages = new Set(["source_discovery", "source_resolution", "source_snapshot", "repository_analysis"]);
@@ -1666,7 +2287,7 @@ function renderTrainingPlan(task) {
   const binding = task.model_binding; const analysis = task.repository_analysis; const view = task.training_plan; ui.trainingPlanCard.hidden = !binding; if (!binding) return;
   const blockedLicense = (task.blockers || []).some((item) => item.active !== false && item.stage === "training_plan" && item.code === "blocked_license"); const entries = analysis?.training_entrypoints || []; const needsMapping = ["needs_input", "needs_manual_mapping"].includes(analysis?.status); const blockedAnalysis = Boolean(analysis) && analysis.status !== "complete" && !needsMapping;
   clear(ui.trainingPlanFacts); ui.manualEntrypointField.hidden = true; ui.createTrainingPlanButton.hidden = Boolean(view && !view.stale); ui.createTrainingPlanButton.disabled = blockedLicense || needsMapping || blockedAnalysis; ui.createTrainingPlanButton.textContent = view?.stale ? "基于当前来源生成新 revision" : "生成不可变计划草案"; ui.approveTrainingPlanButton.hidden = true; ui.trainingPlanDecisionActions.hidden = true;
-  if (!view) { ui.trainingPlanState.textContent = blockedLicense ? "许可证阻断" : needsMapping ? "等待入口映射" : blockedAnalysis ? "分析风险阻断" : "未生成"; ui.trainingPlanSummary.textContent = blockedLicense ? "静态分析可以查看，但当前许可证策略未放行训练计划、环境或执行。" : needsMapping ? "请先在仓库静态分析中确认训练入口；系统会创建新的可追溯分析 revision，再允许生成计划。" : blockedAnalysis ? "仓库静态分析仍有未解决风险；请先审阅证据或更换来源，不能绕过分析生成计划。" : entries.length ? `将以 ${entries[0].path} 作为计划入口；生成后仍需你核对并批准 digest。` : "当前分析没有可用训练入口，不能生成计划。"; return; }
+  if (!view) { ui.trainingPlanState.textContent = blockedLicense ? "许可证阻断" : needsMapping ? "等待入口映射" : blockedAnalysis ? "分析风险阻断" : "未生成"; ui.trainingPlanSummary.textContent = blockedLicense ? "静态分析可以查看，但当前许可证策略未放行训练计划、环境或执行。" : needsMapping ? "请先在仓库静态分析中确认训练入口；系统会创建新的可追溯分析 revision，再允许生成计划。" : blockedAnalysis ? "仓库静态分析仍有未解决风险；请先审阅证据或更换来源，不能绕过分析生成计划。" : entries.length ? `将以 ${entries[0].path} 作为计划入口；生成后仍需你核对并批准 digest。` : "当前来源的训练入口仍需核查。可以继续完善数据与评测要求，再由 AI 查证入口或比较其他实现路线。"; return; }
   const plan = view.plan || {}; const status = view.stale ? "已过期" : view.effective_status === "approved" ? "已批准" : view.effective_status === "awaiting_approval" ? "待批准" : statusLabel(view.effective_status);
   ui.trainingPlanState.textContent = status; ui.trainingPlanSummary.textContent = view.stale ? "任务规格或模型来源已经变化，旧计划和审批仍保留但不能继续使用。" : "计划已绑定当前来源和分析；批准只对下面显示的精确 digest 生效。";
   appendFact(ui.trainingPlanFacts, "Revision", `r${plan.revision || "—"} · ${shortId(plan.training_plan_revision_id)}`); appendFact(ui.trainingPlanFacts, "入口", (plan.entrypoint?.argv || []).join(" "), { code: true }); appendFact(ui.trainingPlanFacts, "资源预算", `${formatBytes(plan.resource_budget?.ram_bytes)} RAM · ${formatBytes(plan.resource_budget?.disk_bytes)} 磁盘`); appendFact(ui.trainingPlanFacts, "执行边界", `${plan.execution_policy?.backend || "—"} · CPU-only`); appendFact(ui.trainingPlanFacts, "Plan Digest", plan.plan_sha256, { code: true });
@@ -1850,7 +2471,7 @@ function renderHfCard() {
   ui.hfModelRepo.textContent = card.repository || "—"; ui.hfModelCommit.textContent = card.revision || "未解析"; ui.hfModelCommit.title = card.revision || ""; ui.hfModelLicense.textContent = card.license || "unknown";
   ui.hfCompatibilityState.dataset.state = compatible && immutable ? "compatible" : "unsupported";
   ui.hfCompatibilityState.textContent = compatible && immutable ? "可绑定候选" : compatibility.state === "needs_license_review" ? "需许可证审查" : "不兼容";
-  clear(ui.hfCompatibilityChecks); Object.entries(compatibility.checks || {}).forEach(([name, passed]) => { const item = document.createElement("span"); item.dataset.passed = String(passed === true); item.textContent = `${passed === true ? "✓" : "×"} ${HF_CHECK_LABELS[name] || name}`; ui.hfCompatibilityChecks.append(item); });
+  clear(ui.hfCompatibilityChecks); Object.entries(compatibility.checks || {}).forEach(([name, passed]) => { const item = document.createElement("span"); item.dataset.passed = String(passed === true); item.append(createUiIcon(passed === true ? "check" : "alert"), document.createTextNode(`${passed === true ? "通过" : "未通过"} · ${HF_CHECK_LABELS[name] || name}`)); ui.hfCompatibilityChecks.append(item); });
   const reasons = [...(compatibility.blocking_reasons || [])]; if (!immutable) reasons.unshift("revision_not_immutable_commit"); ui.hfCompatibilityReasons.textContent = reasons.length ? `阻断原因：${reasons.join("、")}` : "全部兼容性检查来自后端模型卡。";
   clear(ui.hfModelFiles); (card.files || []).filter((file) => ["model.onnx", "config.json", "README.md"].includes(file.path)).forEach((file) => { const row = document.createElement("div"); const name = document.createElement("code"); name.textContent = file.path; const size = document.createElement("span"); size.textContent = formatBytes(file.size_bytes); row.append(name, size); ui.hfModelFiles.append(row); });
   ui.hfAttachButton.disabled = !compatible || !immutable || state.task?.status === "running";
@@ -1874,19 +2495,23 @@ async function verifyModelAsset() {
   finally { setButtonBusy(ui.modelAssetVerifyButton, false, ""); if (state.task) renderModelAsset(state.task); }
 }
 function renderDataset(task) {
+  ui.datasetCard.hidden = false;
   const report = task.dataset_report; const [count, summary] = datasetDetail(task); ui.datasetCount.textContent = report ? count : "未导入";
   ui.datasetSummary.textContent = report ? `${summary} · ${report.risks?.[0]?.message || "数据体检完成"}` : "导入图片或音频类别 ZIP、或 CSV；格式需符合当前训练方案的数据导入要求。";
   const recipeSamplesNeeded = task.control?.next_action?.id === "stage_recipe_samples";
+  const availability = datasetUploadAvailability(task);
   ui.datasetButtonLabel.textContent = recipeSamplesNeeded ? "上传构建样例" : "导入数据";
-  ui.datasetButton.title = recipeSamplesNeeded ? "上传按类别整理的 PCM WAV 样例 ZIP" : "导入图片、音频 ZIP 或 CSV";
-  ui.inspectorDatasetButton.textContent = report ? "替换并重新体检" : "导入数据集"; const specReady = task.capability_decision?.status === "resolved"; const uploadCheckpoint = dataUploadQuestionCheckpoint(currentHumanCheckpoint(state.conversation)); const blocked = !uploadCheckpoint && (task.status === "running" || task.status === "needs_recipe" || !specReady); ui.datasetButton.disabled = recipeSamplesNeeded ? false : blocked; ui.inspectorDatasetButton.disabled = blocked;
+  ui.datasetButton.title = recipeSamplesNeeded ? "上传按类别整理的 PCM WAV 样例 ZIP" : availability.reason || "导入图片、音频 ZIP 或 CSV";
+  ui.inspectorDatasetButton.textContent = report ? "替换并重新体检" : "导入数据集"; ui.inspectorDatasetButton.title = availability.reason || "导入图片、音频 ZIP 或 CSV"; ui.datasetButton.disabled = recipeSamplesNeeded ? false : availability.blocked; ui.inspectorDatasetButton.disabled = availability.blocked;
+  renderComposerAttachment();
+  renderMaterialControls();
 }
-function gateEntries(gates) { return "clean_test_mae_max" in gates || "clean_test_rmse_max" in gates ? [[gates.clean_test_mae_max, "MAE 上限"], [gates.clean_test_rmse_max, "RMSE 上限"], [gates.clean_test_r2_min, "R² 下限"]] : [[gates.clean_test_accuracy_min, "Accuracy"], [gates.clean_test_macro_f1_min, "Macro-F1"], [gates.clean_test_worst_class_recall_min, "最差类 Recall"]]; }
+function gateEntries(gates, declared = null) { if (declared && typeof declared === "object") return Object.entries(declared).filter(([, gate]) => Number.isFinite(gate?.threshold) && ["lte", "gte"].includes(gate.operator)).map(([name, gate]) => [gate.threshold, `${name}${gate.operator === "lte" ? " 上限" : " 下限"}`]); return "clean_test_mae_max" in gates || "clean_test_rmse_max" in gates ? [[gates.clean_test_mae_max, "MAE 上限"], [gates.clean_test_rmse_max, "RMSE 上限"], [gates.clean_test_r2_min, "R² 下限"]] : [[gates.clean_test_accuracy_min, "Accuracy"], [gates.clean_test_macro_f1_min, "Macro-F1"], [gates.clean_test_worst_class_recall_min, "最差类 Recall"]]; }
 function renderContract(task) {
   const contract = task.contract; ui.contractCard.hidden = !contract; if (!contract) return; ui.contractState.textContent = task.contract_confirmed ? "已冻结" : "待确认"; clear(ui.gateGrid);
   const gates = contract.release_gates || {}; const regressionGates = "clean_test_mae_max" in gates || "clean_test_rmse_max" in gates; const regressionBasis = regressionGates ? contract.release_gate_basis : null;
   const targetColumn = regressionBasis?.target_column || task.dataset_report?.target_column || "目标列";
-  gateEntries(gates).forEach(([value, label]) => { const cell = document.createElement("div"); const b = document.createElement("b"); b.textContent = typeof value === "number" ? value.toFixed(2) : "—"; const span = document.createElement("span"); span.textContent = regressionBasis && (label.startsWith("MAE") || label.startsWith("RMSE")) ? `${label} · 「${targetColumn}」原始单位` : label; cell.append(b, span); ui.gateGrid.append(cell); });
+  gateEntries(gates, contract.execution_spec?.evaluation?.gates).forEach(([value, label]) => { const cell = document.createElement("div"); const b = document.createElement("b"); b.textContent = typeof value === "number" ? contract.execution_spec ? String(value) : value.toFixed(2) : "—"; const span = document.createElement("span"); span.textContent = regressionBasis && (label.startsWith("MAE") || label.startsWith("RMSE")) ? `${label} · 「${targetColumn}」原始单位` : label; cell.append(b, span); ui.gateGrid.append(cell); });
   if (regressionBasis) {
     const improvement = Number(regressionBasis.required_improvement_fraction); const improvementText = Number.isFinite(improvement) ? `，默认要求至少改善 ${Math.round(improvement * 100)}%` : "";
     const basis = document.createElement("p"); basis.className = "gate-basis"; basis.textContent = `系统按当前数据的常数均值基线建议${improvementText}，仍需你确认。`; ui.gateGrid.append(basis);
@@ -1905,7 +2530,7 @@ function releaseVerdict(task) {
     reasons: [...(report?.evidence_reasons || []), ...(report?.integrity_errors || [])],
   };
 }
-function metricEntries(result) { const clean = result?.metrics?.clean_test || {}; return "mae" in clean || "rmse" in clean || "r2" in clean ? [[clean.mae, "MAE"], [clean.rmse, "RMSE"], [clean.r2, "R²"]] : [[clean.accuracy, "Accuracy"], [clean.macro_f1, "Macro-F1"], [clean.worst_class_recall, "最差类 Recall"]]; }
+function metricEntries(result) { const clean = result?.metrics?.clean_test || {}; if (result?.recipe === "generic-isolated-execution" || Object.keys(clean).some(key => !["mae", "rmse", "r2", "accuracy", "macro_f1", "worst_class_recall"].includes(key))) return Object.entries(clean).filter(([, value]) => Number.isFinite(value)).map(([label, value]) => [value, label]); return "mae" in clean || "rmse" in clean || "r2" in clean ? [[clean.mae, "MAE"], [clean.rmse, "RMSE"], [clean.r2, "R²"]] : [[clean.accuracy, "Accuracy"], [clean.macro_f1, "Macro-F1"], [clean.worst_class_recall, "最差类 Recall"]]; }
 function renderResult(task) {
   const result = task.current_result; ui.resultCard.hidden = !result; clear(ui.artifactList); const artifacts = result?.artifacts || []; ui.artifactCount.textContent = String(artifacts.length);
   artifacts.forEach((artifact) => { const link = document.createElement("a"); link.href = `/runs/${encodeURIComponent(result.run_id)}/artifacts/${encodeURIComponent(artifact.name)}`; link.download = artifact.name; const name = document.createElement("span"); name.textContent = artifact.name; const action = document.createElement("span"); action.textContent = "下载"; link.append(name, action); ui.artifactList.append(link); });
@@ -1950,15 +2575,15 @@ function renderEvaluationEvidence(result) {
   ui.evaluationReasons.textContent = [...reasons, ...integrityErrors].join("；") || (endpointError ? `评测 API：${endpointError}` : report?.release_ready ? "五个维度均通过，可以生成 release-ready Artifact Bundle。" : "结论来自当前 Run 的真实状态、指标和证据文件。");
 }
 function metricSummary(values) {
-  const order = ["macro_f1", "accuracy", "worst_class_recall", "mae", "rmse", "r2"]; const entries = order.filter((key) => typeof values?.[key] === "number").slice(0, 3);
+  const order = ["macro_f1", "accuracy", "worst_class_recall", "mae", "rmse", "r2"]; const entries = [...new Set([...order, ...Object.keys(values || {})])].filter((key) => Number.isFinite(values?.[key])).slice(0, 3);
   return entries.map((key) => `${key} ${values[key].toFixed(3)}`).join(" · ") || "没有可展示的验证指标";
 }
-function primaryCandidateScore(values) { const entry = ["macro_f1", "accuracy", "r2", "mae", "rmse"].find((key) => typeof values?.[key] === "number"); return entry ? values[entry].toFixed(3) : "—"; }
+function primaryCandidateScore(values, primaryMetric = null) { const entry = [primaryMetric, "macro_f1", "accuracy", "r2", "mae", "rmse", ...Object.keys(values || {})].filter(Boolean).find((key) => typeof values?.[key] === "number"); return entry ? values[entry].toFixed(3) : "—"; }
 function renderCandidateComparison(result) {
   const candidates = Object.entries(result.metrics?.validation_candidates || {}); clear(ui.candidateList); ui.candidateCount.textContent = String(candidates.length);
   ui.candidatePolicy.textContent = result.metrics?.test_set_used_for_selection === true ? "警告：当前指标声明测试集参与了选模，证据会被标记为污染。" : `选模策略：${result.metrics?.selection_policy || "validation_only"}；独立测试集不用于候选选择。`;
   if (!candidates.length) { appendEmpty(ui.candidateList, "本轮尚无候选对比证据。"); return; }
-  candidates.forEach(([name, values]) => { const row = document.createElement("div"); row.className = "candidate-row"; row.dataset.selected = String(name === result.metrics?.selected_model); const copy = document.createElement("span"); const title = document.createElement("b"); title.textContent = `${name}${name === result.metrics?.selected_model ? " · 已选" : ""}`; const detail = document.createElement("small"); detail.textContent = metricSummary(values); const score = document.createElement("em"); score.textContent = primaryCandidateScore(values); copy.append(title, detail); row.append(copy, score); ui.candidateList.append(row); });
+  candidates.forEach(([name, values]) => { const row = document.createElement("div"); row.className = "candidate-row"; row.dataset.selected = String(name === result.metrics?.selected_model); const copy = document.createElement("span"); const title = document.createElement("b"); title.textContent = `${name}${name === result.metrics?.selected_model ? " · 已选" : ""}`; const detail = document.createElement("small"); detail.textContent = metricSummary(values); const score = document.createElement("em"); score.textContent = primaryCandidateScore(values, state.task?.contract?.execution_spec?.evaluation?.primary_metric); copy.append(title, detail); row.append(copy, score); ui.candidateList.append(row); });
 }
 function failureSummary(sample) {
   const reference = sample.relative_path || (sample.row_number ? `第 ${sample.row_number} 行` : sample.source_name) || "诊断样本";
@@ -1976,24 +2601,131 @@ function renderRunHistory(task, result) {
   runIds.forEach((runId, index) => { const decision = history.find((item) => item.parent_run_id === runId); const current = runId === task.current_run_id; const row = document.createElement("div"); row.className = "run-history-row"; const order = document.createElement("i"); order.textContent = index + 1; const copy = document.createElement("span"); const title = document.createElement("b"); title.textContent = shortId(runId); title.title = runId; const detail = document.createElement("small"); detail.textContent = decision ? `已批准策略 ${decision.strategy_id}${decision.test_contaminated ? " · 测试证据污染" : " · 验证证据驱动"}` : current ? `当前 Run · ${result.status}` : "历史 Run"; const status = document.createElement("em"); status.dataset.state = current ? "current" : "history"; status.textContent = current ? "当前" : "历史"; copy.append(title, detail); row.append(order, copy, status); ui.runHistoryList.append(row); });
 }
 function sampleTypeForRecipe(recipe) { return { "image-folder-classification": "image", "audio-keyword-classification": "audio", "tabular-regression": "tabular", "tabular-classification": "tabular" }[recipe] || null; }
+function genericInferenceSpec(task = state.task) {
+  const result = task?.current_result;
+  if (result?.recipe !== "generic-isolated-execution") return null;
+  const declaration = result.inference || (task.contract?.recipe === result.recipe ? task.contract.execution_spec?.inference : null);
+  return declaration && Array.isArray(declaration.extensions) && Number.isInteger(declaration.max_bytes) ? declaration : null;
+}
+function sampleTypeForTask(task = state.task) { return genericInferenceSpec(task) ? "generic" : sampleTypeForRecipe(task?.current_result?.recipe); }
+function genericUsesFields(spec) { return Boolean(spec?.schema && (spec.extensions.includes(".json") || spec.schema.type === "string" && spec.extensions.includes(".txt"))); }
+function genericInputPayload(value, spec) {
+  const plainText = typeof value === "string" && spec.extensions.includes(".txt");
+  const body = plainText ? value : JSON.stringify(value);
+  if (typeof body !== "string" || new TextEncoder().encode(body).length > spec.max_bytes) throw new Error("输入内容超过样本大小限制或格式无效");
+  return { body, filename: plainText ? "new-sample.txt" : "new-sample.json", contentType: plainText ? "text/plain; charset=utf-8" : "application/json" };
+}
+function genericInputEditor(container, schema) {
+  const build = (shape = {}, label = "新样本", required = true, depth = 0) => {
+    const type = shape.type || (shape.properties ? "object" : "string");
+    if (type === "object" && shape.properties && depth < 4 && Object.keys(shape.properties).length <= 64) {
+      const group = document.createElement("fieldset"); group.className = "generic-input-group"; const legend = document.createElement("legend"); legend.textContent = shape.title || label; group.append(legend);
+      const fields = Object.entries(shape.properties).map(([key, field]) => [key, build(field, key, (shape.required || []).includes(key), depth + 1)]);
+      fields.forEach(([, field]) => group.append(field.element));
+      return { element: group, read: () => Object.fromEntries(fields.flatMap(([key, field]) => { const value = field.read(); return value === undefined ? [] : [[key, value]]; })) };
+    }
+    const wrap = document.createElement("label"); wrap.className = "generic-input-field"; const title = document.createElement("span"); title.textContent = `${shape.title || label}${required ? " *" : ""}`; wrap.append(title);
+    const choices = Array.isArray(shape.enum) ? shape.enum : type === "boolean" ? [true, false] : null;
+    const input = document.createElement(choices ? "select" : ["array", "object", "string"].includes(type) ? "textarea" : "input"); input.setAttribute("aria-label", shape.title || label);
+    if (choices) { const empty = document.createElement("option"); empty.value = ""; empty.textContent = "请选择"; input.append(empty); choices.forEach((value, index) => { const option = document.createElement("option"); option.value = String(index); option.textContent = typeof value === "string" ? value : JSON.stringify(value); input.append(option); }); }
+    else if (["number", "integer"].includes(type)) { input.type = "number"; input.step = type === "integer" ? "1" : "any"; }
+    else { input.rows = type === "string" ? 2 : 3; input.placeholder = ["array", "object"].includes(type) ? `输入 ${type === "array" ? "数组" : "对象"} JSON` : shape.description || ""; }
+    if (shape.default !== undefined) input.value = choices ? String(choices.findIndex(value => JSON.stringify(value) === JSON.stringify(shape.default))) : typeof shape.default === "string" ? shape.default : JSON.stringify(shape.default);
+    wrap.append(input); if (shape.description) { const hint = document.createElement("small"); hint.textContent = shape.description; wrap.append(hint); }
+    return { element: wrap, read: () => {
+      const raw = String(input.value || ""); if (!raw.trim()) { if (required) throw new Error(`请填写${shape.title || label}`); return undefined; }
+      let value = choices ? choices[Number(raw)] : ["number", "integer"].includes(type) ? Number(raw) : ["array", "object"].includes(type) ? JSON.parse(raw) : raw;
+      if (value === undefined || (["number", "integer"].includes(type) && (!Number.isFinite(value) || (type === "integer" && !Number.isInteger(value))))) throw new Error(`${label}的值不符合${type}格式`);
+      if (type === "array" && !Array.isArray(value) || type === "object" && (!value || Array.isArray(value) || typeof value !== "object")) throw new Error(`${label}的 JSON 类型不正确`);
+      if (typeof value === "number" && (Number.isFinite(shape.minimum) && value < shape.minimum || Number.isFinite(shape.maximum) && value > shape.maximum)) throw new Error(`${label}超出声明范围`);
+      return value;
+    } };
+  };
+  const form = build(schema); container.append(form.element); return form.read;
+}
+function prepareGenericTrialFields(spec) {
+  const key = JSON.stringify([state.selectedTaskId, state.task?.current_result?.run_id, spec]);
+  if (state.genericTrialSchemaKey === key && state.genericTrialRead) return;
+  clear(ui.genericSampleFields); state.genericTrialSchemaKey = key; state.genericTrialRead = genericInputEditor(ui.genericSampleFields, spec.schema);
+}
+function checkGenericInputFile(file, spec) {
+  if (!file || !spec.extensions.some(extension => file.name.toLowerCase().endsWith(extension))) throw new Error(`请选择${spec.extensions.join("、")}格式的新样本`);
+  if (file.size > spec.max_bytes) throw new Error(`新样本超过${formatBytes(spec.max_bytes)}限制`);
+}
+function sampleOutputUrl(check, artifact, taskId = state.selectedTaskId, runId = state.task?.current_result?.run_id) {
+  if (check?.status !== "passed" || check.task_id !== taskId || check.run_id !== runId || !check.check_id || !artifact?.name || !/^[a-f0-9]{64}$/.test(artifact.sha256 || "") || !Number.isInteger(artifact.bytes) || artifact.bytes < 0) return null;
+  if (typeof artifact.url !== "string" || !artifact.url.startsWith("/") || artifact.url.startsWith("//") || artifact.url.includes("\\")) return null;
+  try {
+    const url = new URL(artifact.url, location.origin); if (url.origin !== location.origin || url.search || url.hash) return null;
+    const prefix = `/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}/sample-inferences/${encodeURIComponent(check.check_id)}/files/`;
+    if (!url.pathname.startsWith(prefix)) return null;
+    const parts = url.pathname.slice(prefix.length).split("/").map(part => decodeURIComponent(part));
+    if (parts.some(part => !part || part === "." || part === ".." || /[\/\\%\x00-\x1f\x7f]/.test(part)) || parts.join("/") !== artifact.name) return null;
+    return url.pathname;
+  } catch (_error) { return null; }
+}
+function predictionFieldLabel(key) {
+  const labels = { text: "输入文字", sample_rate: "采样率（Hz）", duration_seconds: "时长（秒）", count: "记录数", store_id: "门店", date: "日期", predicted_sales: "预测销量", prediction: "预测值", query_id: "查询", document_id: "文档", score: "得分", rank: "名次", context_source: "历史数据来源", context_tail_end: "历史数据截止日期", context_staleness_days: "历史数据滞后（天）" };
+  return labels[key] || key.replaceAll("_", " ");
+}
+function predictionDisplayValue(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString("zh-CN", { maximumFractionDigits: 6 }) : String(value);
+}
+function renderPredictionValue(prediction, target) {
+  if (!prediction || typeof prediction !== "object") {
+    const value = document.createElement("p"); value.className = "sample-prediction"; value.textContent = predictionDisplayValue(prediction); target.append(value); return;
+  }
+  const facts = document.createElement("dl"); facts.className = "prediction-facts";
+  Object.entries(prediction).slice(0, 24).forEach(([key, value]) => {
+    if (value === null || typeof value === "object" || ["wav", "model_route"].includes(key)) return;
+    const row = document.createElement("div"), label = document.createElement("dt"), text = document.createElement("dd");
+    label.textContent = Array.isArray(prediction) ? `预测值 ${Number(key) + 1}` : predictionFieldLabel(key); text.textContent = predictionDisplayValue(value); row.append(label, text); facts.append(row);
+  });
+  if (facts.children.length) target.append(facts);
+  const records = Array.isArray(prediction) && prediction.every(row => row && typeof row === "object" && !Array.isArray(row)) ? prediction : Object.values(prediction).find(value => Array.isArray(value) && value.length && value.every(row => row && typeof row === "object" && !Array.isArray(row)));
+  if (records?.length) {
+    const keys = [...new Set(records.slice(0, 50).flatMap(row => Object.keys(row)))].filter(key => records.some(row => row[key] !== null && typeof row[key] !== "object")).slice(0, 8);
+    const wrapper = document.createElement("div"); wrapper.className = "prediction-table-scroll";
+    const table = document.createElement("table"), caption = document.createElement("caption"), head = document.createElement("thead"), header = document.createElement("tr"), body = document.createElement("tbody");
+    caption.textContent = `输出记录 · ${records.length} 条${records.length > 50 ? "（先显示 50 条）" : ""}`; table.append(caption);
+    keys.forEach(key => { const th = document.createElement("th"); th.scope = "col"; th.textContent = predictionFieldLabel(key); header.append(th); }); head.append(header); table.append(head);
+    records.slice(0, 50).forEach(record => { const tr = document.createElement("tr"); keys.forEach(key => { const td = document.createElement("td"); td.textContent = record[key] === undefined || record[key] === null || typeof record[key] === "object" ? "—" : predictionDisplayValue(record[key]); tr.append(td); }); body.append(tr); });
+    table.append(body); wrapper.append(table); target.append(wrapper);
+  }
+  const details = document.createElement("details"), heading = document.createElement("summary"), raw = document.createElement("pre"); heading.textContent = "输出数据详情"; raw.className = "sample-prediction"; raw.textContent = JSON.stringify(prediction, null, 2); details.append(heading, raw); target.append(details);
+}
+function renderSamplePrediction(check, target) {
+  renderPredictionValue(check.prediction, target);
+  for (const artifact of (check.artifacts || []).slice(0, 12)) {
+    const url = sampleOutputUrl(check, artifact); if (!url) continue;
+    const figure = document.createElement("figure"); figure.className = "sample-output";
+    let media;
+    if (/^audio\/(?:wav|x-wav|mpeg|mp3|ogg|flac|x-flac|mp4|aac|webm)$/.test(artifact.media_type || "")) { media = document.createElement("audio"); media.controls = true; media.preload = "metadata"; }
+    else if (/^image\/(?:png|jpeg|gif|webp|bmp|avif)$/.test(artifact.media_type || "")) { media = document.createElement("img"); media.alt = `模型输出：${artifact.name}`; media.loading = "lazy"; media.decoding = "async"; }
+    else if (/^video\/(?:mp4|webm|ogg)$/.test(artifact.media_type || "")) { media = document.createElement("video"); media.controls = true; media.preload = "metadata"; media.playsInline = true; }
+    if (media) { media.src = url; figure.append(media); }
+    const caption = document.createElement("figcaption"), download = document.createElement("a"); download.href = url; download.download = artifact.name.split("/").at(-1); download.textContent = `${artifact.name} · ${formatBytes(artifact.bytes)}`; caption.append(download); figure.append(caption); target.append(figure);
+  }
+}
 function renderSampleTrials(result) {
-  const sampleType = sampleTypeForRecipe(result.recipe); const unavailable = state.evidenceErrors.samples === "capability_unavailable"; const ready = result.status === "completed" && Boolean(sampleType) && !unavailable; clear(ui.sampleInferenceList);
+  const sampleType = sampleTypeForTask(state.task); const generic = genericInferenceSpec(state.task); const genericFields = genericUsesFields(generic); const unavailable = state.evidenceErrors.samples === "capability_unavailable"; const ready = result.status === "completed" && Boolean(sampleType) && !unavailable; clear(ui.sampleInferenceList);
   if (!ui.sampleTrialRunButton.dataset.busy) ui.sampleTrialRunButton.textContent = "交给协调器试跑";
-  ui.sampleJsonField.hidden = sampleType !== "tabular"; ui.sampleTrialSelectButton.hidden = sampleType === "tabular"; ui.sampleTrialRunButton.disabled = !ready;
-  ui.sampleTrialInput.accept = sampleType === "image" ? "image/png,image/jpeg,image/webp,image/bmp" : sampleType === "audio" ? ".wav,audio/wav" : "";
+  ui.sampleJsonField.hidden = sampleType !== "tabular"; ui.sampleTrialSelectButton.hidden = sampleType === "tabular" || genericFields;
+  ui.genericSampleFields.hidden = !genericFields; if (genericFields) prepareGenericTrialFields(generic); ui.sampleTrialRunButton.disabled = !ready;
+  ui.sampleTrialInput.accept = generic ? generic.extensions.join(",") : sampleType === "image" ? "image/png,image/jpeg,image/webp,image/bmp" : sampleType === "audio" ? ".wav,audio/wav" : "";
   if (unavailable) { ui.sampleTrialState.textContent = "API 不可用"; ui.sampleTrialSummary.textContent = "后端没有接通 task-owned sample-inferences API；页面不会模拟推理结果。"; ui.sampleTrialRunButton.disabled = true; }
   else if (!sampleType) { ui.sampleTrialState.textContent = "不可用"; ui.sampleTrialSummary.textContent = `当前训练方案 ${result.recipe || "未识别"} 还不能试跑原始样本。`; ui.sampleTrialRunButton.disabled = true; }
   else if (result.status !== "completed") { ui.sampleTrialState.textContent = "等待完成"; ui.sampleTrialSummary.textContent = "只有完成且通过产物完整性检查的 Run 才能执行真实新样本试跑。"; }
-  else { const selected = ui.sampleTrialInput.files?.[0]; ui.sampleTrialState.textContent = selected ? "样本已选择" : state.sampleInferences.length ? `${state.sampleInferences.length} 次记录` : "未试跑"; ui.sampleTrialSummary.textContent = sampleType === "tabular" ? "输入一行与训练特征列匹配的 JSON；暂存后由协调器申请一次授权，再交给评测专家执行。" : selected ? `已选择 ${selected.name} · ${formatBytes(selected.size)}；下一步会先请求授权。` : `选择一份新的${sampleType === "image" ? "图片" : "PCM WAV 音频"}；原始内容不会进入对话或证据报告。`; }
+  else { const selected = ui.sampleTrialInput.files?.[0]; ui.sampleTrialState.textContent = selected ? "样本已选择" : state.sampleInferences.length ? `${state.sampleInferences.length} 次记录` : "未试跑"; ui.sampleTrialSummary.textContent = genericFields ? "按已验证方案的输入字段填写新样本；暂存后再批准一次真实推理。" : generic ? `选择${generic.extensions.join("、")}格式的新样本，最大 ${formatBytes(generic.max_bytes)}；暂存后再批准推理。` : sampleType === "tabular" ? "输入一行与训练特征列匹配的 JSON；暂存后由协调器申请一次授权，再交给评测专家执行。" : selected ? `已选择 ${selected.name} · ${formatBytes(selected.size)}；下一步会先请求授权。` : `选择一份新的${sampleType === "image" ? "图片" : "PCM WAV 音频"}；原始内容不会进入对话或证据报告。`; }
   if (!state.sampleInferences.length) { appendEmpty(ui.sampleInferenceList, "尚无真实新样本试跑记录。"); return; }
-  [...state.sampleInferences].reverse().slice(0, 6).forEach((check) => { const row = document.createElement("div"); row.className = "sample-inference-row"; const copy = document.createElement("span"); const title = document.createElement("b"); title.textContent = check.sample?.source_name || check.check_id; const detail = document.createElement("small"); detail.textContent = check.status === "passed" ? `预测：${JSON.stringify(check.prediction)} · ${Number(check.elapsed_ms || 0).toFixed(1)} ms · SHA ${shortId(check.sample?.sha256)}` : check.reason || "后端阻断了该样本"; const status = document.createElement("em"); status.dataset.state = check.status; status.textContent = check.status === "passed" ? "通过" : "已阻断"; copy.append(title, detail); row.append(copy, status); ui.sampleInferenceList.append(row); });
+  [...state.sampleInferences].reverse().slice(0, 6).forEach((check) => { const row = document.createElement("div"); row.className = "sample-inference-row"; const copy = document.createElement("div"); copy.className = "sample-inference-content"; const title = document.createElement("b"); title.textContent = check.sample?.source_name || check.check_id; const detail = document.createElement("small"); detail.textContent = check.status === "passed" ? `${Number(check.elapsed_ms || 0).toFixed(1)} ms · 样本 SHA ${shortId(check.sample?.sha256)}` : check.reason || "后端阻断了该样本"; const status = document.createElement("em"); status.dataset.state = check.status; status.textContent = check.status === "passed" ? "试跑完成" : "已阻断"; copy.append(title, detail); if (check.status === "passed") renderSamplePrediction(check, copy); row.append(copy, status); ui.sampleInferenceList.append(row); });
 }
 function renderArtifactBundles(result) {
   const completed = result.status === "completed"; ui.buildArtifactBundleButton.disabled = !completed || !state.runtimeReady || state.evidenceErrors.bundles === "capability_unavailable"; clear(ui.artifactBundleList);
   ui.artifactBundleState.textContent = state.artifactBundles.length ? `${state.artifactBundles.length} 个` : completed ? "尚未生成" : "等待完成";
   ui.artifactBundleSummary.textContent = state.evidenceErrors.bundles ? `交付包读取失败：${state.evidenceErrors.bundles}` : "交付包由训练协调器在你确认后生成；下载也需要单独确认，不会绕过当前任务的授权。";
   if (!state.artifactBundles.length) { appendEmpty(ui.artifactBundleList, completed ? "尚无交付包。你发起请求后，协调器会先说明范围并征求确认。" : "训练完成后才能请求生成交付包。"); return; }
-  [...state.artifactBundles].reverse().forEach((bundle) => { const row = document.createElement("div"); row.className = "artifact-bundle-row"; const copy = document.createElement("span"); const title = document.createElement("b"); title.textContent = bundle.bundle_id; const detail = document.createElement("small"); detail.textContent = `${formatBytes(bundle.archive?.size_bytes)} · SHA ${shortId(bundle.archive?.sha256)}`; const download = document.createElement("button"); download.type = "button"; download.className = "artifact-bundle-action"; download.textContent = "请求下载"; download.disabled = !state.runtimeReady; download.title = state.runtimeReady ? "交给训练协调器核对并发起单独下载确认" : "训练协调器未连接，不能发起下载授权"; download.addEventListener("click", () => requestArtifactBundleDownload(result, bundle)); const meta = document.createElement("span"); meta.className = "artifact-bundle-meta"; [[bundle.release_ready ? "release-ready" : "非发布结论"], [bundle.manifest?.privacy_boundary?.raw_data_included === false ? "不含原始数据" : "检查隐私边界"], [`${bundle.manifest?.files?.length || 0} 个文件`]].forEach(([value]) => { const item = document.createElement("i"); item.textContent = value; meta.append(item); }); copy.append(title, detail); row.append(copy, download, meta); ui.artifactBundleList.append(row); });
+  [...state.artifactBundles].reverse().forEach((bundle) => { const row = document.createElement("div"); row.className = "artifact-bundle-row"; const copy = document.createElement("span"); const title = document.createElement("b"); title.textContent = bundle.bundle_id; const detail = document.createElement("small"); detail.textContent = `${formatBytes(bundle.archive?.size_bytes)} · SHA ${shortId(bundle.archive?.sha256)}`; const download = document.createElement("button"); download.type = "button"; download.className = "artifact-bundle-action"; download.textContent = "请求下载"; download.disabled = !state.runtimeReady; download.title = state.runtimeReady ? "交给训练协调器核对并发起单独下载确认" : "训练协调器未连接，不能发起下载授权"; download.addEventListener("click", () => requestArtifactBundleDownload(result, bundle)); const meta = document.createElement("span"); meta.className = "artifact-bundle-meta"; [[bundle.release_ready ? "release-ready" : "非发布结论"], [bundle.manifest?.privacy_boundary?.raw_data_included === false ? "未打包原始数据文件" : "检查隐私边界"], [`${bundle.manifest?.files?.length || 0} 个文件`]].forEach(([value]) => { const item = document.createElement("i"); item.textContent = value; meta.append(item); }); copy.append(title, detail); row.append(copy, download, meta); ui.artifactBundleList.append(row); });
 }
 async function loadRunEvidence(task) {
   const taskId = task.task_id; const runId = task.current_run_id; if (!taskId || !runId || task.current_result?.status !== "completed") return;
@@ -2022,11 +2754,14 @@ async function stageInferenceInput({ body, filename, contentType, sampleType }) 
     body,
     headers: { "Content-Type": contentType, "X-Filename": encodeURIComponent(filename), "X-Sample-Type": sampleType },
   });
-  if (!response?.inference_input?.inference_input_id || !response?.inference_input?.sha256) throw new Error("样本已上传，但后端没有返回可验证的输入对象。");
+  if (!response?.inference_input?.inference_input_id || !response?.inference_input?.sha256 || response.inference_input.task_id !== taskId || response.inference_input.run_id !== runId) throw new Error("样本已上传，但后端没有返回属于当前任务与运行的可验证输入对象。");
+  if (state.selectedTaskId !== taskId || state.task?.current_result?.run_id !== runId) throw new Error("已切换任务或运行，样本保留在原任务中；没有续接当前对话。");
   return response.inference_input;
 }
 async function continueWithInferenceInput(inferenceInput, checkpoint = currentHumanCheckpoint(state.conversation)) {
+  if (inferenceInput.task_id !== state.selectedTaskId || inferenceInput.run_id !== state.task?.current_result?.run_id) throw new Error("样本不属于当前任务与运行，已停止续接。");
   if (inferenceInputQuestionCheckpoint(checkpoint)) {
+    if (currentHumanCheckpoint(state.conversation)?.rpc_id !== checkpoint.rpc_id) throw new Error("原样本问题已经变化，样本已保留；请按当前对话继续。");
     const answers = inferenceInputCheckpointAnswers(checkpoint, inferenceInput);
     await postQuestionAnswers(checkpoint, answers);
     showTransientNotice("新样本已安全暂存，训练协调器会先请求一次明确授权，再交给评测专家试跑。", "ok");
@@ -2036,11 +2771,12 @@ async function continueWithInferenceInput(inferenceInput, checkpoint = currentHu
   await submitMessage(`我已经选择了一份未参与训练的新样本（输入对象 ${inferenceInput.inference_input_id}，摘要 ${inferenceInput.sha256}）。请先核对它属于当前任务和运行，再申请一次试跑授权；授权后交给评测与交付专家执行，不要直接运行。`);
 }
 async function runSampleTrial() {
-  const taskId = state.selectedTaskId; const result = state.task?.current_result; const runId = result?.run_id; const sampleType = sampleTypeForRecipe(result?.recipe); if (!taskId || !runId || result.status !== "completed" || !sampleType) return;
+  const taskId = state.selectedTaskId; const result = state.task?.current_result; const runId = result?.run_id; const sampleType = sampleTypeForTask(state.task); const generic = genericInferenceSpec(state.task); if (!taskId || !runId || result.status !== "completed" || !sampleType) return;
   let body; let filename; let contentType;
   if (sampleType === "tabular" && !ui.sampleTrialJson.value.trim()) { showNotice("请先填入一行新样本，字段名与训练时的特征列一致。"); return; }
-  if (sampleType === "tabular") { try { const value = JSON.parse(ui.sampleTrialJson.value); if (!value || Array.isArray(value) || typeof value !== "object") throw new Error("JSON 必须是一行对象"); body = JSON.stringify(value); filename = "new-sample.json"; contentType = "application/json"; } catch (error) { showNotice(`请输入有效的一行 JSON：${error.message}`); return; } }
-  else { const file = ui.sampleTrialInput.files?.[0]; if (!file) { showNotice("请先选择一份新的图片或 WAV 音频样本。"); return; } body = file; filename = file.name; contentType = file.type || (sampleType === "audio" ? "audio/wav" : "application/octet-stream"); }
+  if (genericUsesFields(generic)) { try { ({ body, filename, contentType } = genericInputPayload(state.genericTrialRead(), generic)); } catch (error) { showNotice(error.message); return; } }
+  else if (sampleType === "tabular") { try { const value = JSON.parse(ui.sampleTrialJson.value); if (!value || Array.isArray(value) || typeof value !== "object") throw new Error("JSON 必须是一行对象"); body = JSON.stringify(value); filename = "new-sample.json"; contentType = "application/json"; } catch (error) { showNotice(`请输入有效的一行 JSON：${error.message}`); return; } }
+  else { const file = ui.sampleTrialInput.files?.[0]; if (generic) { try { checkGenericInputFile(file, generic); } catch (error) { showNotice(error.message); return; } } if (!file) { showNotice("请先选择一份新的图片或 WAV 音频样本。"); return; } body = file; filename = file.name; contentType = file.type || (sampleType === "audio" ? "audio/wav" : "application/octet-stream"); }
   setButtonBusy(ui.sampleTrialRunButton, true, "正在安全暂存");
   try { const inferenceInput = await stageInferenceInput({ body, filename, contentType, sampleType }); ui.sampleTrialInput.value = ""; if (sampleType === "tabular") ui.sampleTrialJson.value = ""; closeInspector(); await continueWithInferenceInput(inferenceInput); }
   catch (error) { showNotice(`新样本暂存失败：${error.message}`); }
@@ -2167,6 +2903,7 @@ function interactionProjection(task, conversation) {
   return InteractionShell.deriveInteractionProjection({ task, conversation });
 }
 const WORKSPACE_PHASE_COPY = {
+  integration_pending: { eyebrow: "训练方案", title: "继续准备训练方案", badge: "准备中", summary: "已有目标和材料会用于准备实现路线、数据要求、资源预算与验证步骤。执行条件核验后再确认运行。", toggle: "查看方案" },
   clarifying: { eyebrow: "需要你的回答", title: "先把需求说清楚", badge: "等待回答", summary: "协调器提出了一个会改变模型路径的问题。请直接在对话中选择或补充。", toggle: "任务信息" },
   awaiting_approval: { eyebrow: "需要你的确认", title: "一项关键操作等待批准", badge: "等待批准", summary: "批准卡会说明操作对象、影响和范围；聊天文字不会被当作授权。", toggle: "待确认" },
   executing: { eyebrow: "实时执行", title: "AI 正在推进当前任务", badge: "执行中", summary: "这里只展示后端已经记录的协调器动作、真实专家委派和可追溯产物。", toggle: "执行进展" },
@@ -2184,6 +2921,15 @@ function uniqueTaskObjectRefs(task, projection) {
   });
   return refs;
 }
+function partitionWorkspaceResultRefs(task, refs) {
+  const runId = task?.current_run_id || task?.current_result?.run_id || null;
+  const current = [], historical = [];
+  refs.forEach((ref) => {
+    const belongsToRun = ["evaluation_report", "artifact_bundle", "inference_input", "sample_inference_check"].includes(ref.type) || Boolean(ref.run_id);
+    (belongsToRun && (!runId || ref.run_id !== runId) ? historical : current).push(ref);
+  });
+  return { current, historical };
+}
 const ACTIVE_SPECIALIST_STATUSES = new Set(["queued", "active", "running", "waiting", "cancelling"]);
 function projectionWorkItems(projection) { return Array.isArray(projection?.work_items) ? projection.work_items : []; }
 function projectionSpecialists(projection) { return Array.isArray(projection?.specialists) ? projection.specialists : []; }
@@ -2198,8 +2944,9 @@ function workspaceWorkStatus(value) {
 }
 function renderWorkspaceAgent(item) {
   const card = document.createElement("article"); card.className = "workspace-agent-card"; card.dataset.status = item.status || "observed";
-  const mark = document.createElement("i"); mark.textContent = String(item.role?.label || roleLabel(item.role?.role_id)).slice(0, 2);
-  const copy = document.createElement("div"); const title = document.createElement("b"); title.textContent = item.role?.label || roleLabel(item.role?.role_id); const summary = document.createElement("p"); summary.textContent = item.assignment?.summary || "已收到协调器的结构化委派。"; copy.append(title, summary);
+  const label = ConversationView?.ROLE_LABELS?.[item.role?.role_id] || item.role?.label || roleLabel(item.role?.role_id);
+  const mark = document.createElement("i"); mark.textContent = String(label).slice(0, 2);
+  const copy = document.createElement("div"); const title = document.createElement("b"); title.textContent = label; const summary = document.createElement("p"); summary.textContent = item.assignment?.summary || "已收到协调器的结构化委派。"; copy.append(title, summary);
   const status = document.createElement("em"); status.textContent = workspaceWorkStatus(item.status); card.append(mark, copy, status); ui.workspaceTeamList.append(card);
 }
 function renderWorkspaceCoordinator(projection) {
@@ -2207,9 +2954,18 @@ function renderWorkspaceCoordinator(projection) {
   const card = document.createElement("article"); card.className = "workspace-agent-card"; card.dataset.status = action?.status || "running";
   const mark = document.createElement("i"); mark.textContent = "AI"; const copy = document.createElement("div"); const title = document.createElement("b"); title.textContent = "训练协调器"; const summary = document.createElement("p"); summary.textContent = action ? actionTitle(action) : "正在理解任务并决定是否需要训练团队协作。"; copy.append(title, summary); const status = document.createElement("em"); status.textContent = action ? actionStatusLabel(action) : "处理中"; card.append(mark, copy, status); ui.workspaceTeamList.append(card);
 }
-function renderWorkspaceResultRef(ref) {
+function catalogGapObjectRef(ref, task = state.task) {
+  if (ref?.type !== "blocker" || !task?.task_id || ref.task_id !== task.task_id || !ref.id || !ref.digest) return false;
+  const records = [...(task.blockers || []), ...(task.control?.blocked_by || [])];
+  return records.some(record => (record.blocker_id || record.blocker_evidence_id) === ref.id
+    && (record.content_digest || record.blocker_digest) === ref.digest
+    && (!record.task_id || record.task_id === ref.task_id)
+    && ["recipe_unavailable", "verified_recipe_unavailable"].includes(record.code));
+}
+function renderWorkspaceResultRef(ref, target = ui.workspaceResultList, historical = false) {
   const button = document.createElement("button"); button.type = "button"; button.className = "workspace-result-card";
-  const mark = document.createElement("i"); mark.textContent = "✓"; const copy = document.createElement("div"); const title = document.createElement("b"); title.textContent = ref.label || ({ model_source_search: "模型候选", dataset_report: "数据体检", evaluation_report: "评测报告", artifact_bundle: "交付产物" })[ref.type] || ref.type; const summary = document.createElement("p"); summary.textContent = `可追溯对象 · ${shortId(ref.id)}`; copy.append(title, summary); const action = document.createElement("em"); action.textContent = "打开"; button.append(mark, copy, action); button.addEventListener("click", () => openObjectRef(ref)); ui.workspaceResultList.append(button);
+  const catalogGap = catalogGapObjectRef(ref);
+  const mark = document.createElement("i"); mark.textContent = catalogGap ? "·" : "✓"; const copy = document.createElement("div"); const title = document.createElement("b"); title.textContent = catalogGap ? "方案匹配记录" : ref.label || ({ model_source_search: "模型候选", dataset_report: "数据体检", evaluation_report: "评测报告", artifact_bundle: "交付产物" })[ref.type] || ref.type; const summary = document.createElement("p"); summary.textContent = `${historical ? "历史运行" : ref.run_id ? "当前运行" : "任务记录"}${ref.run_id ? ` ${shortId(ref.run_id)}` : ""} · ${shortId(ref.id)}`; copy.append(title, summary); const action = document.createElement("em"); action.textContent = "打开"; button.append(mark, copy, action); button.addEventListener("click", () => openObjectRef(ref)); target.append(button);
 }
 function workspaceEvaluationOutcome(task) {
   if (!InteractionShell?.deriveEvaluationOutcome) return { ready: false, comparison: null, decision: null };
@@ -2219,7 +2975,7 @@ function workspaceEvaluationOutcome(task) {
 function workspaceMetricValue(value) { return Number.isFinite(value) ? value.toFixed(3) : "—"; }
 function renderWorkspaceDecision(outcome) {
   const section = document.createElement("section"); section.className = "workspace-evaluation-summary"; section.dataset.recommended = outcome.decision.recommended; section.dataset.interactionKind = "evaluation-verdict";
-  const heading = document.createElement("header"); const headingCopy = document.createElement("div"); const kicker = document.createElement("span"); kicker.textContent = "可信评测"; const title = document.createElement("h4"); title.textContent = "基线对比与人工决策门"; headingCopy.append(kicker, title); const verdict = document.createElement("b"); verdict.dataset.state = outcome.release_ready ? "ready" : "blocked"; verdict.textContent = outcome.release_ready ? "可进入发布审阅" : statusLabel(outcome.conclusion); heading.append(headingCopy, verdict); section.append(heading);
+  const heading = document.createElement("header"); const headingCopy = document.createElement("div"); const kicker = document.createElement("span"); kicker.textContent = "可信评测"; const title = document.createElement("h4"); title.textContent = "模型对比与下一步"; headingCopy.append(kicker, title); const verdict = document.createElement("b"); verdict.dataset.state = outcome.release_ready ? "ready" : "blocked"; verdict.textContent = outcome.release_ready ? "可进入发布审阅" : statusLabel(outcome.conclusion); heading.append(headingCopy, verdict); section.append(heading);
   const comparison = outcome.comparison;
   if (comparison) {
     const flow = document.createElement("div"); flow.className = "workspace-comparison-flow";
@@ -2238,9 +2994,33 @@ function renderWorkspaceDecision(outcome) {
   [["publish", "发布", outcome.decision.publish], ["rollback", "回滚", outcome.decision.rollback], ["optimize", "继续优化", outcome.decision.optimize]].forEach(([key, label, gateState]) => { const item = document.createElement("div"); item.dataset.state = gateState; item.dataset.decision = key; item.setAttribute("aria-disabled", "true"); const name = document.createElement("span"); name.textContent = label; const stateLabel = document.createElement("em"); stateLabel.textContent = gateState === "recommended" ? "建议" : gateState === "ready" ? "可审阅" : gateState === "blocked" ? "未解锁" : gateState === "not_needed" ? "无需" : "可选"; const copy = document.createElement("small"); copy.textContent = gateCopy[key]; item.append(name, stateLabel, copy); gate.append(item); });
   section.append(gate); ui.workspaceResultList.prepend(section); return true;
 }
+function preparationProgressFacts(task) {
+  const spec = task.task_spec || {}, plan = task.training_plan, binding = task.model_binding;
+  const materialSummary = task.material_inspections || {};
+  const records = state.materialsOwnerId === task.task_id ? (state.materialInspections || []).filter(item => item.owner_id === task.task_id) : [];
+  const count = Number.isInteger(materialSummary.count) ? materialSummary.count : records.length;
+  const latestStatus = materialSummary.latest_status || records[0]?.status;
+  const searches = (state.modelSourceSearches || []).filter(item => item.base_spec_revision === task.current_spec_revision && (!item.task_id || item.task_id === task.task_id));
+  const resource = task.resource_feasibility || {};
+  return [
+    { label: "目标", state: spec.business_goal ? "recorded" : "pending", text: spec.business_goal || "待明确影响方案的目标信息" },
+    { label: "数据", state: task.dataset_id || count ? "recorded" : "pending", text: task.dataset_id ? `训练数据集已导入 · ${task.dataset_id}` : count ? `已保存 ${count} 份材料；最近一份${latestStatus === "rejected" ? "检查发现问题" : latestStatus === "inspected" ? "已完成材料检查" : "等待检查结果"}，训练数据尚未导入` : "可以先上传材料检查；数据规范可随方案一起准备" },
+    { label: "方案", state: plan || binding || searches.length || task.recipe_id ? "recorded" : "pending", text: plan ? plan.stale ? "已保存计划需随目标更新" : plan.effective_status === "approved" ? "执行计划已批准；运行条件仍需核验" : "执行计划草案已记录，待核对" : binding ? binding.status === "stale" ? "模型来源需随目标更新" : "已固定模型来源，继续核查训练实现与验证方法" : searches.length ? `已有 ${searches.length} 次来源检索记录，继续比较适配性` : task.recipe_source === "qualified-execution" && task.current_execution_proposal_id ? `工程方案已启用 · ${task.current_execution_proposal_id}` : task.recipe_id ? `现成方案可复用 · ${task.recipe_id}` : "待准备训练路线与最小验证步骤" },
+    { label: "资源", state: ["blocked_platform", "blocked_environment", "blocked_resources"].includes(resource.decision) ? "blocked" : resource.resource_fit_report || resource.resource_probe ? "recorded" : "pending", text: ["blocked_platform", "blocked_environment", "blocked_resources"].includes(resource.decision) ? resource.blockers?.[0]?.message || "当前资源条件有待处理的问题" : resource.decision === "fit" && resource.resource_fit_report ? "静态预算已匹配；运行环境仍需验证" : resource.decision === "fit_with_revision" ? "资源预算需要调整计划后重新确认" : resource.resource_probe ? "已记录资源探测，待与具体方案比较" : "随模型规模和训练方式评估资源需求" },
+  ];
+}
+function renderPreparationProgress(task) {
+  const target = ui.workspacePreparationProgress; if (!target) return;
+  target.hidden = !task.task_spec || Boolean(task.current_run_id || task.current_result);
+  if (target.hidden) { clear(target); return; }
+  clear(target); const heading = document.createElement("h3"); heading.textContent = "方案准备进展"; const facts = document.createElement("dl");
+  for (const fact of preparationProgressFacts(task)) { const row = document.createElement("div"); row.dataset.state = fact.state; const label = document.createElement("dt"), text = document.createElement("dd"); label.textContent = fact.label; text.textContent = fact.text; row.append(label, text); facts.append(row); }
+  const note = document.createElement("small"); note.textContent = "这里记录准备事实；训练进度会在实际运行开始后展示。"; target.append(heading, facts, note);
+}
 function renderWorkspaceExperience(task, conversation, projection) {
-  state.workspaceProjection = projection; const evaluationOutcome = workspaceEvaluationOutcome(task); const displayPhase = projection.phase === "idle" && evaluationOutcome.ready ? "result_ready" : projection.phase; const basePhaseCopy = WORKSPACE_PHASE_COPY[displayPhase] || WORKSPACE_PHASE_COPY.idle; const phaseCopy = projection.phase === "executing" && projection.background?.coordinator_reply_complete ? { ...basePhaseCopy, title: "协调器已回复，后台任务仍在运行", badge: "后台运行中", summary: "协调器这一轮已经回复，但训练或评测尚未终态。最终指标与发布判断会等真实评测完成后再出现。" } : basePhaseCopy; const specialists = projectionSpecialists(projection); const activeSpecialists = activeProjectionSpecialists(projection); const refs = uniqueTaskObjectRefs(task, projection);
-  ui.workspaceExperience.hidden = false; ui.workspaceExperience.dataset.phase = displayPhase; ui.workspaceEyebrow.textContent = phaseCopy.eyebrow; ui.workspaceTitle.textContent = phaseCopy.title; ui.workspacePhaseBadge.textContent = phaseCopy.badge; ui.workspaceSummary.textContent = phaseCopy.summary; ui.workspaceToggleButton.querySelector("span").textContent = phaseCopy.toggle;
+  state.workspaceProjection = projection; const evaluationOutcome = workspaceEvaluationOutcome(task); const displayPhase = pendingExecutionIntegration(task, conversation, projection) ? "integration_pending" : projection.phase === "idle" && evaluationOutcome.ready ? "result_ready" : projection.phase; const basePhaseCopy = WORKSPACE_PHASE_COPY[displayPhase] || WORKSPACE_PHASE_COPY.idle; const phaseCopy = projection.phase === "executing" && projection.background?.coordinator_reply_complete ? { ...basePhaseCopy, title: "协调器已回复，后台任务仍在运行", badge: "后台运行中", summary: "协调器这一轮已经回复，但训练或评测尚未终态。最终指标与发布判断会等真实评测完成后再出现。" } : basePhaseCopy; const specialists = projectionSpecialists(projection); const activeSpecialists = activeProjectionSpecialists(projection); const refs = uniqueTaskObjectRefs(task, projection);
+  ui.workspaceExperience.hidden = state.inspectorMode === "object-viewer"; ui.workspaceExperience.dataset.phase = displayPhase; ui.workspaceEyebrow.textContent = phaseCopy.eyebrow; ui.workspaceTitle.textContent = phaseCopy.title; ui.workspacePhaseBadge.textContent = phaseCopy.badge; ui.workspaceSummary.textContent = phaseCopy.summary; ui.workspaceToggleButton.querySelector("span").textContent = phaseCopy.toggle;
+  renderPreparationProgress(task);
   clear(ui.workspaceTeamList); const showExecution = projection.phase === "executing" || specialists.length > 0; ui.workspaceTeam.hidden = !showExecution;
   if (showExecution) {
     const visibleSpecialists = activeSpecialists.length ? activeSpecialists : specialists;
@@ -2249,10 +3029,19 @@ function renderWorkspaceExperience(task, conversation, projection) {
     ui.workspaceTeamCount.textContent = activeSpecialists.length ? `${activeSpecialists.length} 位协作中` : specialists.length ? `${specialists.length} 类专家记录` : "仅协调器";
     ui.workspaceTeamTitle.textContent = activeSpecialists.length ? "当前智能体协作" : specialists.length ? "本任务智能体记录" : "训练协调器正在处理";
   }
-  clear(ui.workspaceResultList); refs.forEach(renderWorkspaceResultRef); const renderedEvaluation = evaluationOutcome.ready ? renderWorkspaceDecision(evaluationOutcome) : false; const resultCount = refs.length + (projection.result?.run_id ? 1 : 0) + (renderedEvaluation ? 1 : 0); ui.workspaceResults.hidden = resultCount === 0; ui.workspaceResultsTitle.textContent = renderedEvaluation ? "评测结果与下一步" : "本轮产生的结果"; ui.workspaceResultCount.textContent = `${resultCount} 项`;
+  clear(ui.workspaceResultList); const scopedRefs = partitionWorkspaceResultRefs(task, refs); scopedRefs.current.forEach((ref) => renderWorkspaceResultRef(ref));
+  if (scopedRefs.historical.length) {
+    const history = document.createElement("details"); history.className = "workspace-history";
+    const summary = document.createElement("summary"); summary.textContent = `历史运行证据 · ${scopedRefs.historical.length} 项`;
+    const note = document.createElement("p"); note.textContent = "下面属于先前的运行，不用于当前结果判断。原对象与身份仍可逐项打开核对。";
+    const list = document.createElement("div"); scopedRefs.historical.forEach((ref) => renderWorkspaceResultRef(ref, list, true)); history.append(summary, note, list); ui.workspaceResultList.append(history);
+  }
+  const renderedEvaluation = evaluationOutcome.ready ? renderWorkspaceDecision(evaluationOutcome) : false; const resultCount = refs.length + (projection.result?.run_id ? 1 : 0) + (renderedEvaluation ? 1 : 0); ui.workspaceResults.hidden = resultCount === 0; ui.workspaceResultsTitle.textContent = renderedEvaluation ? "评测结果与下一步" : "本轮产生的结果"; ui.workspaceResultCount.textContent = scopedRefs.historical.length ? `${resultCount - scopedRefs.historical.length} 项 · 历史 ${scopedRefs.historical.length} 项` : `${resultCount} 项`;
   if (projection.result?.run_id) { const run = document.createElement("article"); run.className = "workspace-result-card"; const mark = document.createElement("i"); mark.textContent = "R"; const copy = document.createElement("div"); const title = document.createElement("b"); title.textContent = "训练运行"; const summary = document.createElement("p"); summary.textContent = shortId(projection.result.run_id); copy.append(title, summary); const status = document.createElement("em"); status.textContent = evaluationOutcome.ready ? "评测完成" : task.current_result?.status === "completed" ? "训练完成" : "已记录"; run.append(mark, copy, status); ui.workspaceResultList.prepend(run); }
   ui.workspaceTechnicalButton.textContent = renderedEvaluation ? "查看完整评测证据" : "查看训练详情";
+  ui.workspaceTechnicalButton.dataset.context = renderedEvaluation ? "evaluation" : workspaceContextForProjection(projection);
   ui.workspaceTruthNote.textContent = renderedEvaluation ? "指标只来自当前 Run 的真实评测；发布、回滚或继续优化仍需人工确认。" : projection.result?.run_id ? "当前 Run 尚无匹配的可信评测，因此不展示指标或发布门。" : specialists.length ? "专家记录只来自当前任务已验证的父子会话；历史记录不会被描述为正在参与。" : "当前没有已验证专家委派；不会用角色配置冒充多智能体协作。";
+  if (state.inspectorMode === "object-viewer") { ui.inspectorContent.hidden = true; return; }
   const autoOpen = projection.workspace?.auto_open === true; const autoKey = projection.workspace?.auto_key || `${task.task_id}:${projection.phase}`;
   if (!dockedWorkspaceMedia.matches || !autoOpen) {
     if (state.inspectorAutoOpened && ui.inspector.dataset.open === "true") closeInspector({ userInitiated: false });
@@ -2290,6 +3079,9 @@ function conversationObservationKey(conversation) {
   };
 }
 function renderProjectionHealth(conversation) {
+  // The connection card already explains an unavailable AI service. Keep
+  // observation diagnostics in task evidence without stacking a second alert.
+  if (!state.runtimeReady) return;
   if (!state.conversationStreamDegraded && conversation.projection_health?.status !== "observation_degraded") return;
   const errors = conversation.projection_errors || [];
   const streamHealth = state.conversation?.stream_health || state.productRuntime?.agent?.stream_health || {};
@@ -2297,8 +3089,8 @@ function renderProjectionHealth(conversation) {
   const card = document.createElement("aside"); card.className = "observation-health"; card.dataset.state = "observation_degraded"; card.setAttribute("role", "status"); card.setAttribute("aria-live", "polite");
   const mark = document.createElement("span"); mark.setAttribute("aria-hidden", "true"); mark.textContent = "!";
   const copy = document.createElement("div"); const title = document.createElement("b"); const detail = document.createElement("p"); const meta = document.createElement("small");
-  title.textContent = "观察链路已降级，当前结果不能视为完整成功";
-  detail.textContent = "事件流或投影出现异常，可能遗漏待审批或待回答的问题。请先重新连接并刷新任务，再依据恢复后的证据继续。";
+  title.textContent = "对话记录暂未完整同步";
+  detail.textContent = "重新连接后再处理待办和确认结果。";
   meta.textContent = `${errors.length ? `已记录 ${errors.length} 项投影异常` : "投影完整性异常"} · 事件流：${streamLabel}`;
   copy.append(title, detail, meta);
   const action = document.createElement("button"); action.type = "button"; action.textContent = "重新连接并刷新";
@@ -2322,7 +3114,7 @@ function renderAgentSurfaceState(conversation, projection) {
   // not to a persistent banner above every message.
   if (state.runtimeReady && hasSession) return;
   if (state.runtimeReady && state.conversation == null) {
-    const loading = document.createElement("p"); loading.className = "agent-surface-state";
+    const loading = document.createElement("p"); loading.className = "conversation-loading";
     loading.dataset.state = "loading"; loading.setAttribute("role", "status");
     loading.textContent = "正在恢复对话和执行记录…"; ui.messageList.append(loading); return;
   }
@@ -2330,7 +3122,7 @@ function renderAgentSurfaceState(conversation, projection) {
   const mark = document.createElement("span"); mark.textContent = state.runtimeReady ? "↗" : "!"; mark.setAttribute("aria-hidden", "true");
   const copy = document.createElement("div"); const title = document.createElement("b"); const detail = document.createElement("p");
   title.textContent = state.runtimeReady ? "任务已保存，消息尚未发送" : state.runtimeIssue === "provider" ? "模型服务尚未配置，对话已暂停" : state.runtimeIssue === "incompatible" ? "AI 服务版本不兼容，对话已暂停" : "AI 服务未连接，对话已暂停";
-  detail.textContent = state.runtimeReady ? "这个任务目前只有已保存的目标，还没有建立 AI 会话。重新发送后，回复和执行过程才会出现在这里。" : state.runtimeIssue === "provider" ? "请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动。完成前只能查看已保存的任务与证据，不会创建新任务或伪装智能体结果。" : state.runtimeIssue === "incompatible" ? "当前页面与智能协作服务的协议不匹配。页面不会把旧会话或固定步骤当成实时进展，请重启正式服务。" : "当前页面只能查看已经保存的任务与证据；无法理解新需求、生成计划或调度训练团队，也不会用固定步骤冒充实时进度。";
+  detail.textContent = state.runtimeReady ? "目标已保存，发送后即可继续。" : state.runtimeIssue === "provider" ? "请在本机配置模型服务并重启，再重新检查连接。" : state.runtimeIssue === "incompatible" ? "请重启与当前页面配套的 AI 服务。" : "可以查看已保存的任务与证据，恢复连接后继续对话。";
   copy.append(title, detail); card.append(mark, copy);
   if (state.runtimeReady && !hasSession) {
     const action = document.createElement("button"); action.type = "button"; action.textContent = "发送任务目标";
@@ -2352,14 +3144,34 @@ function renderAgentSurfaceState(conversation, projection) {
           await refreshSelected({ force: true });
           startConversationStream(state.selectedTaskId, state.selectionToken);
         } else if (state.runtimeIssue === "provider") showRuntimeSetupNotice("模型服务仍未配置。请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动；在此之前不会创建训练任务。");
-        else showNotice("AI 仍未连接；没有启动任何固定流程替代智能协作。");
+        else showNotice("AI 仍未连接，请稍后重试。", "error");
       } finally { setButtonBusy(action, false, ""); }
     });
     card.append(action);
   }
   ui.messageList.append(card);
 }
+function captureConversationViewport() {
+  const viewport = ui.conversation.getBoundingClientRect();
+  const children = [...ui.messageList.children];
+  const index = children.findIndex((element) => element.getBoundingClientRect().bottom > viewport.top);
+  const anchor = children[index];
+  return { task_id: state.selectedTaskId, top: ui.conversation.scrollTop, index, turn_id: anchor?.dataset?.turnId || null, offset: anchor ? anchor.getBoundingClientRect().top - viewport.top : null };
+}
+function restoreConversationViewport(snapshot, followLatest = false) {
+  if (snapshot.task_id !== state.selectedTaskId) return;
+  if (followLatest) { ui.conversation.scrollTop = ui.conversation.scrollHeight; return; }
+  const children = [...ui.messageList.children];
+  const anchor = snapshot.turn_id ? children.find((element) => element.dataset?.turnId === snapshot.turn_id) : children[snapshot.index];
+  ui.conversation.scrollTop = snapshot.top;
+  if (anchor && snapshot.offset !== null) ui.conversation.scrollTop += anchor.getBoundingClientRect().top - ui.conversation.getBoundingClientRect().top - snapshot.offset;
+}
 function renderConversation(force = false) {
+  if (state.selectionLoadingOwnerId && state.selectionLoadingOwnerId === state.selectedTaskId) { renderSelectionLoading(); return; }
+  ui.messageList.removeAttribute("aria-busy"); ui.datasetInput.disabled = false; ui.workspaceToggleButton.disabled = false;
+  if (state.selectionReadyOwnerId === state.selectedTaskId) { state.selectionReadyOwnerId = null; if (state.task?.task_id === state.selectedTaskId && state.task.record_type !== "conversation_draft") renderTask(state.task); }
+  renderComposerAttachment();
+  renderMaterialControls(); renderMaterialHistory(); void flushDeferredMaterialContinuations();
   const conversation = conversationView(state.task, state.conversation);
   const projection = interactionProjection(state.task, conversation);
   const draftConversation = isConversationDraft();
@@ -2376,17 +3188,22 @@ function renderConversation(force = false) {
   const observation = conversationObservationKey(conversation);
   const optimistic = state.pendingMessage?.task_id === state.selectedTaskId ? state.pendingMessage : null;
   const items = [...(conversation.items || [])];
+  const queuedMessages = queuedConversationMessages(conversation);
   const hasRuntimeCheckpoint = Boolean(projection.checkpoint);
   if (hasRuntimeCheckpoint) ui.agentCheckpoint.hidden = true;
   else if (state.task && !draftConversation) syncAgentCheckpoint(state.task);
   else ui.agentCheckpoint.hidden = true;
   const backgroundRun = activeBackgroundTrainingRun(conversation);
   const serverCancelling = backgroundCancellationPending(conversation);
-  const renderKey = JSON.stringify({ schema: conversation.schema_version, actionSchema: conversation.action_schema_version, items: conversation.items, actions: conversation.actions, agents: conversation.agents, delegations: conversation.delegations, workItems: conversation.work_items, running: conversation.running, executionRunning: conversation.execution_running, agentResponseRunning: conversation.agent_response_running, backgroundActionRunning: conversation.background_action_running, trainingRun: backgroundRun ? [backgroundRun.training_run_id || backgroundRun.run_id || backgroundRun.action_id, backgroundRun.status, backgroundRun.domain_status, backgroundRun.cancel_requested] : null, interactionState: conversation.interaction_state, canonicalInteraction: conversation.interaction_projection, phase: projection.phase, workspace: projection.workspace, canCancelAgent: conversation.can_cancel_agent, active: conversation.active_event?.action_id || conversation.active_event?.event_id || conversation.active_event?.training_run_id || conversation.active_event?.run_id, observation, optimistic: optimistic?.text, taskStatus: state.task?.status, runtimeReady: state.runtimeReady, sessionId: state.conversation?.session_id || null });
-  if (!force && renderKey === state.lastRenderKey) return; state.lastRenderKey = renderKey;
+  const renderKey = JSON.stringify({ schema: conversation.schema_version, actionSchema: conversation.action_schema_version, materials: state.materialsOwnerId === state.selectedTaskId ? (state.materialInspections || []).map(record => [record.material_id, record.inspection_sha256, record.status]) : [], items: conversation.items, actions: conversation.actions, agents: conversation.agents, delegations: conversation.delegations, workItems: conversation.work_items, running: conversation.running, executionRunning: conversation.execution_running, agentResponseRunning: conversation.agent_response_running, backgroundActionRunning: conversation.background_action_running, trainingRun: backgroundRun ? [backgroundRun.training_run_id || backgroundRun.run_id || backgroundRun.action_id, backgroundRun.status, backgroundRun.domain_status, backgroundRun.cancel_requested] : null, interactionState: conversation.interaction_state, canonicalInteraction: conversation.interaction_projection, phase: projection.phase, workspace: projection.workspace, canCancelAgent: conversation.can_cancel_agent, active: conversation.active_event?.action_id || conversation.active_event?.event_id || conversation.active_event?.training_run_id || conversation.active_event?.run_id, observation, queuedMessages, optimistic: optimistic ? [optimistic.text, optimistic.delivery] : null, taskStatus: state.task?.status, runtimeReady: state.runtimeReady, sessionId: state.conversation?.session_id || null });
+  if (!force && renderKey === state.lastRenderKey) return;
+  const initialRender = !state.lastRenderKey; state.lastRenderKey = renderKey;
+  const viewportSnapshot = captureConversationViewport();
   const nearBottom = ui.conversation.scrollHeight - ui.conversation.scrollTop - ui.conversation.clientHeight < 120; clear(ui.messageList); ui.messageList.dataset.projectionHealth = conversation.projection_health?.status || "unknown"; renderProjectionHealth(conversation); renderAgentSurfaceState(conversation, projection);
   projection.turns.forEach((turn) => renderConversationTurn(turn, projection, conversation, workItems));
-  if (optimistic && !items.some((item) => item.kind === "message" && item.role === "user" && item.text === optimistic.text)) renderConversationItem({ kind: "message", role: "user", text: optimistic.text, time: optimistic.time, optimistic: true });
+  queuedMessages.forEach((item) => renderConversationItem(item));
+  const optimisticObserved = optimistic && (items.some((item) => item.kind === "message" && item.role === "user" && (optimistic.agent_run_id ? item.agent_run_id === optimistic.agent_run_id : item.text === optimistic.text)) || queuedMessages.some((item) => item.request_id === optimistic.request_id));
+  if (optimistic && !optimisticObserved) renderConversationItem({ kind: "message", role: "user", text: optimistic.text, time: optimistic.time, optimistic: !optimistic.delivery, delivery: optimistic.delivery });
   if (!draftConversation) renderWorkspaceExperience(state.task, conversation, projection);
   ui.conversationIntro.hidden = projection.turns.length > 0 || Boolean(projection.actions?.length);
   const agentResponseRunning = conversationAgentResponseRunning(conversation);
@@ -2400,7 +3217,9 @@ function renderConversation(force = false) {
   else if (agentResponseRunning && !conversation.active_event) ui.agentWorkingLabel.textContent = "AI 正在处理";
   else ui.agentWorkingLabel.textContent = agentActivityLabel(conversation.active_event);
   syncCancelRequestUi(conversation);
-  if (nearBottom || optimistic) requestAnimationFrame(() => { ui.conversation.scrollTop = ui.conversation.scrollHeight; });
+  const followLatest = initialRender || nearBottom || Boolean(optimistic);
+  restoreConversationViewport(viewportSnapshot, followLatest);
+  requestAnimationFrame(() => { if (renderKey === state.lastRenderKey) restoreConversationViewport(viewportSnapshot, followLatest); });
 }
 function actionsForTurn(turn, projection) {
   const agentRunIds = new Set(turn.agent_run_ids || []); if (turn.agent_run_id) agentRunIds.add(turn.agent_run_id);
@@ -2440,8 +3259,6 @@ function createAiTurnContainer(turn, projection, conversation, actions) {
     current: presentation.current,
   });
   const status = document.createElement("span"); status.className = "ai-turn-status"; const dot = document.createElement("i"); dot.setAttribute("aria-hidden", "true"); const label = document.createElement("b"); label.dataset.aiTurnStatusLabel = "true"; label.dataset.baseLabel = presentation.label; label.textContent = presentation.label;
-  const turnTimes = (turn.items || []).flatMap((item) => [item.time, item.timestamp_utc, item.started_at_utc, item.updated_at_utc]).map(timestampMs).filter(Number.isFinite).sort((left, right) => left - right);
-  if (turnTimes.length) { label.dataset.startedAt = String(turnTimes[0]); label.dataset.endedAt = String(turnTimes.at(-1)); label.dataset.elapsedLive = String(presentation.current && ["running", "cancelling"].includes(presentation.tone)); }
   status.append(dot, label); header.append(status);
   if (InteractionShell.canShowTurnStop(presentation)) {
     const stop = document.createElement("button"); stop.type = "button"; stop.className = "ai-turn-stop"; stop.dataset.aiTurnCancel = "true"; stop.textContent = "停止"; stop.addEventListener("click", openCancelAgentDialog); header.append(stop);
@@ -2465,8 +3282,16 @@ function visibleNarrativeIndexes(items) {
   });
   return new Set(lastByText.values());
 }
+function closingCoordinatorPlan(item, index, items, current, conversation) {
+  const task = state.task, result = task?.current_result;
+  return item.kind === "coordinator_plan" && current && task?.current_run_id === result?.run_id
+    && ["completed", "failed", "cancelled", "interrupted"].includes(result?.status)
+    && !conversationHasActiveWork(conversation) && !currentHumanCheckpoint(conversation)
+    && !items.slice(index + 1).some(next => ["coordinator_plan", "coordinator_note", "final_synthesis", "turn_error", "turn_cancelled", "failed", "blocker"].includes(next.kind));
+}
 function renderConversationTurn(turn, projection, conversation, workItems) {
-  const actions = actionsForTurn(turn, projection); let actionsRendered = false; let aiTurn = null;
+  const actions = actionsForTurn(turn, projection); let actionsRendered = false; let aiTurn = null; let runSummaryRendered = false; let executionTimeline = null;
+  const recordedPlans = [];
   const resolvedCheckpoints = [];
   const items = turn.render_items || turn.items || [];
   const current = projection.current_turn?.group_key === turn.group_key;
@@ -2480,8 +3305,9 @@ function renderConversationTurn(turn, projection, conversation, workItems) {
   const delegations = (conversation.delegations || []).filter((item) => verifiedIds.has(item.delegation_id));
   const ensureAiTurn = () => { if (!aiTurn) aiTurn = createAiTurnContainer(turn, projection, conversation, actions); return aiTurn.content; };
   const turnTarget = (role) => InteractionShell.conversationTurnTarget({ role, root: ui.messageList, aiContent: role === "user" ? null : ensureAiTurn() });
-  const turnInteractionState = !current ? "idle" : projection.phase === "executing" ? "working" : ["clarifying", "awaiting_approval"].includes(projection.phase) ? "waiting_for_human" : "idle";
-  const renderActions = () => { if (!actionsRendered && actions.length) { renderActionTimeline(actions, delegations, { interactionState: turnInteractionState, expertCount: turnVerifiedRoles.size, recoveredFailures, target: turnTarget("assistant") }); actionsRendered = true; } };
+  const settled = state.task?.status === "completed" && ["completed", "idle"].includes(conversation.interaction_projection?.phase) && !currentHumanCheckpoint(conversation) && !conversationHasActiveWork(conversation) && !(state.task.control?.blocked_by || []).length && !(state.task.blockers || []).some((blocker) => blocker.active !== false);
+  const turnInteractionState = !current ? "historical" : settled ? "settled" : projection.phase === "executing" ? "working" : ["clarifying", "awaiting_approval"].includes(projection.phase) ? "waiting_for_human" : "idle";
+  const renderActions = () => { if (!actionsRendered && actions.length) { executionTimeline = renderActionTimeline(actions, delegations, { interactionState: turnInteractionState, expertCount: turnVerifiedRoles.size, recoveredFailures, target: turnTarget("assistant") }); actionsRendered = true; } };
   items.forEach((item, itemIndex) => {
     if (item.kind === "message" && item.role === "user") { renderConversationItem(item, turnTarget("user")); return; }
     if ((item.kind === "approval" || item.kind === "question") && !isPendingHumanCheckpoint(item)) { resolvedCheckpoints.push(item); return; }
@@ -2499,14 +3325,31 @@ function renderConversationTurn(turn, projection, conversation, workItems) {
       if (!actions.length && reconciledEvents.length) renderTeamActivity({ ...item, events: reconciledEvents }, ensureAiTurn());
       return;
     }
-    if (item.kind === "approval" || item.kind === "question") { renderActions(); renderHumanCheckpoint(item, { interactive: projection.observation?.degraded !== true && projection.background?.cancelling !== true && state.cancelRequestInFlight !== true, target: ensureAiTurn() }); return; }
+    if (item.kind === "approval" || item.kind === "question") {
+      renderActions();
+      if (current && !runSummaryRendered) runSummaryRendered = appendRunCheckpointSummary(ensureAiTurn());
+      renderHumanCheckpoint(item, { interactive: projection.observation?.degraded !== true && projection.background?.cancelling !== true && state.cancelRequestInFlight !== true, target: ensureAiTurn() }); return;
+    }
     if (["final_synthesis", "turn_error", "turn_cancelled", "failed", "blocker"].includes(item.kind)) renderActions();
     const planText = `${item.title || ""} ${item.summary || item.text || ""}`;
     const truthConflict = item.kind === "coordinator_plan" && Boolean(failedAction) && /(?:正在后台运行|已经.{0,8}(?:启动|运行|完成)|训练中|已进入训练)/u.test(planText);
+    // Native history can retain an old child as open and tag the closing
+    // answer as a plan. Once real work is settled, keep that last answer in
+    // the dialogue; this never promotes it to a completion/approval fact.
+    if (closingCoordinatorPlan(item, itemIndex, items, current, conversation)) { renderConversationItem({ ...item, kind: "coordinator_note" }, ensureAiTurn()); return; }
+    if (item.kind === "coordinator_plan" && actions.length) { recordedPlans.push({ ...item, compact: true, currentInteraction: current, truthConflict }); return; }
     renderConversationItem(item.kind === "coordinator_plan" ? { ...item, compact: true, currentInteraction: current, truthConflict, failedActionTitle: failedAction ? actionTitle(failedAction) : null } : item, ensureAiTurn());
   });
   renderActions();
-  if (resolvedCheckpoints.length) renderCheckpointHistory(resolvedCheckpoints, turnTarget("assistant"));
+  if (executionTimeline?.executionBody) {
+    recordedPlans.forEach(item => renderCoordinatorProgress(item, executionTimeline.executionBody));
+    if (resolvedCheckpoints.length) renderCheckpointHistory(resolvedCheckpoints, executionTimeline.executionBody);
+  }
+  // Canonical completed Run results remain available after a natural final
+  // reply, even when that reply does not carry a final_synthesis object ref.
+  // Never attach today's model to a historical turn or an active operation.
+  if (current && !runSummaryRendered && !conversationHasActiveWork(conversation) && !currentHumanCheckpoint(conversation)
+      && !aiTurn?.content.querySelector(".turn-result-card")) appendRunCheckpointSummary(ensureAiTurn());
   if (!aiTurn && current && ["executing", "clarifying", "awaiting_approval"].includes(projection.phase)) ensureAiTurn();
   if (aiTurn) appendAiTurnPlaceholder(aiTurn.content, aiTurn.presentation);
 }
@@ -2557,15 +3400,16 @@ function formatActionDuration(action) {
   if (action.duration_ms < 1000) return `${Math.round(action.duration_ms)} ms`;
   return `${(action.duration_ms / 1000).toFixed(action.duration_ms < 10_000 ? 1 : 0)} s`;
 }
-function actionTimelineGlance(actions, waitingForHuman, working, recoveredFailures = new Set()) {
+function actionTimelineGlance(actions, waitingForHuman, working, recoveredFailures = new Set(), quietHistory = false) {
   const failed = actions.find((action) => ["failed", "identity_error"].includes(action.status) && !recoveredFailures.has(action) && !isUserDeclinedAction(action) && !isProbeMiss(action));
+  if (waitingForHuman) return "当前有待确认事项；请先查看下面的确认卡，历史执行记录可以展开核对";
+  if (quietHistory) return failed ? "执行过程已保留 · 含历史异常记录，可展开核对" : "已结束的执行过程，可以展开核对";
   if (failed) return `需要处理：${actionTitle(failed)}`;
-  if (waitingForHuman) return "当前有待确认事项；你可以回答、批准，也可以先继续讨论";
   if (actions.length && actions.every((action) => action.status === "cancelled")) return "检查点已暂缓，正在继续讨论";
   const running = actions.find((action) => action.status === "running" && action.tool_class !== "control");
   if (running) return `正在执行：${actionTitle(running)}`;
   if (actions.some(isUserDeclinedAction)) return "你选择暂不执行，关键操作没有启动";
-  const completed = actions.find((action) => action.status === "completed");
+  const completed = [...actions].reverse().find((action) => action.status === "completed");
   if (working) return completed ? `AI 正在继续处理 · 最近完成：${actionTitle(completed)}` : "AI 正在规划下一步";
   return completed ? `最近完成：${actionTitle(completed)}` : "工具动作正在同步";
 }
@@ -2589,6 +3433,10 @@ function actionResultSummary(action, payload) {
     return { state: "failed", text: readableActionText(error) };
   }
   const result = parseActionResultValue(body.result ?? body.result_preview ?? body.summary ?? body.message);
+  if (result?.context_state?.owner_id && result.context_state.grants_execution_authorization === false) {
+    const count = Array.isArray(result.context_state.entries) ? result.context_state.entries.length : 0;
+    return { state: "completed", text: action.tool_name === "model_harness_record_context_state" ? `已保留 ${count} 项目标与选择。` : `已读取 ${count} 项目标与已回答事项。` };
+  }
   if (action?.tool_name === "model_harness_download_artifact_bundle") {
     if (result?.status === "downloaded") {
       return { state: "completed", text: "下载完成：新文件已写入，并通过大小与 SHA-256 校验。" };
@@ -2597,9 +3445,11 @@ function actionResultSummary(action, payload) {
       return { state: "loading", text: "传输已开始，尚未确认本地文件保存完成。" };
     }
   }
+  if (result?.proposal?.proposal_id && result.proposal.proposal_sha256) { const proposal = result.proposal; const qualification = result.qualification || proposal.qualification; return { state: proposal.status === "qualification_failed" ? "failed" : proposal.status === "qualifying" ? "loading" : "completed", text: ({ proposed: "工程代码已保存，等待隔离验证。", qualifying: "隔离工程验证正在运行，尚未启动正式训练。", qualified: "隔离验证通过，等待确认启用方案。", qualification_failed: `隔离验证未通过：${qualification?.failure || proposal.failure || "请查看日志后修正方案"}`, activated: "工程方案已启用；训练合同仍需确认，尚未启动正式训练。" })[proposal.status] || `工程方案状态：${proposal.status || "未记录"}` }; }
+  if (result?.asset?.object_type === "ExecutionAsset") { const asset = result.asset; return { state: "completed", text: `已获取 ${asset.files?.length || 0} 个文件 · 许可 ${asset.license || "unknown"} · ${asset.license_review_required || asset.license_policy?.decision !== "allow" ? "使用范围待核对" : "许可策略已记录"}` }; }
   const task = result?.task || (result?.task_id && result?.status ? result : null);
   if (task) {
-    const status = STATUS_LABELS[task.status] || task.status || "状态未知"; const revision = task.current_spec_revision ? ` · 任务理解第 ${task.current_spec_revision} 版` : ""; const recipe = ({ "tabular-regression": "表格数值回归", "tabular-classification": "表格分类", "image-folder-classification": "图片分类", "digit-classification": "数字分类", "audio-keyword-classification": "音频关键词分类" })[task.recipe_id] || task.recipe_id; const recipeLabel = recipe ? ` · ${recipe}方案` : "";
+    const status = STATUS_LABELS[task.status] || task.status || "状态未知"; const revision = task.current_spec_revision ? ` · 任务理解第 ${task.current_spec_revision} 版` : ""; const recipe = ({ "tabular-regression": "表格数值回归", "tabular-classification": "表格分类", "image-folder-classification": "图片分类", "digit-classification": "数字分类", "audio-keyword-classification": "音频关键词分类", "generic-isolated-execution": "已验证工程" })[task.recipe_id] || task.recipe_id; const recipeLabel = recipe ? ` · ${recipe}方案` : "";
     return { state: "completed", text: `当前：${status}${revision}${recipeLabel}` };
   }
   const answers = Array.isArray(result?.answers) ? result.answers.flatMap((answer) => [...(Array.isArray(answer.selected) ? answer.selected : []), ...(answer.custom ? [answer.custom] : [])]).filter(Boolean) : [];
@@ -2609,7 +3459,7 @@ function actionResultSummary(action, payload) {
       state: result.matches.length ? "completed" : "completed_empty",
       text: result.matches.length
         ? `能力匹配返回 ${result.matches.length} 项结果`
-        : "能力匹配已完成：当前没有匹配项。这是能力边界，不是系统故障。",
+        : "现成方案目录当前没有匹配项，可以继续准备工程方案。",
     };
   }
   const searchResult = result?.search && typeof result.search === "object" ? result.search : result;
@@ -2625,6 +3475,8 @@ function actionResultSummary(action, payload) {
   const collection = collections.find(([items]) => Array.isArray(items));
   if (collection) return { state: "completed", text: `${collection[1]}返回 ${collection[0].length} 项结果` };
   if (typeof result === "string" && /^report accepted by the agent that started you\b/i.test(result.trim())) return { state: "completed", text: "专家结论已交回训练协调器。" };
+  if (typeof result === "string" && /^message queued as the next turn for subagent\b/i.test(result.trim())) return { state: "completed", text: "已转交给对应专家继续处理。" };
+  if (typeof result === "string" && /^[\[{]/.test(result.trim())) return { state: "completed", text: "结果已保留，可查看完整技术详情。" };
   if (typeof result === "string" && result) return { state: "completed", text: readableActionText(result) };
   return { state: "completed", text: "工具已返回脱敏结果，可继续查看完整内容。" };
 }
@@ -2667,24 +3519,25 @@ function renderActionRow(action, target, { waitingForHuman = false, recovered = 
   const title = document.createElement("h4"); title.textContent = actionTitle(action); copy.append(meta, title);
   if (displayStatus === "declined") { const note = document.createElement("p"); note.className = "agent-action-result"; note.dataset.state = "declined"; note.textContent = "你选择暂不执行，系统没有运行这项操作。"; copy.append(note); }
   else if (displayStatus === "suspended") { const note = document.createElement("p"); note.className = "agent-action-result"; note.dataset.state = "suspended"; note.textContent = "已暂缓，未提交答案或批准；保留记录供回看。"; copy.append(note); }
-  else if (action.error) { const error = document.createElement("p"); error.className = "agent-action-error"; error.textContent = action.error.message || action.error.code || "工具失败但没有返回可读原因。"; copy.append(error); }
+  else if (action.error) { const provider = providerErrorPresentation(action); const error = document.createElement("p"); error.className = "agent-action-error"; error.textContent = provider?.message || action.error.message || action.error.code || "工具失败但没有返回可读原因。"; copy.append(error); appendProviderErrorDetails(copy, provider); }
   else { const result = document.createElement("p"); result.className = "agent-action-result"; result.dataset.actionId = action.action_id || "identity-error"; result.dataset.state = displayStatus; result.textContent = waitingForAnswer ? (currentHumanCheckpoint(state.conversation)?.kind === "approval" ? "尚未执行，等待你明确批准；也可以先讨论。" : "正在等待你的回答，也可以先继续讨论。") : action.status === "running" ? "正在执行，结果返回后会显示在这里。" : action.event_result_ref ? "已返回结果，展开后显示摘要。" : action.object_refs?.length ? `已产生 ${action.object_refs.length} 个可追溯对象。` : "工具已完成，没有返回额外对象。"; copy.append(result); }
   const evidence = document.createElement("div"); evidence.className = "agent-action-evidence"; appendObjectRefs(evidence, action.object_refs || []);
   if (action.event_result_ref) { const button = document.createElement("button"); button.type = "button"; button.textContent = "技术详情"; button.setAttribute("aria-label", `查看“${actionTitle(action)}”的完整脱敏技术详情`); button.addEventListener("click", () => openEventResultRef(action.event_result_ref)); evidence.append(button); }
   if (evidence.childElementCount) copy.append(evidence); const status = document.createElement("em"); status.textContent = actionStatusLabel(action, { waitingForHuman }); row.append(mark, copy, status); target.append(row);
 }
-function renderDelegationGroup(group, groups, target, visited, depth = 0, { waitingForHuman = false, recoveredFailures = new Set() } = {}) {
+function renderDelegationGroup(group, groups, target, visited, depth = 0, { waitingForHuman = false, recoveredFailures = new Set(), quietHistory = false } = {}) {
   if (visited.has(group.id)) return; visited.add(group.id);
-  const details = document.createElement("details"); details.className = "delegation-group"; const hasDeclined = group.actions.some(isUserDeclinedAction); const hasFailure = group.actions.some((action) => ["failed", "identity_error"].includes(action.status) && !recoveredFailures.has(action) && !isUserDeclinedAction(action)); const waitingForAnswer = group.actions.some((action) => isWaitingForAnswerAction(action, waitingForHuman)); const running = group.actions.some((action) => action.status === "running" && !isWaitingForAnswerAction(action, waitingForHuman)); details.open = hasFailure || running || waitingForAnswer || (!group.unverified && !waitingForHuman && depth === 0); details.dataset.status = hasFailure ? "failed" : running ? "running" : waitingForAnswer ? "waiting" : hasDeclined ? "declined" : "completed";
-  const summary = document.createElement("summary"); const copy = document.createElement("span"); const title = document.createElement("b"); const first = group.actions[0]; const delegationAction = group.actions.find((action) => action.tool_class === "delegation"); const delegatedRole = delegationAction?.tool_name && ConversationView?.ROLE_LABELS?.[delegationAction.tool_name] ? delegationAction.tool_name : null; const summaryRole = group.root ? "orchestrator" : group.binding?.target_agent_id || delegatedRole || first?.actor_role; title.textContent = group.unverified ? "未归属的执行记录" : group.root ? "训练协调器" : roleLabel(summaryRole); const counts = document.createElement("small"); const domainCount = group.actions.filter((action) => action.tool_class === "domain").length; const controlCount = group.actions.filter((action) => action.tool_class === "control").length; const objectCount = group.actions.reduce((total, action) => total + (action.object_refs?.length || 0), 0); counts.textContent = group.unverified ? `${group.actions.length} 项记录 · 不作为当前决定` : `${roleLabel(summaryRole)} · ${domainCount} 个领域动作 · ${controlCount} 个控制动作 · ${objectCount} 个对象`; copy.append(title, counts); const stateLabel = document.createElement("em"); stateLabel.textContent = hasFailure ? "需要处理" : running ? "执行中" : waitingForAnswer ? "等待你的决定" : hasDeclined ? "你选择暂不执行" : "已结束"; summary.append(copy, stateLabel); details.append(summary);
+  const details = document.createElement("details"); details.className = "delegation-group"; const hasDeclined = group.actions.some(isUserDeclinedAction); const hasFailure = group.actions.some((action) => ["failed", "identity_error"].includes(action.status) && !recoveredFailures.has(action) && !isUserDeclinedAction(action)); const waitingForAnswer = group.actions.some((action) => isWaitingForAnswerAction(action, waitingForHuman)); const running = group.actions.some((action) => action.status === "running" && !isWaitingForAnswerAction(action, waitingForHuman)); details.open = !waitingForHuman && !quietHistory && (hasFailure || running || waitingForAnswer || (!group.unverified && depth === 0)); details.dataset.status = hasFailure ? "failed" : running ? "running" : waitingForAnswer ? "waiting" : hasDeclined ? "declined" : "completed";
+  const summary = document.createElement("summary"); const copy = document.createElement("span"); const title = document.createElement("b"); const first = group.actions[0]; const delegationAction = group.actions.find((action) => action.tool_class === "delegation"); const delegatedRole = delegationAction?.tool_name && ConversationView?.ROLE_LABELS?.[delegationAction.tool_name] ? delegationAction.tool_name : null; const summaryRole = group.root ? "orchestrator" : group.binding?.target_agent_id || delegatedRole || first?.actor_role; title.textContent = group.unverified ? "未归属的执行记录" : group.root ? "训练协调器" : roleLabel(summaryRole); const counts = document.createElement("small"); const domainCount = group.actions.filter((action) => action.tool_class === "domain").length; const controlCount = group.actions.filter((action) => action.tool_class === "control").length; const objectCount = group.actions.reduce((total, action) => total + (action.object_refs?.length || 0), 0); counts.textContent = group.unverified ? `${group.actions.length} 项记录 · 不作为当前决定` : `${roleLabel(summaryRole)} · ${domainCount} 个领域动作 · ${controlCount} 个控制动作 · ${objectCount} 个对象`; copy.append(title, counts); const stateLabel = document.createElement("em"); stateLabel.textContent = waitingForHuman || quietHistory ? hasFailure ? "包含失败记录" : "已记录" : hasFailure ? "需要处理" : running ? "执行中" : waitingForAnswer ? "等待你的决定" : hasDeclined ? "你选择暂不执行" : "已结束"; summary.append(copy, stateLabel); details.append(summary);
   const list = document.createElement("div"); list.className = "agent-action-list"; group.actions.forEach((action) => renderActionRow(action, list, { waitingForHuman, recovered: recoveredFailures.has(action) }));
-  (group.children || []).map((id) => groups.get(id)).filter(Boolean).forEach((child) => renderDelegationGroup(child, groups, list, visited, depth + 1, { waitingForHuman, recoveredFailures })); details.append(list); target.append(details);
+  (group.children || []).map((id) => groups.get(id)).filter(Boolean).forEach((child) => renderDelegationGroup(child, groups, list, visited, depth + 1, { waitingForHuman, recoveredFailures, quietHistory })); details.append(list); target.append(details);
 }
 function renderActionTimeline(actions, delegations = [], { interactionState = "idle", expertCount = 0, recoveredFailures = new Set(), target = ui.messageList } = {}) {
   if (!actions.length) return; const section = document.createElement("details"); section.className = "action-timeline"; section.dataset.interactionKind = "action-group"; section.setAttribute("aria-label", "智能体真实执行过程");
-  const waitingForHuman = interactionState === "waiting_for_human"; const declinedCount = actions.filter(isUserDeclinedAction).length; const failedCount = actions.filter((action) => ["failed", "identity_error"].includes(action.status) && !recoveredFailures.has(action) && !isUserDeclinedAction(action)).length; const waitingActionCount = actions.filter((action) => isWaitingForAnswerAction(action, waitingForHuman)).length; const runningCount = actions.filter((action) => action.status === "running" && !isWaitingForAnswerAction(action, waitingForHuman)).length; const working = interactionState === "working"; const suspended = actions.some((action) => action.status === "cancelled"); section.dataset.status = failedCount ? "failed" : runningCount || working ? "running" : waitingActionCount ? "waiting" : declinedCount ? "declined" : suspended ? "suspended" : "completed"; section.dataset.recoveredFailures = String(recoveredFailures.size);
-  const turnKey = actions.find((action) => action.turn_id)?.turn_id || actions[0]?.agent_run_id || "unscoped"; const disclosureKey = `${state.selectedTaskId || "task"}:${turnKey}`; const savedOpen = state.actionTimelineDisclosure.get(disclosureKey); section.open = savedOpen === undefined ? Boolean(failedCount) : savedOpen; section.dataset.defaultDisclosure = section.open ? "open" : "closed";
-  const header = document.createElement("summary"); const copy = document.createElement("div"); const kicker = document.createElement("span"); kicker.textContent = "执行过程"; const title = document.createElement("h3"); title.textContent = waitingForHuman ? "本轮已经做了什么" : runningCount ? "AI 正在调用工具" : working ? "AI 正在处理" : failedCount ? "执行过程包含需要处理的问题" : declinedCount ? "你选择暂不执行" : "查看智能体执行过程"; const glance = document.createElement("p"); glance.className = "action-timeline-glance"; glance.textContent = actionTimelineGlance(actions, waitingForHuman, working, recoveredFailures); copy.append(kicker, title, glance); const count = document.createElement("b"); const countLabel = () => `${expertCount ? `${expertCount} 位专家 · ` : ""}${actions.length} 项 · ${section.open ? "收起" : "展开"}`; count.textContent = countLabel(); header.append(copy, count); section.append(header);
+  const waitingForHuman = interactionState === "waiting_for_human"; const quietHistory = ["settled", "historical"].includes(interactionState); const declinedCount = actions.filter(isUserDeclinedAction).length; const failedCount = actions.filter((action) => ["failed", "identity_error"].includes(action.status) && !recoveredFailures.has(action) && !isUserDeclinedAction(action)).length; const waitingActionCount = actions.filter((action) => isWaitingForAnswerAction(action, waitingForHuman)).length; const runningCount = actions.filter((action) => action.status === "running" && !isWaitingForAnswerAction(action, waitingForHuman)).length; const working = interactionState === "working"; const suspended = actions.some((action) => action.status === "cancelled"); section.dataset.status = waitingForHuman ? "waiting" : quietHistory ? "recorded" : failedCount ? "failed" : runningCount || working ? "running" : waitingActionCount ? "waiting" : declinedCount ? "declined" : suspended ? "suspended" : "completed"; section.dataset.recoveredFailures = String(recoveredFailures.size);
+  const turnKey = actions.find((action) => action.turn_id)?.turn_id || actions[0]?.agent_run_id || "unscoped"; const disclosureBase = `${state.selectedTaskId || "task"}:${turnKey}`; const disclosureKey = `${disclosureBase}:${waitingForHuman ? "checkpoint" : quietHistory ? "history" : "execution"}`; const savedOpen = state.actionTimelineManualDisclosure?.get(disclosureBase) ?? state.actionTimelineDisclosure.get(disclosureKey); section.open = savedOpen === undefined ? false : savedOpen; section.dataset.defaultDisclosure = section.open ? "open" : "closed";
+  const header = document.createElement("summary"); const copy = document.createElement("div"); const kicker = document.createElement("span"); kicker.textContent = "执行记录"; const title = document.createElement("h3"); title.textContent = "查看执行记录"; const glance = document.createElement("p"); glance.className = "action-timeline-glance"; glance.textContent = actionTimelineGlance(actions, waitingForHuman, working, recoveredFailures, quietHistory); copy.append(kicker, title, glance); const count = document.createElement("b"); const countLabel = () => `${actions.length} 条${failedCount && !quietHistory ? " · 有异常" : ""} · ${section.open ? "收起" : "展开"}`; count.textContent = countLabel(); header.append(copy, count); section.append(header);
+  header.addEventListener("click", () => { (state.actionTimelineManualDisclosure ||= new Map()).set(disclosureBase, !section.open); });
   section.addEventListener("toggle", () => { state.actionTimelineDisclosure.set(disclosureKey, section.open); count.textContent = countLabel(); hydrateActionTimelineResults(section, actions); });
   const body = document.createElement("div"); body.className = "action-timeline-body";
   const delegationById = new Map((delegations || []).filter((item) => item?.delegation_id).map((item) => [item.delegation_id, item])); const groups = new Map(); const roots = []; const rootAgent = { id: "root-agent", parentId: null, actions: [], children: [], root: true, unverified: false }; const unverified = { id: "unverified", parentId: null, actions: [], children: [], unverified: true };
@@ -2697,13 +3550,13 @@ function renderActionTimeline(actions, delegations = [], { interactionState = "i
   groups.forEach((group) => { if (group.parentId && groups.has(group.parentId)) groups.get(group.parentId).children.push(group.id); else roots.push(group); });
   const visited = new Set(); const rootOnly = rootAgent.actions.length && !roots.length && !unverified.actions.length;
   if (rootOnly) { const list = document.createElement("div"); list.className = "agent-action-list action-timeline-flat"; rootAgent.actions.forEach((action) => renderActionRow(action, list, { waitingForHuman, recovered: recoveredFailures.has(action) })); body.append(list); }
-  else { if (rootAgent.actions.length) renderDelegationGroup(rootAgent, groups, body, visited, 0, { waitingForHuman, recoveredFailures }); roots.forEach((group) => renderDelegationGroup(group, groups, body, visited, 0, { waitingForHuman, recoveredFailures })); if (unverified.actions.length) renderDelegationGroup(unverified, groups, body, visited, 0, { waitingForHuman, recoveredFailures }); }
-  section.append(body); target.append(section); hydrateActionTimelineResults(section, actions);
+  else { if (rootAgent.actions.length) renderDelegationGroup(rootAgent, groups, body, visited, 0, { waitingForHuman, recoveredFailures, quietHistory }); roots.forEach((group) => renderDelegationGroup(group, groups, body, visited, 0, { waitingForHuman, recoveredFailures, quietHistory })); if (unverified.actions.length) renderDelegationGroup(unverified, groups, body, visited, 0, { waitingForHuman, recoveredFailures, quietHistory }); }
+  section.executionBody = body; section.append(body); target.append(section); hydrateActionTimelineResults(section, actions); return section;
 }
 function renderCheckpointHistory(items, target = ui.messageList) {
   if (!items.length) return;
   const details = document.createElement("details"); details.className = "checkpoint-history";
-  const summary = document.createElement("summary"); const label = document.createElement("span"); const title = document.createElement("b"); title.textContent = "已处理的人工确认"; const hint = document.createElement("small"); hint.textContent = "仅供回看，不是当前待办"; label.append(title, hint); const count = document.createElement("em"); count.textContent = `${items.length} 项`; summary.append(label, count); details.append(summary);
+  const summary = document.createElement("summary"); const label = document.createElement("span"); const title = document.createElement("b"); title.textContent = "你的批准与回答"; label.append(title); const count = document.createElement("em"); count.textContent = `${items.length} 次`; summary.append(label, count); details.append(summary);
   const list = document.createElement("div"); list.className = "checkpoint-history-list";
   items.slice(-8).forEach((item) => { const row = document.createElement("div"); const name = document.createElement("b"); name.textContent = item.kind === "approval" ? item.title || "关键操作批准" : item.title || item.questions?.[0]?.header || "补充信息"; const status = document.createElement("span"); status.textContent = (item.outcome || item.payload?.outcome) === "superseded_for_discussion" ? "已暂缓 · 继续讨论" : eventStatusLabel(item.status); row.append(name, status); list.append(row); });
   details.append(list); target.append(details);
@@ -2723,7 +3576,7 @@ function renderConversationItem(item, target = ui.messageList) {
 }
 function renderTypedTruthNotice(item, target = ui.messageList) {
   const card = document.createElement("article"); card.className = "truth-notice"; card.dataset.kind = item.kind; card.dataset.interactionKind = "risk-recovery";
-  const mark = document.createElement("span"); mark.setAttribute("aria-hidden", "true"); mark.textContent = item.kind === "warning" || item.kind === "observation_degraded" ? "!" : "×";
+  const mark = document.createElement("span"); mark.setAttribute("aria-hidden", "true"); mark.append(createUiIcon("alert"));
   const body = document.createElement("div"); const kicker = document.createElement("small"); const title = document.createElement("b"); const copy = document.createElement("p");
   const labels = {
     blocker: ["能力或条件阻断", "当前还不能继续"],
@@ -2731,21 +3584,22 @@ function renderTypedTruthNotice(item, target = ui.messageList) {
     observation_degraded: ["观察链路异常", "部分实时过程暂时不可见"],
     failed: ["执行异常", "本轮出现失败事件"],
   };
-  const [label, fallbackTitle] = labels[item.kind] || labels.failed; kicker.textContent = label; title.textContent = item.title || fallbackTitle; copy.textContent = item.summary || item.text || item.reason || item.error?.message || "系统没有提供更具体的说明。";
-  body.append(kicker, title, copy); appendObjectRefs(body, item.object_refs); appendRecoveryActions(body, item); card.append(mark, body); target.append(card);
+  const provider = item.kind === "failed" ? providerErrorPresentation(item, { turnStopped: terminalEventScope(item) === "root" }) : null;
+  const [label, fallbackTitle] = labels[item.kind] || labels.failed; kicker.textContent = label; title.textContent = provider?.title || item.title || fallbackTitle; copy.textContent = provider?.message || item.summary || item.text || item.reason || item.error?.message || "系统没有提供更具体的说明。";
+  body.append(kicker, title, copy); appendProviderErrorDetails(body, provider); appendObjectRefs(body, item.object_refs); appendRecoveryActions(body, item); card.append(mark, body); target.append(card);
 }
 function appendRecoveryActions(container, item = {}) {
   const actions = document.createElement("div"); actions.className = "recovery-actions";
   const refresh = document.createElement("button"); refresh.type = "button"; refresh.textContent = item.kind === "observation_degraded" ? "重新检查连接" : "重新检查当前状态";
   refresh.addEventListener("click", async () => { setButtonBusy(refresh, true, "检查中"); try { if (item.kind === "observation_degraded") await loadRuntime(); if (state.selectedTaskId) await refreshSelected({ force: true }); } catch (error) { showNotice(error.message); } finally { setButtonBusy(refresh, false, ""); } });
-  const adjust = document.createElement("button"); adjust.type = "button"; adjust.className = "secondary"; adjust.textContent = "告诉协调器如何调整"; adjust.addEventListener("click", () => { ui.messageInput.focus(); showNotice("请直接说明你希望修改的目标、数据或执行方式；不会自动重试刚才的失败动作。", "ok"); });
+  const adjust = document.createElement("button"); adjust.type = "button"; adjust.className = "secondary"; adjust.textContent = "补充要求"; adjust.addEventListener("click", () => { ui.messageInput.focus(); showNotice("请直接说明你希望修改的目标、数据或执行方式；不会自动重试刚才的失败动作。", "ok"); });
   const evidence = document.createElement("button"); evidence.type = "button"; evidence.className = "secondary"; evidence.textContent = "打开任务证据"; evidence.addEventListener("click", () => openInspector("plan"));
   actions.append(refresh, adjust, evidence); container.append(actions);
 }
 function renderMessage(item, target = ui.messageList) {
   if (item.role !== "user") return renderUnknownEvent({ ...item, contract_error: "only user messages enter renderMessage" }, target);
   const row = document.createElement("article"); row.className = "message"; row.dataset.role = "user"; row.dataset.interactionKind = "natural-dialogue"; const avatar = document.createElement("span"); avatar.className = "message-avatar"; avatar.textContent = "你";
-  const body = document.createElement("div"); body.className = "message-body"; const meta = document.createElement("div"); meta.className = "message-meta"; const author = document.createElement("b"); author.textContent = "你"; const time = document.createElement("time"); time.textContent = item.optimistic ? "正在提交" : formatTime(item.time); meta.append(author, time);
+  const body = document.createElement("div"); body.className = "message-body"; const meta = document.createElement("div"); meta.className = "message-meta"; const author = document.createElement("b"); author.textContent = "你"; const time = document.createElement("time"); time.textContent = item.delivery === "queued" ? "等待回复后发送" : item.optimistic ? "正在发送…" : formatTime(item.time); meta.append(author, time);
   const copy = document.createElement("p"); copy.className = "message-copy"; copy.textContent = item.text; body.append(meta, copy); row.append(avatar, body); target.append(row);
 }
 function appendInlineMarkdown(container, text) {
@@ -2815,8 +3669,29 @@ function bundleForTerminalRef(ref, task, result) {
   if (!ref || state.evidenceRunId !== result.run_id) return null;
   return state.artifactBundles.find((bundle) => bundle?.bundle_id === ref.id && bundle.task_id === task.task_id && bundle.run_id === result.run_id && bundle.manifest_sha256 === ref.digest) || null;
 }
+function metricPresentation(task, key, value, forGate = false) {
+  const common = {
+    accuracy: ["准确率", "rate"], macro_f1: ["宏平均 F1", "number"], worst_class_recall: ["最弱类别召回率", "rate"],
+    test_cer: ["测试字符错误率", "rate"], challenge_cer: ["挑战字符错误率", "rate"],
+    test_exact_match_accuracy: ["测试整句准确率", "rate"], challenge_exact_match_accuracy: ["挑战整句准确率", "rate"],
+    ndcg_at_5_mean: ["排序质量 NDCG@5", "number"], overall_mae: ["平均绝对误差", "number"], mae: ["平均绝对误差", "number"],
+    rmse: ["均方根误差", "number"], r2: ["拟合优度 R²", "number"], mase: ["相对尺度误差 MASE", "number"], smape: ["对称百分比误差", "percentage_points"],
+    mel_cepstral_distortion_db: ["声学失真（dB）", "number"], duration_ratio_deviation_mean: ["时长偏差", "rate"],
+    syllable_count_error_rate_energy_envelope_proxy: ["音节计数代理误差", "rate"],
+  };
+  // Presentation metadata is open; these names never route or restrict a model.
+  const custom = task?.contract?.execution_spec?.capability?.metric_display?.[key];
+  const [defaultLabel, defaultFormat] = common[key] || [key.replaceAll("_", " "), "number"];
+  const label = typeof custom?.label === "string" && custom.label.trim() ? custom.label : defaultLabel;
+  const format = ["rate", "percentage_points", "number"].includes(custom?.format) ? custom.format : defaultFormat;
+  const shown = format === "rate" ? value * 100 : value;
+  const text = forGate ? String(Number(shown.toPrecision(12))) : shown !== 0 && Math.abs(shown) < 0.001 ? shown.toPrecision(3) : shown.toFixed(format === "number" ? 3 : 2);
+  return { label, value: text + (format === "number" ? "" : "%") };
+}
 function terminalResultMetrics(task, result) {
   const clean = result?.metrics?.clean_test || {}; const gates = task?.contract?.release_gates || {};
+  const declared = task?.contract?.execution_spec?.evaluation?.gates;
+  if (declared) return Object.entries(clean).filter(([, value]) => Number.isFinite(value)).map(([key, value]) => { const gate = declared[key], hasGate = Number.isFinite(gate?.threshold) && ["lte", "gte"].includes(gate.operator); return { key, ...metricPresentation(task, key, value), gate: hasGate ? `${gate.operator === "lte" ? "≤" : "≥"} ${metricPresentation(task, key, gate.threshold, true).value}` : null, passed: hasGate ? gate.operator === "lte" ? value <= gate.threshold : value >= gate.threshold : null }; }).sort((a, b) => Number(a.passed !== false) - Number(b.passed !== false)).slice(0, 3);
   const definitions = [
     ["accuracy", "Accuracy", "clean_test_accuracy_min", "min"],
     ["macro_f1", "Macro-F1", "clean_test_macro_f1_min", "min"],
@@ -2831,6 +3706,44 @@ function terminalResultMetrics(task, result) {
     return [{ key, label, value: value.toFixed(3), gate: hasGate ? `${direction === "max" ? "≤" : "≥"} ${gate.toFixed(3)}` : null, passed }];
   });
   return metrics.slice(0, 3);
+}
+function runCheckpointSummaryModel() {
+  const task = state.task, result = task?.current_result;
+  if (!task || task.status !== "completed" || result?.status !== "completed" || task.current_run_id !== result.run_id) return null;
+  const report = state.evidenceRunId === result.run_id ? state.evaluationReport : result.evaluation_report;
+  if (!report || report.task_id !== task.task_id || report.run_id !== result.run_id || !EVIDENCE_SHA256.test(report.report_sha256 || "") || report.run_status !== "completed") return null;
+  const sample = state.evidenceRunId === result.run_id ? [...(state.sampleInferences || [])].reverse().find(check => check.task_id === task.task_id && check.run_id === result.run_id && check.status === "passed" && EVIDENCE_SHA256.test(check.prediction_sha256 || "")) : null;
+  return { taskId: task.task_id, runId: result.run_id, ready: report.release_ready === true, sample,
+    metrics: terminalResultMetrics(task, result),
+    summary: report.release_ready === true ? "独立测试已通过当前合同的验收门槛。接下来可用新样本检查实际效果。" : `独立评估已完成，当前结论：${statusLabel(report.conclusion || "not_evaluated")}。可继续检查结果和限制。` };
+}
+function appendRunCheckpointSummary(target) {
+  const model = runCheckpointSummaryModel(); if (!model) return false;
+  const card = document.createElement("section"); card.className = "turn-result-card"; card.dataset.interactionKind = "run-checkpoint-summary";
+  const header = document.createElement("header"), title = document.createElement("h3"), status = document.createElement("b"); title.textContent = "本次评估"; status.textContent = model.ready ? "达到当前标准" : "需要改进"; status.className = "result-verdict"; status.dataset.passed = String(model.ready); header.append(title, status);
+  const summary = document.createElement("p"); summary.className = "turn-result-conclusion"; summary.textContent = model.summary; card.append(header, summary);
+  const metrics = document.createElement("dl"); metrics.className = "turn-result-metrics";
+  model.metrics.forEach(metric => {
+    const row = document.createElement("div"), term = document.createElement("dt"), value = document.createElement("dd"), actual = document.createElement("b"), gate = document.createElement("small");
+    if (metric.passed !== null) row.dataset.passed = String(metric.passed);
+    term.textContent = metric.label; actual.textContent = metric.value; gate.textContent = `${metric.gate ? `标准 ${metric.gate}` : "评估值"}${metric.passed === false ? " · 未达标" : metric.passed === true ? " · 达标" : ""}`; value.append(actual, gate); row.append(term, value); metrics.append(row);
+  }); card.append(metrics);
+  if (model.sample) {
+    const preview = document.createElement("details"), heading = document.createElement("summary"); heading.textContent = "查看试用结果"; preview.className = "trial-result-preview";
+    preview.open = typeof model.sample.prediction === "string" || (model.sample.artifacts || []).some(artifact => /^(audio|image|video)\//.test(artifact.media_type || "")); preview.append(heading); renderSamplePrediction(model.sample, preview); card.append(preview);
+  }
+  const footer = document.createElement("footer"), details = document.createElement("button"); details.type = "button"; details.className = "text-button"; details.textContent = "评估详情";
+  details.addEventListener("click", () => { if (state.selectedTaskId === model.taskId && state.task?.current_result?.run_id === model.runId) openInspector("evaluation"); });
+  footer.append(details);
+  if (!currentHumanCheckpoint(state.conversation) && !conversationHasActiveWork(state.conversation)) {
+    const bundle = state.evidenceRunId === model.runId ? [...(state.artifactBundles || [])].reverse().find(record => record.task_id === model.taskId && record.run_id === model.runId && record.status === "completed" && EVIDENCE_SHA256.test(record.manifest_sha256 || "") && EVIDENCE_SHA256.test(record.archive?.sha256 || "")) : null;
+    if (bundle) {
+      const download = document.createElement("button"); download.type = "button"; download.className = "text-button"; download.textContent = "保存模型包";
+      download.addEventListener("click", () => { if (state.selectedTaskId === model.taskId && state.task?.current_result?.run_id === model.runId) requestArtifactBundleDownload({ run_id: model.runId }, bundle); });
+      footer.append(download);
+    }
+  }
+  card.append(footer); target.append(card); return true;
 }
 function terminalResultCardModel(item, projection) {
   const task = state.task; const result = task?.current_result;
@@ -2922,15 +3835,19 @@ function eventStatusLabel(value) { return ({ queued: "排队中", running: "执�
 function approvalPresentation(item) {
   // The approval subject is a typed runtime fact, never inferred from prose.
   const raw = String(item?.tool_name || item?.name || "").toLowerCase();
+  if (raw === "model_harness_acquire_execution_asset") return { header: "等待获取模型文件", title: "获取这组固定版本的模型文件", copy: "仅下载指定公开来源的文件并校验摘要，不执行代码或启动训练。许可信息未明确时仍需核对使用范围。", allow: "批准获取文件", reject: "暂不获取" };
+  if (raw === "model_harness_qualify_execution_proposal") return { header: "等待验证工程方案", title: "在隔离环境中验证这份代码", copy: item?.reason || item?.payload?.reason || "此审批没有完整记录资源范围，请先核对对应工程方案的实际镜像、挂载与资格验证限额。", allow: "批准本次工程验证", reject: "暂不验证" };
+  if (raw === "model_harness_activate_execution_proposal") return { header: "等待启用工程方案", title: "启用这份已验证的方案", copy: "将对应的方案与验证证据绑定到当前数据集和训练合同；不会确认合同或启动训练。", allow: "批准启用方案", reject: "暂不启用" };
   if (raw === "model_harness_bind_model_source") return { header: "等待确认来源", title: "确认绑定来源并做静态分析", copy: "批准只会绑定已解析的不可变来源，并读取公开源文件保存静态分析证据；不代表批准下载权重、安装代码或训练。", allow: "确认绑定并分析", reject: "暂不绑定" };
   if (raw === "model_harness_decide_training_plan") return { header: "等待确认计划", title: "确认这版执行计划", copy: "请核对计划版本、资源和安全边界；计划批准不等同于运行或能力注册批准。", allow: "确认当前计划", reject: "返回修改" };
   if (raw === "model_harness_register_recipe") return { header: "等待批准注册", title: "批准注册这份已验证能力", copy: "注册必须匹配本次真实验证证据与摘要，不会自动启动训练。", allow: "批准本次注册", reject: "暂不注册" };
   if (raw === "model_harness_check_resource_feasibility") return { header: "等待资源检查", title: "批准检查本机资源条件", copy: "按当前已批准计划记录机器与隔离环境情况；探测到 GPU 不代表当前执行器能使用它。", allow: "批准资源检查", reject: "暂不检查" };
-  if (["model_harness_authorize_task_run_start", "model_harness_start_task_run"].includes(raw)) return { header: "等待启动训练", title: "批准方案并启动本次训练", copy: "批准后，训练协调器只会按当前已冻结的数据与训练合同启动一次真实 Run。", allow: "批准并启动训练", reject: "暂不启动" };
-  if (raw === "model_harness_confirm_contract") return { header: "等待锁定合同", title: "确认并锁定这版训练合同", copy: "请核对目标、数据、评测门槛和资源限制；批准只对当前版本有效。", allow: "确认并锁定", reject: "返回修改" };
-  if (["model_harness_authorize_sample_inference", "model_harness_run_sample_inference"].includes(raw)) return { header: "等待批准试跑", title: "批准这次新样本试跑", copy: "批准后只会对当前任务、当前训练结果和这份已上传的新样本执行一次推理；不会重新训练或修改模型。", allow: "批准本次试跑", reject: "暂不试跑" };
-  if (raw === "model_harness_download_artifact_bundle") return { header: "等待确认下载", title: "确认下载这个交付包", copy: "批准只允许下载当前任务中这个已核验的 ZIP 一次，并写入你选择的新文件；不会复用构建授权，也不会覆盖已有文件。", allow: "确认并下载", reject: "暂不下载" };
-  if (["model_harness_authorize_artifact_bundle_build", "model_harness_build_artifact_bundle"].includes(raw)) return { header: "等待构建交付包", title: "构建可下载交付包", copy: "批准后会把本次运行中允许交付的模型、指标与预测结果打包；原始数据和内部路径不会进入交付包。", allow: "批准构建交付包", reject: "暂不打包" };
+  if (["model_harness_authorize_task_run_start", "model_harness_start_task_run"].includes(raw)) return { header: "等待开始训练", title: "开始这次训练", copy: "使用已确认的数据与方案，进行一次模型训练和独立测试。", allow: "开始训练", reject: "稍后" };
+  if (raw === "model_harness_confirm_contract") return { header: "等待确认标准", title: "确认训练目标与标准", copy: "核对这次训练的数据、效果标准和资源预算。后续将按这版标准评估结果。", allow: "确认标准", reject: "调整要求" };
+  if (["model_harness_authorize_sample_inference", "model_harness_run_sample_inference"].includes(raw)) return { header: "等待试用", title: "试用这份新输入", copy: "使用当前训练好的模型生成一次结果，不会重新训练或修改模型。", allow: "开始试用", reject: "稍后" };
+  if (raw === "model_harness_download_artifact_bundle") return { header: "等待下载", title: "下载模型包", copy: "将已核验的 ZIP 保存为下方的新文件，不会覆盖已有文件。", allow: "下载模型包", reject: "稍后" };
+  if (["model_harness_authorize_artifact_bundle_build", "model_harness_build_artifact_bundle"].includes(raw)) return { header: "等待保存模型", title: "保存模型与评估结果", copy: "将模型、评估结果和试用输出打包为 ZIP，便于下载和复用。不包含原始训练数据文件。", allow: "生成模型包", reject: "稍后" };
+  if (raw === "model_harness_import_material_dataset") return { header: "等待导入数据", title: "复用已上传材料导入", copy: "按已确认的任务版本和字段选择，将这份已检查材料导入训练数据集并进行体检，无需重新上传；本次批准不会启动训练。", allow: "批准导入并体检", reject: "暂不导入" };
   if (raw === "model_harness_import_dataset") return { header: "等待导入数据", title: "批准导入并体检这份数据", copy: "系统会按当前任务的数据合同读取文件，并留下可追溯的数据指纹。", allow: "批准并继续", reject: "暂不导入" };
   return { header: "等待你的批准", title: item?.title || "批准关键操作", copy: item?.reason || item?.summary || "协调器请求执行会改变任务状态的操作。", allow: "批准并继续", reject: "暂不执行" };
 }
@@ -2938,26 +3855,49 @@ function contractApprovalSummary(task) {
   const report = task?.dataset_report; const contract = task?.contract; if (!report && !contract) return [];
   const rows = [];
   if (report?.target_column) rows.push(["预测列", report.target_column]);
-  if (report) rows.push(["数据", [report.row_count != null ? `${report.row_count} 行` : "", report.feature_columns?.length ? `${report.feature_columns.length} 个特征` : "", report.source_filename || ""].filter(Boolean).join(" · ")]);
-  const gates = gateEntries(contract?.release_gates || {}).filter(([value]) => typeof value === "number");
-  const gateText = ([value, label]) => label.endsWith(" 上限") ? `${label.slice(0, -3)} ≤ ${value.toFixed(2)}` : `${label.replace(/ 下限$/, "")} ≥ ${value.toFixed(2)}`;
+  if (report) {
+    const [count, summary] = datasetDetail(task);
+    rows.push(["数据", [count, summary, report.source_filename || ""].filter(Boolean).join(" · ")]);
+    const classes = Object.entries(report.class_counts || {});
+    if (classes.length) rows.push(["类别分布", classes.slice(0, 8).map(([label, count]) => `${label}：${count}`).join("，") + (classes.length > 8 ? `，另有 ${classes.length - 8} 类` : "")]);
+  }
+  const gates = gateEntries(contract?.release_gates || {}, contract?.execution_spec?.evaluation?.gates).filter(([value]) => typeof value === "number");
+  const gateNumber = value => contract?.execution_spec ? String(value) : value.toFixed(2);
+  const gateText = ([value, label]) => label.endsWith(" 上限") ? `${label.slice(0, -3)} ≤ ${gateNumber(value)}` : `${label.replace(/ 下限$/, "")} ≥ ${gateNumber(value)}`;
   if (gates.length) rows.push(["验收门槛", gates.map(gateText).join("，")]);
+  const bundle = contract?.execution_spec?.bundle, limits = bundle?.limits;
+  if (limits) {
+    rows.push(["执行资源", `${limits.cpus} 核 CPU · ${formatBytes(limits.memory_bytes)} 内存`]);
+    rows.push(["时间上限", ["train", "evaluate", "predict"].map(stage => `${({ train: "训练", evaluate: "评估", predict: "新输入预测" })[stage]} ${bundle.stage_limits?.[stage]?.timeout_seconds ?? limits.timeout_seconds} 秒`).join(" · ")]);
+  }
   return rows;
 }
 function appendApprovalScope(card, item) {
   const raw = String(item?.tool_name || item?.name || "").toLowerCase();
   const contractRows = ["model_harness_confirm_contract", "model_harness_authorize_task_run_start", "model_harness_start_task_run"].includes(raw) ? contractApprovalSummary(state.task) : [];
+  const executionRows = [];
+  if (["model_harness_qualify_execution_proposal", "model_harness_activate_execution_proposal", "model_harness_acquire_execution_asset", "model_harness_download_artifact_bundle"].includes(raw)) {
+    const calls = (state.conversation?.events || []).filter(event => event.event_type === "tool_call" && event.task_id === state.selectedTaskId && event.payload?.tool_name === raw && ["session_id", "agent_run_id", "turn_id", "call_id"].every(key => item[key] && event[key] === item[key]));
+    if (calls.length === 1) { try {
+      const args = typeof calls[0].payload.arguments === "string" ? JSON.parse(calls[0].payload.arguments) : calls[0].payload.arguments;
+      if (args?.task_id === state.selectedTaskId) {
+        executionRows.push(["工程方案", args.proposal_id], ["代码与配置摘要", args.expected_proposal_sha256], ["验证记录", args.qualification_id], ["验证摘要", args.expected_qualification_sha256], ["使用范围", args.local_experiment_only === true ? "仅本地试验" : undefined], ["模型来源", args.repository], ["固定版本", args.revision], ["文件清单", Array.isArray(args.files) ? args.files.join("、") : undefined]);
+        if (raw === "model_harness_download_artifact_bundle") executionRows.push(["保存文件", String(args.destination_path || "").split(/[\\/]/).at(-1)], ["保存位置", /^[\\/]|^[A-Za-z]:/.test(args.destination_path || "") ? "指定的本机位置" : "本地工作区导出目录"], ["交付包", args.bundle_id], ["文件摘要", args.archive_sha256], ["清单摘要", args.manifest_sha256]);
+      }
+    } catch (_error) {} }
+  }
   const fields = [
-    ...contractRows,
+    ...contractRows, ...executionRows,
     ["方案版本", item.plan_revision || item.recipe_revision || item.contract_revision],
     ["数据指纹", item.dataset_fingerprint || item.data_fingerprint],
     ["批准摘要", item.approval_digest || item.contract_digest || item.digest],
     ["作用范围", item.approval_scope || item.scope],
   ].filter(([, value]) => value !== undefined && value !== null && value !== "");
   if (!fields.length) return;
-  const list = document.createElement("dl"); list.className = "approval-scope";
-  fields.forEach(([label, value]) => { const row = document.createElement("div"); const term = document.createElement("dt"); term.textContent = label; const detail = document.createElement("dd"); detail.textContent = String(value); row.append(term, detail); list.append(row); });
-  card.append(list);
+  const list = document.createElement("dl"), proofList = document.createElement("dl"); list.className = proofList.className = "approval-scope";
+  fields.forEach(([label, value]) => { const row = document.createElement("div"); const term = document.createElement("dt"); term.textContent = label; const detail = document.createElement("dd"); detail.textContent = String(value); row.append(term, detail); (/摘要|指纹|版本|工程方案|验证记录|交付包/.test(label) ? proofList : list).append(row); });
+  if (list.childElementCount) card.append(list);
+  if (proofList.childElementCount) { const details = document.createElement("details"), summary = document.createElement("summary"); summary.textContent = "核对版本与文件摘要"; details.append(summary, proofList); card.append(details); }
 }
 function agentActivityLabel(active) {
   if (active?.kind === "question") return `等待你的回答：${active.title || active.questions?.[0]?.header || "补充训练信息"}`;
@@ -3030,8 +3970,14 @@ function tabularSamplePlaceholder(task) {
 }
 function appendInferenceInputActions(actions, checkpoint) {
   actions.classList.add("data-upload-actions", "inference-input-actions");
-  const result = state.task?.current_result; const sampleType = sampleTypeForRecipe(result?.recipe);
+  const result = state.task?.current_result; const sampleType = sampleTypeForTask(state.task); const generic = genericInferenceSpec(state.task);
   const hint = document.createElement("small"); hint.textContent = "样本只会成为当前任务和 Run 的一次性输入对象；对话里不会出现本机路径，真正执行前仍需你批准。";
+  if (genericUsesFields(generic)) {
+    const fields = document.createElement("div"); fields.className = "generic-sample-fields"; const read = genericInputEditor(fields, generic.schema);
+    const submit = document.createElement("button"); submit.type = "button"; submit.className = "checkpoint-upload-button"; submit.textContent = "暂存这条新样本";
+    submit.addEventListener("click", async () => { let input; try { input = genericInputPayload(read(), generic); } catch (error) { showNotice(error.message); return; } setButtonBusy(submit, true, "正在安全暂存"); try { const staged = await stageInferenceInput({ ...input, sampleType: "generic" }); await continueWithInferenceInput(staged, checkpoint); } catch (error) { showNotice(error.message); } finally { setButtonBusy(submit, false, ""); } });
+    actions.append(fields, submit, hint); return;
+  }
   if (sampleType === "tabular") {
     const input = document.createElement("textarea"); input.className = "question-custom inference-sample-json"; input.rows = 3; input.placeholder = tabularSamplePlaceholder(state.task); input.setAttribute("aria-label", "输入一行新的表格样本 JSON");
     const submit = document.createElement("button"); submit.type = "button"; submit.className = "checkpoint-upload-button"; submit.textContent = "暂存这条新样本";
@@ -3047,11 +3993,12 @@ function appendInferenceInputActions(actions, checkpoint) {
     });
     actions.append(input, submit, hint); return;
   }
-  const picker = document.createElement("input"); picker.type = "file"; picker.hidden = true; picker.accept = sampleType === "image" ? "image/png,image/jpeg,image/webp,image/bmp" : sampleType === "audio" ? ".wav,audio/wav" : "";
+  const picker = document.createElement("input"); picker.type = "file"; picker.hidden = true; picker.accept = generic ? generic.extensions.join(",") : sampleType === "image" ? "image/png,image/jpeg,image/webp,image/bmp" : sampleType === "audio" ? ".wav,audio/wav" : "";
   const choose = document.createElement("button"); choose.type = "button"; choose.className = "checkpoint-upload-button"; choose.textContent = sampleType === "image" ? "选择一张新图片" : sampleType === "audio" ? "选择一段新 WAV" : "选择新样本";
   choose.addEventListener("click", () => { picker.value = ""; picker.click(); });
   picker.addEventListener("change", async () => {
     const file = picker.files?.[0]; if (!file || !sampleType) return;
+    if (generic) { try { checkGenericInputFile(file, generic); } catch (error) { showNotice(error.message); return; } }
     setButtonBusy(choose, true, "正在安全暂存");
     try { const staged = await stageInferenceInput({ body: file, filename: file.name, contentType: file.type || (sampleType === "audio" ? "audio/wav" : "application/octet-stream"), sampleType }); await continueWithInferenceInput(staged, checkpoint); }
     catch (error) { showNotice(`新样本暂存失败：${error.message}`); }
@@ -3060,19 +4007,22 @@ function appendInferenceInputActions(actions, checkpoint) {
   actions.append(picker, choose, hint);
 }
 function renderHumanCheckpoint(item, { interactive = true, target = ui.messageList } = {}) {
-  const card = document.createElement("article"); card.className = "decision-card human-checkpoint"; card.dataset.status = item.status; card.dataset.interactionKind = "human-checkpoint"; if (item.rpc_id) card.dataset.rpcId = item.rpc_id; card.tabIndex = -1; const pending = item.status === "pending" || item.status === "waiting" || !item.status; const discussing = state.messageSubmission?.status === "sending" && state.messageSubmission?.checkpoint_rpc_id === item.rpc_id; const canRespond = pending && interactive && state.runtimeReady && !discussing; card.dataset.interactive = String(canRespond); const uploadCheckpoint = canRespond ? dataUploadQuestionCheckpoint(item) : null; const inferenceCheckpoint = canRespond ? inferenceInputQuestionCheckpoint(item) : null; const approval = item.kind === "approval" ? approvalPresentation(item) : null;
+  const card = document.createElement("article"); card.className = "decision-card human-checkpoint"; card.dataset.status = item.status; card.dataset.interactionKind = "human-checkpoint"; if (item.rpc_id) card.dataset.rpcId = item.rpc_id; card.tabIndex = -1; const pending = item.status === "pending" || item.status === "waiting" || !item.status; const discussing = state.messageSubmission?.status === "sending" && state.messageSubmission?.checkpoint_rpc_id === item.rpc_id; const canRespond = pending && interactive && state.runtimeReady && state.conversation?.pending_observed !== false && !discussing; card.dataset.interactive = String(canRespond); const uploadCheckpoint = canRespond ? dataUploadQuestionCheckpoint(item) : null; const inferenceCheckpoint = canRespond ? inferenceInputQuestionCheckpoint(item) : null; const approval = item.kind === "approval" ? approvalPresentation(item) : null;
   if (uploadCheckpoint) card.classList.add("data-upload-checkpoint");
   if (inferenceCheckpoint) card.classList.add("inference-input-checkpoint");
+  const inspectMaterials = Boolean(uploadCheckpoint && materialInspectionMode());
+  const format = uploadCheckpoint ? datasetUploadFormat(state.task, uploadCheckpoint) : null;
   const cancelling = state.cancelRequestInFlight === true || backgroundCancellationPending(state.conversation);
   const kicker = document.createElement("span"); kicker.textContent = cancelling && pending ? "正在停止 · 暂不可操作" : (!interactive || !state.runtimeReady) && pending ? "连接恢复后再处理" : uploadCheckpoint ? "下一步：准备数据" : inferenceCheckpoint ? "下一步：验证新样本" : pending ? item.kind === "approval" ? "需要你的批准" : "需要你的回答" : "人工检查点已处理";
-  const title = document.createElement("h3"); title.textContent = uploadCheckpoint ? "选择数据文件，系统会先识别字段" : inferenceCheckpoint ? "选择一份没参与训练的新样本" : item.kind === "approval" ? approval.title : item.title || item.questions?.[0]?.header || "补充训练信息";
-  const copy = document.createElement("p"); copy.textContent = cancelling && pending ? "停止请求已经提交。为避免旧确认继续改变任务，本卡会在后端确认最终状态前保持只读。" : (!interactive || !state.runtimeReady) && pending ? "当前连接或观察链路不完整，这个待办可能已经变化。请先重新连接并刷新，恢复后再作答。" : uploadCheckpoint ? "选择 CSV 后，我会先读取真实表头并推荐预测列；你确认后再导入和体检，不需要手填电脑路径。" : inferenceCheckpoint ? "先提供一份全新的样本。系统只做安全暂存；协调器核对范围并征得你批准后，才会交给评测专家执行。" : item.kind === "approval" ? approval.copy : item.summary || item.questions?.[0]?.question || "请回答协调器提出的问题。"; card.append(kicker, title, copy);
-  if (item.kind === "approval") appendApprovalScope(card, item);
+  const title = document.createElement("h3"); title.textContent = inspectMaterials ? "上传材料，先检查文件和标注" : uploadCheckpoint ? format === "zip" ? "选择按类别整理的数据 ZIP" : "选择数据文件，系统会先识别字段" : inferenceCheckpoint ? "选择一份没参与训练的新样本" : item.kind === "approval" ? approval.title : item.title || item.questions?.[0]?.header || "补充训练信息";
+  const copy = document.createElement("p"); copy.textContent = cancelling && pending ? "停止请求已经提交。为避免旧确认继续改变任务，本卡会在后端确认最终状态前保持只读。" : (!interactive || !state.runtimeReady) && pending ? "当前连接或观察链路不完整，这个待办可能已经变化。请先重新连接并刷新，恢复后再作答。" : inspectMaterials ? "选择 CSV、JSONL 或 ZIP，系统会生成只读材料检查报告；这不会创建训练数据集、启动训练或批准执行。" : uploadCheckpoint ? format === "zip" ? "每个类别放在一个子目录，再将这些目录打包为 ZIP。系统会检查文件、标签、样本数量和重复情况。" : "选择 CSV 后，我会先读取真实表头并推荐预测列；你确认后再导入和体检，不需要手填电脑路径。" : inferenceCheckpoint ? "先提供一份全新的样本。系统只做安全暂存；协调器核对范围并征得你批准后，才会交给评测专家执行。" : item.kind === "approval" ? approval.copy : item.summary || item.questions?.[0]?.question || "请回答协调器提出的问题。"; card.append(kicker, title, copy);
+  if (item.kind === "approval") { copy.setAttribute("style", "white-space: pre-line"); appendApprovalScope(card, item); }
   if (canRespond && item.rpc_id) {
     const actions = document.createElement("div"); actions.className = "decision-actions";
     if (item.kind === "approval") { const allow = document.createElement("button"); allow.type = "button"; allow.textContent = approval.allow; const reject = document.createElement("button"); reject.type = "button"; reject.textContent = approval.reject; allow.addEventListener("click", () => answerApproval(item, "allowed-once", allow)); reject.addEventListener("click", () => answerApproval(item, "rejected", reject)); actions.append(allow, reject); }
     else if (uploadCheckpoint) {
-      actions.classList.add("data-upload-actions"); const choose = document.createElement("button"); choose.type = "button"; choose.className = "checkpoint-upload-button"; choose.textContent = state.task?.recipe_id === "tabular-regression" ? "选择 CSV 文件" : "选择 CSV 或 ZIP 文件"; choose.addEventListener("click", () => { ui.datasetInput.value = ""; ui.datasetInput.click(); }); const hint = document.createElement("small"); hint.textContent = "页面不会展示本机路径；协调器只会收到导入后的数据集编号和你选择的预测列。"; actions.append(choose, hint);
+      actions.classList.add("data-upload-actions"); const choose = document.createElement("button"); choose.type = "button"; choose.className = "checkpoint-upload-button"; choose.textContent = inspectMaterials ? "选择材料文件" : format === "zip" ? "选择 ZIP 文件" : format === "csv" ? "选择 CSV 文件" : "选择 CSV 或 ZIP 文件"; choose.addEventListener("click", () => { ui.datasetInput.accept = inspectMaterials ? ".csv,.jsonl,.zip" : format === "zip" ? ".zip" : format === "csv" ? ".csv" : ".csv,.zip"; ui.datasetInput.value = ""; ui.datasetInput.click(); }); const hint = document.createElement("small"); hint.textContent = inspectMaterials ? "检查完成后会把真实材料编号交给 AI 读取报告；不会将它当作训练数据集编号。" : format === "zip" ? "页面不会展示本机路径；协调器会收到导入后的数据集编号并读取体检摘要。" : "页面不会展示本机路径；协调器会收到导入后的数据集编号、你选择的预测列，并读取字段与体检摘要。"; actions.append(choose, hint);
+      if (!inspectMaterials) (state.materialsOwnerId === state.selectedTaskId ? state.materialInspections || [] : []).forEach(record => appendReusableMaterialButton(actions, record));
     } else if (inferenceCheckpoint) appendInferenceInputActions(actions, inferenceCheckpoint);
     else {
       const question = item.questions?.length === 1 ? item.questions[0] : null; const options = question?.options || []; const inline = question && !question.multiSelect && options.length >= 2 && options.length <= 4;
@@ -3083,7 +4033,7 @@ function renderHumanCheckpoint(item, { interactive = true, target = ui.messageLi
       } else { const answer = document.createElement("button"); answer.type = "button"; answer.textContent = "填写回答"; answer.addEventListener("click", () => openQuestionDialog(item)); actions.append(answer); }
     }
     card.append(actions);
-    const discussion = document.createElement("p"); discussion.className = "checkpoint-discussion-hint"; discussion.textContent = "也可以在下方继续提问或修改想法。发送消息会暂缓此检查点，不会批准执行或代填答案；讨论后需要时会重新确认。"; card.append(discussion);
+    const discussion = document.createElement("p"); discussion.className = "checkpoint-discussion-hint"; discussion.textContent = "也可以在下方讨论；发送消息会暂缓当前操作，不会代你批准。"; card.append(discussion);
   }
   appendObjectRefs(card, item.object_refs); target.append(card);
 }
@@ -3092,13 +4042,37 @@ function terminalEventScope(item) {
   if (item.session_id !== item.root_session_id) return "specialist";
   return item.delegation_id ? "unknown" : "root";
 }
+function providerErrorPresentation(item, { turnStopped = false } = {}) {
+  const errors = [item?.error, item?.payload?.error].filter(error => error && typeof error === "object");
+  const texts = [item?.summary, item?.text, item?.reason, item?.payload?.text, ...errors.map(error => error.message), typeof item?.error === "string" ? item.error : null].filter(text => typeof text === "string" && text.trim());
+  const explicitBalance = texts.some(text => /\binsufficient[ _-]+balance\b/i.test(text)) || errors.some(error => /^insufficient[_-]balance$/i.test(error.code || ""));
+  const nativeModelError = ["turn_error", "failed"].includes(item?.kind) || errors.some(error => ["dsh_turn_end", "dsh_event", "provider", "model_provider"].includes(error.source));
+  const providerStatus = nativeModelError && errors.some(error => [error.status, error.status_code, error.http_status].some(status => status === 402));
+  const contextOverflow = nativeModelError && (errors.some(error => ["CONTEXT_WINDOW_EXCEEDED", "CONTEXT_BUDGET"].includes(error.code)) || texts.some(text => /model input exceeds (?:the verified|the route) text budget|context window exceeded/i.test(text)));
+  const missingModelKey = nativeModelError && texts.some(text => /no API key for provider route/i.test(text));
+  if (!explicitBalance && !providerStatus && !contextOverflow && !missingModelKey) return null;
+  const technical = [...new Set([...texts, ...errors.flatMap(error => [
+    ...["status", "status_code", "http_status", "code", "request_id", "requestId"].filter(key => error[key] !== undefined && error[key] !== null).map(key => `${key}: ${String(error[key])}`),
+  ])])].join("\n");
+  if (contextOverflow) return { title: "这段对话暂时无法继续", message: "这段对话超过模型的处理预算，本次回复未完成。已保存的任务和模型仍可查看，可以重试继续。", technical };
+  if (missingModelKey) return { title: "AI 服务尚未配置完成", message: "当前选择的 AI 服务缺少登录或密钥配置，本次回复未完成。请检查服务配置后继续；已有材料和模型会保留。", technical };
+  return { title: "模型账户余额不足", message: turnStopped ? "模型账户余额不足，当前回合已停止；恢复额度后继续。" : "模型账户余额不足，本次模型调用未完成；恢复额度后继续。", technical };
+}
+function appendProviderErrorDetails(container, presentation) {
+  if (!presentation?.technical) return;
+  const details = document.createElement("details"); details.className = "provider-error-details";
+  const summary = document.createElement("summary"); summary.textContent = "技术详情";
+  const copy = document.createElement("pre"); copy.textContent = presentation.technical;
+  details.append(summary, copy); container.append(details);
+}
 function renderTurnTerminal(item, target = ui.messageList) {
   const scope = terminalEventScope(item);
+  const provider = item.kind === "turn_error" ? providerErrorPresentation(item, { turnStopped: scope === "root" }) : null;
   if (scope !== "root") {
     const card = document.createElement("details"); card.className = "turn-terminal"; card.dataset.status = item.kind === "turn_cancelled" ? "cancelled" : "failed"; card.dataset.terminalScope = scope;
     const title = document.createElement("summary"); title.textContent = scope === "specialist" ? `${roleLabel(item.actor_role)}的本次执行${item.kind === "turn_cancelled" ? "已停止" : "失败"}` : "执行终止记录（归属待核对）";
-    const copy = document.createElement("p"); copy.textContent = `这是${scope === "specialist" ? "专家执行" : "归属未确认的执行"}记录，不代表协调器回合已停止。原始原因：${item.summary || item.reason || item.error?.message || "运行时未提供原因"}`;
-    card.append(title, copy); appendObjectRefs(card, item.object_refs); target.append(card); return;
+    const copy = document.createElement("p"); copy.textContent = `这是${scope === "specialist" ? "专家执行" : "归属未确认的执行"}记录，不代表协调器回合已停止。${provider?.message || `原始原因：${item.summary || item.reason || item.error?.message || "运行时未提供原因"}`}`;
+    card.append(title, copy); appendProviderErrorDetails(card, provider); appendObjectRefs(card, item.object_refs); target.append(card); return;
   }
   const reasonCode = item.reason_code || item.cancellation_reason || item.error?.code || "";
   if (item.kind === "turn_cancelled" && item.payload?.reason === "checkpoint_discussion") {
@@ -3106,7 +4080,7 @@ function renderTurnTerminal(item, target = ui.messageList) {
     note.textContent = "已暂缓这次确认，继续讨论；没有提交答案或批准。"; target.append(note); return;
   }
   const cancelledTitles = { user_cancelled: "你已停止本轮智能体", safety_stop: "安全检查停止了本轮执行", tool_rejected: "关键操作未获批准，本轮已停止", timeout: "等待超时，本轮已停止", stopped_with_checkpoint: "本轮已停在人工确认点" };
-  const card = document.createElement("article"); card.className = "turn-terminal"; card.dataset.status = item.kind === "turn_cancelled" ? reasonCode || "stopped" : "failed"; const title = document.createElement("b"); title.textContent = item.kind === "turn_cancelled" ? cancelledTitles[reasonCode] || "本轮智能体已停止" : "本轮智能体执行失败"; const copy = document.createElement("p"); copy.textContent = item.summary || item.reason || item.error?.message || "运行时没有提供失败原因。"; card.append(title, copy); appendObjectRefs(card, item.object_refs); appendRecoveryActions(card, item); target.append(card);
+  const card = document.createElement("article"); card.className = "turn-terminal"; card.dataset.status = item.kind === "turn_cancelled" ? reasonCode || "stopped" : "failed"; const title = document.createElement("b"); title.textContent = item.kind === "turn_cancelled" ? cancelledTitles[reasonCode] || "本轮智能体已停止" : provider?.title || "本轮智能体执行失败"; const copy = document.createElement("p"); copy.textContent = provider?.message || item.summary || item.reason || item.error?.message || "运行时没有提供失败原因。"; card.append(title, copy); appendProviderErrorDetails(card, provider); appendObjectRefs(card, item.object_refs); appendRecoveryActions(card, item); target.append(card);
 }
 function renderEvidenceLedger(item, target = ui.messageList) {
   const details = document.createElement("details"); details.className = "evidence-ledger"; const summary = document.createElement("summary"); const copy = document.createElement("span"); const title = document.createElement("b"); title.textContent = "任务证据记录"; const hint = document.createElement("small"); hint.textContent = "由持久化任务状态生成，不代表智能体发言"; copy.append(title, hint); const count = document.createElement("em"); count.textContent = `${item.items?.length || 0} 条`; summary.append(copy, count); details.append(summary); const list = document.createElement("div"); list.className = "evidence-ledger-list"; (item.items || []).forEach((record) => renderSystemRecord(record, list)); details.append(list); target.append(details);
@@ -3125,6 +4099,7 @@ function objectRefEndpoint(ref) {
   const taskId = encodeURIComponent(state.selectedTaskId || ""); const id = encodeURIComponent(String(ref?.id || ref?.object_id || "")); const type = normalizeObjectRefType(ref?.type); const runId = encodeURIComponent(String(ref?.run_id || ""));
   if (!taskId || !id) return null;
   if (type === "model_source_search") return `/tasks/${taskId}/model-source-searches/${id}`;
+  if (type === "execution_proposal") return `/tasks/${taskId}/execution-proposals/${id}`;
   if (type === "model_source_resolution") return `/tasks/${taskId}/model-source-resolutions/${id}`;
   if (type === "model_binding") return `/tasks/${taskId}/model-bindings/${id}`;
   if (type === "model_binding_attempt") return `/tasks/${taskId}/model-binding-attempts/${id}`;
@@ -3143,8 +4118,13 @@ function objectRefEndpoint(ref) {
 }
 function objectViewerPresentation(ref, payload) {
   const type = normalizeObjectRefType(ref?.type);
+  if (type === "execution_proposal" && payload?.proposal) {
+    const proposal = payload.proposal, qualification = payload.qualification || proposal.qualification, bundle = proposal.execution_spec?.bundle || {};
+    return { title: "工程方案与验证", rows: [["方案状态", ({ proposed: "代码已保存", qualifying: "隔离验证中", qualified: "隔离验证通过", qualification_failed: "隔离验证未通过", activated: "已启用，训练仍需单独确认" })[proposal.status] || proposal.status], ["代码文件", `${Object.keys(bundle.files || {}).length} 份`], ["运行镜像", bundle.image || "未记录"], ["资源限制", `${formatBytes(bundle.limits?.memory_bytes)} · ${bundle.limits?.cpus ?? "—"} CPU · ${bundle.limits?.timeout_seconds ?? "—"} 秒`], ["验证状态", qualification?.status || "未验证"], ["验证问题", qualification?.failure || "未记录问题"]], note: "工程验证与正式训练分别记录；日志、检查和源代码可在原始证据中核对。", files: Object.keys(bundle.files || {}) };
+  }
   if (type === "blocker" && payload?.blocker) {
     const blocker = payload.blocker;
+    if (["recipe_unavailable", "verified_recipe_unavailable"].includes(blocker.code)) return { title: "方案匹配记录", rows: [["匹配结果", "当时未匹配到现成训练方案"], ["下一步", "继续准备训练路线、数据要求和资源预算"], ["记录阶段", blocker.stage || "未记录"], ["本记录是否授予运行许可", "否"]], note: "这份记录保留目录匹配事实；目标仍可继续准备方案，实际运行需单独核验与批准。原始代码与身份见技术详情。", files: [] };
     return { title: "当前阻断原因", rows: [["诊断结果", blocker.message || "未记录原因"], ["阻断类型", blocker.code || "未记录"], ["发生阶段", blocker.stage || "未记录"], ["是否允许创建训练", blocker.rule?.run_creation_allowed === false ? "不允许" : "须另行核对执行门槛"]], note: "阻断证据说明当前不能继续的原因，不是训练成功。复核或更换方案不会自动获得执行许可。", files: [] };
   }
   if (type === "inference_input" && payload?.inference_input) {
@@ -3160,7 +4140,7 @@ function objectViewerPresentation(ref, payload) {
       ["文件大小", Number.isFinite(bundle.archive?.size_bytes) ? `${(bundle.archive.size_bytes / 1024).toFixed(1)} KB` : "未记录"],
       ["文件数量", `${files.length} 项（另附清单）`],
       ["发布审阅", bundle.release_ready === true ? "评测允许进入审阅，尚不代表已发布" : "未确认满足发布门槛"],
-    ], note: privacyKnown ? "清单确认未打包原始数据、最终测试集引用或内部运行状态。模型本身仍需按数据使用要求管理。" : "隐私排除项未完整确认，请展开原始证据核对后再分享。", files: files.map((file) => file.path) };
+    ], note: privacyKnown ? "清单确认未打包原始数据文件、最终测试集引用文件或内部运行状态。模型内部的数据上下文仍需单独审查。" : "隐私排除项未完整确认，请展开原始证据核对后再分享。", files: files.map((file) => file.path) };
   }
   if (type === "evaluation_report" && payload?.evaluation_report) {
     const report = payload.evaluation_report; const checks = Array.isArray(report.integrity_checks) ? report.integrity_checks : []; const gates = Object.entries(report.metric_gates || {});
@@ -3202,6 +4182,7 @@ function setObjectViewerState(ref, { stateLabel, summary, payload = null }) {
 }
 function returnedObjectMatchesRef(ref, payload) {
   const type = normalizeObjectRefType(ref?.type);
+  if (type === "execution_proposal") { const proposal = payload?.proposal; return Boolean(proposal && proposal.task_id === ref.task_id && proposal.proposal_id === ref.id && proposal.proposal_sha256 === ref.digest); }
   if (type === "blocker") { const blocker = payload?.blocker; return Boolean(blocker && blocker.task_id === ref.task_id && blocker.blocker_id === ref.id && typeof ref.digest === "string" && /^[a-f0-9]{64}$/.test(ref.digest) && blocker.content_digest === ref.digest); }
   if (type === "inference_input") { const input = payload?.inference_input; return Boolean(input && payload?.task?.task_id === ref.task_id && payload?.run_id === ref.run_id && input.task_id === ref.task_id && input.run_id === ref.run_id && input.inference_input_id === ref.id && input.sha256 === ref.digest); }
   if (!TERMINAL_RESULT_REF_TYPES.has(type)) return true;
@@ -3238,13 +4219,17 @@ function appendObjectRefs(container, refs = []) {
   unique.forEach((ref) => { const label = ref.label || `${ref.type || "对象"} · ${shortId(ref.id || ref.object_id || ref.digest)}`; if (typeof ref.url === "string" && (/^https?:\/\//.test(ref.url) || ref.url.startsWith("/"))) { const link = document.createElement("a"); link.href = ref.url; link.textContent = label; list.append(link); } else { const button = document.createElement("button"); button.type = "button"; button.textContent = label; button.addEventListener("click", () => openObjectRef(ref)); list.append(button); } }); container.append(list);
 }
 async function submitMessage(message) {
-  const text = message.trim(); if (!text) return; let attemptedTaskId = state.selectedTaskId; clearComposerRetry("message"); hideNotice(); ui.sendButton.disabled = true; ui.sendButton.dataset.busy = "true";
+  const text = message.trim(); if (!text) return;
+  if (state.selectionLoadingOwnerId && state.selectionLoadingOwnerId === state.selectedTaskId) { saveDraft(); showNotice("正在加载当前对话，草稿已保留；加载完成后再发送。", "ok"); return; }
+  let attemptedTaskId = state.selectedTaskId; clearComposerRetry("message"); hideNotice(); ui.sendButton.disabled = true; ui.sendButton.dataset.busy = "true";
   try {
     if (!state.runtimeReady) { if (state.runtimeIssue === "provider") showRuntimeSetupNotice("模型服务尚未配置。请先在本机为 Specialist Model Studio 配置 DeepSeek API Key，然后重新启动；在此之前不会创建训练任务。"); else showNotice("AI 未连接：没有创建或修改任务，也没有启动固定流程替代对话。请先恢复连接。", "error"); return; }
+    if (state.conversation?.execution_state_observed === false) { showNotice("当前显示已保存的对话记录；请恢复连接后再发送，草稿会保留。", "ok"); return; }
     if (state.cancelRequestInFlight || backgroundCancellationPending(state.conversation)) { showNotice("当前执行正在停止。为避免新消息与取消请求发生竞态，请等待后端确认最终状态。", "ok"); return; }
     if (!state.selectedTaskId) {
       showNotice("正在开始对话…", "ok");
       const creation = beginTaskCreationSubmission(text);
+      const pendingAttachment = state.composerAttachment?.task_id ? null : state.composerAttachment;
       try {
         const created = await request("/conversations", {
           method: "POST",
@@ -3265,9 +4250,10 @@ async function submitMessage(message) {
         const conversationId = created.conversation.conversation_id; attemptedTaskId = conversationId; creation.task_id = conversationId;
         state.pendingMessage = { task_id: conversationId, text, time: Date.now() };
         state.messageSubmission = null;
-        clearDraft(null); ui.messageInput.value = ""; resizeComposer(); await selectConversation(conversationId, { saveCurrentDraft: false, record: created.conversation });
+        clearDraft(null); ui.messageInput.value = ""; resizeComposer(); await selectConversation(conversationId, { saveCurrentDraft: false, record: created.conversation, pendingAttachment });
         clearComposerRetry("message"); clearDraft(conversationId); if (state.selectedTaskId === conversationId) { ui.messageInput.value = ""; resizeComposer(); }
-        showTransientNotice(created.created === false ? "对话已恢复，AI 正在继续处理。" : "对话已开始，AI 正在理解你的需求。", "ok");
+        hideNotice();
+        await resumeNewConversationAttachment(pendingAttachment, conversationId);
         window.setTimeout(() => refreshSelected({ force: true }), 250); return;
       } catch (error) {
         const detail = error?.payload?.detail;
@@ -3277,9 +4263,10 @@ async function submitMessage(message) {
       }
     }
     const checkpoint = currentHumanCheckpoint(state.conversation);
-    const taskId = state.selectedTaskId; attemptedTaskId = taskId; const queuedAfterTurn = conversationAgentResponseRunning(state.conversation);
+    const taskId = state.selectedTaskId; attemptedTaskId = taskId;
     await postQueuedConversationMessage(taskId, text); clearComposerRetry("message"); clearDraft(taskId); if (state.selectedTaskId === taskId) { ui.messageInput.value = ""; resizeComposer(); }
-    showTransientNotice(checkpoint ? "已暂缓当前确认，AI 将先回应你的消息；没有批准执行或提交答案。" : queuedAfterTurn ? "消息已排队，将在本轮结束后继续。" : "消息已发给 AI。", "ok"); window.setTimeout(() => refreshSelected({ force: true }), 250);
+    if (checkpoint) showTransientNotice("已暂缓当前确认，AI 将先回应你的消息；没有批准执行或提交答案。", "ok");
+    window.setTimeout(() => refreshSelected({ force: true }), 250);
   } catch (error) {
     if (state.pendingMessage?.task_id === state.selectedTaskId) state.pendingMessage = null;
     const failedSubmission = state.messageSubmission?.status === "failed" ? state.messageSubmission : null;
@@ -3297,7 +4284,7 @@ async function submitMessage(message) {
       } });
     } else { clearComposerRetry("message"); showNotice(`${error.message}。任务事实不会被伪造；请先刷新任务确认服务端是否已创建记录。`); }
   }
-  finally { ui.sendButton.disabled = !state.runtimeReady || state.cancelRequestInFlight === true || backgroundCancellationPending(state.conversation); ui.sendButton.dataset.busy = "false"; }
+  finally { ui.sendButton.disabled = !state.runtimeReady || Boolean(state.selectionLoadingOwnerId && state.selectionLoadingOwnerId === state.selectedTaskId) || state.conversation?.execution_state_observed === false || state.cancelRequestInFlight === true || backgroundCancellationPending(state.conversation); ui.sendButton.dataset.busy = "false"; syncComposerDelivery(); }
 }
 function deriveTaskName(message) {
   const firstSentence = String(message || "").split(/[。！？!?]/u)[0] || "";
@@ -3313,19 +4300,29 @@ function deriveTaskName(message) {
 }
 function openSimpleDialog({ kicker, title, body, allowLabel, onAllow }) {
   clear(ui.dialogBody); clear(ui.dialogActions); ui.dialogKicker.textContent = kicker; ui.dialogTitle.textContent = title; const copy = document.createElement("p"); copy.textContent = body; ui.dialogBody.append(copy);
-  const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "reject"; cancel.textContent = "取消"; cancel.addEventListener("click", () => ui.decisionDialog.close());
-  const allow = document.createElement("button"); allow.type = "button"; allow.className = "allow"; allow.textContent = allowLabel; allow.addEventListener("click", async () => { setButtonBusy(allow, true, "执行中"); try { await onAllow(); ui.decisionDialog.close(); } catch (error) { showNotice(error.message); } finally { setButtonBusy(allow, false, ""); } });
+  const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "reject"; cancel.textContent = "取消"; cancel.addEventListener("click", closeDecisionDialog);
+  const allow = document.createElement("button"); allow.type = "button"; allow.className = "allow"; allow.textContent = allowLabel;
+  allow.addEventListener("click", async () => {
+    if (allow.disabled) return;
+    const controls = [...ui.dialogActions.querySelectorAll("button")];
+    const disabledBefore = new Map(controls.map((control) => [control, control.disabled]));
+    controls.forEach((control) => { control.disabled = true; }); setButtonBusy(allow, true, "执行中");
+    try { await onAllow(); ui.decisionDialog.close(); }
+    catch (error) { showNotice(error.message); }
+    finally { setButtonBusy(allow, false, ""); controls.forEach((control) => { control.disabled = disabledBefore.get(control); }); }
+  });
   ui.dialogActions.append(cancel, allow); ui.decisionDialog.showModal();
 }
 function syncCancelRequestUi(conversation = state.conversation) {
   const cancelling = state.cancelRequestInFlight === true || backgroundCancellationPending(conversation);
-  ui.cancelAgentButton.disabled = cancelling;
+  ui.cancelAgentButton.disabled = cancelling || state.conversation?.execution_state_observed === false;
   ui.cancelAgentButton.textContent = cancelling ? "取消中" : "停止执行";
   ui.cancelAgentButton.setAttribute("aria-label", cancelling ? "正在请求停止当前智能协作与任务后台动作" : "请求停止当前智能协作与任务后台动作");
   const inlineCancelButtons = [...ui.messageList.querySelectorAll("[data-ai-turn-cancel]")];
   inlineCancelButtons.forEach((button) => { button.disabled = cancelling; button.textContent = cancelling ? "正在停止" : "停止"; });
   ui.messageInput.disabled = cancelling;
-  ui.sendButton.disabled = !state.runtimeReady || cancelling;
+  ui.sendButton.disabled = !state.runtimeReady || Boolean(state.selectionLoadingOwnerId && state.selectionLoadingOwnerId === state.selectedTaskId) || state.conversation?.execution_state_observed === false || cancelling;
+  if (state.selectionLoadingOwnerId && state.selectionLoadingOwnerId === state.selectedTaskId) { renderSelectionLoading(); return; }
   if (!cancelling) { delete ui.agentWorking.dataset.status; syncConversationComposerPlaceholder(conversation, state.task); return; }
   ui.messageInput.placeholder = "正在停止当前执行，请等待后端确认…";
   ui.agentWorking.hidden = inlineCancelButtons.length > 0;
@@ -3335,24 +4332,27 @@ function syncCancelRequestUi(conversation = state.conversation) {
 function openCancelAgentDialog() {
   if (!state.selectedTaskId || state.cancelRequestInFlight) return;
   if (backgroundCancellationPending(state.conversation)) { showNotice("停止请求已经记录，正在等待当前智能协作与任务后台动作确认；无需重复提交。", "ok"); return; }
+  const taskId = state.selectedTaskId;
   clear(ui.dialogBody); clear(ui.dialogActions); ui.dialogKicker.textContent = "停止当前执行"; ui.dialogTitle.textContent = "请求停止当前任务的执行？";
   const copy = document.createElement("p"); copy.textContent = "确认后会请求停止当前智能协作，以及这个任务所属的排队中或运行中后台动作。最终是否全部停止以任务状态为准。";
-  const field = document.createElement("label"); field.className = "cancel-reason-field"; const label = document.createElement("span"); label.textContent = "取消理由"; const reason = document.createElement("textarea"); reason.rows = 3; reason.maxLength = 500; reason.placeholder = "例如：需求需要调整，先停止当前执行"; field.append(label, reason); ui.dialogBody.append(copy, field);
-  const back = document.createElement("button"); back.type = "button"; back.className = "reject"; back.textContent = "返回"; back.addEventListener("click", () => ui.decisionDialog.close());
-  const allow = document.createElement("button"); allow.type = "button"; allow.className = "allow"; allow.textContent = "请求取消"; allow.disabled = true;
-  reason.addEventListener("input", () => { allow.disabled = !reason.value.trim(); });
+  const field = document.createElement("label"); field.className = "cancel-reason-field"; const label = document.createElement("span"); label.textContent = "停止原因（可选）"; const reason = document.createElement("textarea"); reason.rows = 3; reason.maxLength = 500; reason.placeholder = "如需补充原因，可以写在这里"; field.append(label, reason); ui.dialogBody.append(copy, field);
+  const back = document.createElement("button"); back.type = "button"; back.className = "reject"; back.textContent = "返回"; back.addEventListener("click", closeDecisionDialog);
+  const allow = document.createElement("button"); allow.type = "button"; allow.className = "allow"; allow.textContent = "停止当前执行"; allow.disabled = false;
   allow.addEventListener("click", async () => {
-    const cancelReason = reason.value.trim(); if (!cancelReason) { showNotice("请先填写取消理由。", "error"); return; }
+    if (state.cancelRequestInFlight || allow.disabled) return;
+    if (state.selectedTaskId !== taskId) { ui.decisionDialog.close(); showNotice("当前任务已经变化，请在对应任务中重新点击停止。", "ok"); return; }
+    const cancelReason = reason.value.trim() || "用户请求停止当前执行";
+    back.disabled = true; reason.disabled = true;
     state.cancelRequestInFlight = true; syncCancelRequestUi(); setButtonBusy(allow, true, "取消中");
     try {
-      await request(conversationTransportPath(state.selectedTaskId, "cancel"), { method: "POST", json: { reason: cancelReason } });
+      await request(conversationTransportPath(taskId, "cancel"), { method: "POST", json: { reason: cancelReason } });
       ui.decisionDialog.close(); showNotice("停止请求已被接受，正在确认当前智能协作与任务后台动作的最终状态。", "ok");
       try { await refreshSelected({ force: true }); } catch (refreshError) { showNotice(`取消请求已提交，但状态刷新失败：${refreshError.message}。请手动刷新确认最终状态。`, "error"); }
     } catch (error) {
       showNotice(`停止请求失败：${error.message}。当前智能协作和后台动作是否停止尚未确认，请刷新后重试。`, "error");
-    } finally { state.cancelRequestInFlight = false; setButtonBusy(allow, false, ""); renderConversation(true); }
+    } finally { state.cancelRequestInFlight = false; setButtonBusy(allow, false, ""); back.disabled = false; reason.disabled = false; renderConversation(true); }
   });
-  ui.dialogActions.append(back, allow); ui.decisionDialog.showModal(); window.requestAnimationFrame(() => reason.focus());
+  ui.dialogActions.append(back, allow); ui.decisionDialog.showModal(); window.requestAnimationFrame(() => allow.focus());
 }
 function navigateToTrainingRecoveryCheckpoint() {
   const taskId = state.selectedTaskId; const result = state.task?.current_result;
@@ -3368,9 +4368,24 @@ function navigateToTrainingRecoveryCheckpoint() {
   ui.messageInput.focus();
   showNotice(`请在对话中让训练协调器核对旧 Run ${shortId(result.run_id)} 的失败证据并提出恢复方案。只有随后出现的 HumanCheckpoint 才能授权创建新 Run。`, "ok");
 }
-async function answerApproval(item, outcome, button) { setButtonBusy(button, true, "提交中"); try { await request(conversationTransportPath(state.selectedTaskId, "approvals", item.rpc_id), { method: "POST", json: { outcome } }); await refreshSelected({ force: true }); } catch (error) { showNotice(error.message); } finally { setButtonBusy(button, false, ""); } }
+async function answerApproval(item, outcome, button) {
+  if (state.selectionLoadingOwnerId && state.selectionLoadingOwnerId === state.selectedTaskId) return;
+  if (item?.task_id && item.task_id !== state.selectedTaskId) return;
+  if (!(state.conversation?.pending || []).some(checkpoint => checkpoint.rpc_id === item?.rpc_id)) return;
+  const taskId = state.selectedTaskId; const identity = `${taskId}:${item.rpc_id}`;
+  if (state.approvalSubmission === identity) return;
+  state.approvalSubmission = identity;
+  const controls = [...(button.closest?.(".decision-actions")?.querySelectorAll("button") || [button])];
+  const disabledBefore = new Map(controls.map((control) => [control, control.disabled]));
+  controls.forEach((control) => { control.disabled = true; }); setButtonBusy(button, true, "提交中");
+  try { await request(conversationTransportPath(taskId, "approvals", item.rpc_id), { method: "POST", json: { outcome } }); if (state.selectedTaskId === taskId) await refreshSelected({ force: true }); }
+  catch (error) { showNotice(error.message); }
+  finally { setButtonBusy(button, false, ""); controls.forEach((control) => { control.disabled = disabledBefore.get(control); }); if (state.approvalSubmission === identity) state.approvalSubmission = null; }
+}
 async function postQuestionAnswers(item, answers, { taskId = state.selectedTaskId } = {}) {
   if (!taskId || !item?.rpc_id) throw new Error("当前问题缺少任务或会话身份，无法提交回答");
+  if (state.selectionLoadingOwnerId === taskId || taskId !== state.selectedTaskId || (item.task_id && item.task_id !== taskId)) throw new Error("当前对话仍在加载或问题属于另一项任务，请加载完成后再作答");
+  if (!(state.conversation?.pending || []).some(checkpoint => checkpoint.rpc_id === item.rpc_id)) throw new Error("这个问题已不在当前对话的待办中，请刷新后再作答");
   return request(conversationTransportPath(taskId, "questions", item.rpc_id), { method: "POST", json: { answers } });
 }
 function openQuestionDialog(item) {
@@ -3402,7 +4417,7 @@ async function openTaskSpecDialog({ editing = false } = {}) {
   familyBlock.append(familyTitle, options); ui.dialogBody.append(familyBlock);
   const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "reject"; cancel.textContent = "取消"; cancel.addEventListener("click", () => ui.decisionDialog.close());
   const submit = document.createElement("button"); submit.type = "button"; submit.className = "allow"; submit.textContent = editing ? "保存新版本" : decision.status === "needs_clarification" ? "提交澄清" : "确认任务理解";
-  submit.addEventListener("click", async () => { const selected = options.querySelector("input:checked")?.value; if (!selected) { showNotice("请选择模型唯一输出形式。"); return; } if (!goalInput.value.trim()) { showNotice("业务目标不能为空。"); return; } setButtonBusy(submit, true, "保存中"); try { const response = await request(`/tasks/${encodeURIComponent(task.task_id)}/spec`, { method: "PATCH", json: { base_revision: spec.revision, selected_family: selected, business_goal: goalInput.value.trim(), confirm: true, user_note: editing ? "用户通过产品界面修订" : "用户通过产品界面确认" } }); ui.decisionDialog.close(); state.task = response.task; showNotice(response.task.status === "needs_recipe" ? "任务规格已确认，但当前没有已验证训练方案；系统不会伪造训练运行。" : `任务规格 v${response.task.current_spec_revision} 已保存，同一 task_id 保持不变。`, "ok"); await refreshSelected({ force: true }); } catch (error) { showNotice(error.message); } finally { setButtonBusy(submit, false, ""); } });
+  submit.addEventListener("click", async () => { const selected = options.querySelector("input:checked")?.value; if (!selected) { showNotice("请选择模型唯一输出形式。"); return; } if (!goalInput.value.trim()) { showNotice("业务目标不能为空。"); return; } setButtonBusy(submit, true, "保存中"); try { const response = await request(`/tasks/${encodeURIComponent(task.task_id)}/spec`, { method: "PATCH", json: { base_revision: spec.revision, selected_family: selected, business_goal: goalInput.value.trim(), confirm: true, user_note: editing ? "用户通过产品界面修订" : "用户通过产品界面确认" } }); ui.decisionDialog.close(); state.task = response.task; showNotice(response.task.status === "needs_recipe" ? "目标已确认，接下来结合已有材料准备训练路线、资源预算和验证步骤。" : `任务规格 v${response.task.current_spec_revision} 已保存，同一 task_id 保持不变。`, "ok"); await refreshSelected({ force: true }); } catch (error) { showNotice(error.message); } finally { setButtonBusy(submit, false, ""); } });
   ui.dialogActions.append(cancel, submit); ui.decisionDialog.showModal();
 }
 async function stageRecipeSamples(file) {
@@ -3436,7 +4451,17 @@ function parseDelimitedHeader(line, delimiter) {
   }
   values.push(current.trim()); return values.map((value) => value.replace(/^"|"$/gu, "")).filter(Boolean);
 }
-async function inspectCsvSchema(file) {
+async function inspectCsvSchema(file, attachment = null) {
+  const material = attachment?.source_material;
+  if (material) {
+    const taskId = state.selectedTaskId;
+    if (taskId !== material.owner_id || attachment.task_id !== taskId) throw new Error("材料不属于当前任务");
+    const schema = await request(`/tasks/${encodeURIComponent(taskId)}/materials/${encodeURIComponent(material.material_id)}/csv-schema`);
+    if (schema.owner_id !== taskId || schema.material_id !== material.material_id || schema.inspection_sha256 !== material.inspection_sha256 || schema.dataset_imported !== false || !Array.isArray(schema.columns) || schema.columns.length < 2 || typeof schema.delimiter !== "string") throw new Error("已保存材料的表头身份不一致");
+    const response = await request(`/tasks/${encodeURIComponent(taskId)}/csv-target-recommendation`, { method: "POST", json: { columns: schema.columns } });
+    const recommendation = response?.recommendation || {};
+    return { ...schema, recommendation, recommended: recommendation.status === "recommended" && schema.columns.includes(recommendation.target_column) ? recommendation.target_column : null };
+  }
   const preview = await file.slice(0, 64 * 1024).text();
   const line = preview.split(/\r?\n/u).find((candidate) => candidate.trim()) || "";
   const candidates = [",", ";", "\t", "|"];
@@ -3456,11 +4481,13 @@ async function inspectCsvSchema(file) {
   return { columns: selected.columns, delimiter: selected.delimiter, recommended, recommendation };
 }
 async function askCsvOptions(file, attachment = state.composerAttachment) {
+  const ownerId = state.selectedTaskId;
   updateComposerAttachment(attachment, { status: "validating", error: null, can_retry: false, retry_stage: null });
   clear(ui.dialogBody); clear(ui.dialogActions); ui.dialogKicker.textContent = "CSV 数据合同"; ui.dialogTitle.textContent = "确认要预测的字段";
   let schema;
-  try { schema = await inspectCsvSchema(file); }
-  catch (error) { updateComposerAttachment(attachment, { status: "failed", error: `表头校验失败：${error.message}`, retry_stage: "upload", can_retry: true }); showNotice(`读取 CSV 表头失败：${error.message}。可在文件条目中重试，仍会复用原请求身份。`); ui.datasetInput.value = ""; return; }
+  try { schema = await inspectCsvSchema(file, attachment); }
+  catch (error) { if (state.selectedTaskId !== ownerId || (attachment && state.composerAttachment !== attachment)) return; updateComposerAttachment(attachment, { status: "failed", error: `表头校验失败：${error.message}`, retry_stage: "upload", can_retry: true }); showNotice(`读取 CSV 表头失败：${error.message}。可在文件条目中重试，仍会复用原请求身份。`); ui.datasetInput.value = ""; return; }
+  if (state.selectedTaskId !== ownerId || (attachment && state.composerAttachment !== attachment)) return;
   updateComposerAttachment(attachment, { status: "pending", error: "等待选择预测目标", retry_stage: "upload", can_retry: true });
   const overview = document.createElement("section"); overview.className = "csv-schema-overview"; const fileName = document.createElement("b"); fileName.textContent = file.name; const meta = document.createElement("span"); const delimiterLabel = schema.delimiter === "\t" ? "Tab" : schema.delimiter; meta.textContent = `${formatBytes(file.size)} · 识别到 ${schema.columns.length} 个字段 · 分隔符 ${delimiterLabel}`; overview.append(fileName, meta); ui.dialogBody.append(overview);
   const targetBlock = document.createElement("section"); targetBlock.className = "question-block csv-target-block"; const targetTitle = document.createElement("b"); targetTitle.textContent = "哪一列是模型要预测的结果？"; const targetHint = document.createElement("small"); targetHint.textContent = schema.recommended ? `${schema.recommendation.message} 请核对后再导入。` : schema.recommendation.message || "任务里还没有唯一的预测目标，请手动选择后再导入。"; targetBlock.append(targetTitle, targetHint);
@@ -3504,22 +4531,73 @@ function datasetCoordinatorContinuation(targetColumn) {
   const targetNote = readableTarget ? `，预测目标是「${readableTarget}」` : "";
   return `数据已经上传好了${targetNote}。请先检查数据并给我一版容易理解的训练方案；在我确认方案和启动前，不要开始训练。`;
 }
+async function completeDatasetUpload(response, attachment, taskId, options, context) {
+  if (state.selectedTaskId !== taskId || (attachment && state.composerAttachment !== attachment)) return;
+  const receiptDatasetId = response?.dataset_upload?.dataset_id || null;
+  const datasetId = receiptDatasetId || response?.task?.dataset_id || null;
+  if (receiptDatasetId && !datasetUploadReceiptMatches(response, taskId, attachment?.request_id)) throw new Error("数据请求返回了不属于当前任务或当前请求的回执");
+  if (!datasetId || response?.task?.task_id !== taskId) throw new Error("数据请求返回成功，但缺少可核对的数据集身份");
+  if (attachment?.completion_handled) return;
+  updateComposerAttachment(attachment, { status: "ready", dataset_id: datasetId, error: null, retry_stage: null, can_retry: false, options }); activateContext("data");
+  if (attachment) {
+    attachment.completion_handled = true; attachment.continuation_in_flight = true;
+    if (attachment.source_material) { saveMaterialDatasetPending(attachment, "completed"); const continuation = materialContinuation(attachment.source_material); continuation.status = "accepted"; continuation.used_as_dataset = datasetId; storeMaterialContinuation(attachment.source_material, continuation); }
+  }
+  const activeCheckpoint = currentHumanCheckpoint(state.conversation);
+  const uploadCheckpoint = context?.kind === "question" && activeCheckpoint?.rpc_id === context.rpc_id ? dataUploadQuestionCheckpoint(activeCheckpoint) : null;
+  try {
+    if (uploadCheckpoint) {
+      const answers = dataUploadCheckpointAnswers(uploadCheckpoint, datasetId, options.targetColumn);
+      try { await postQuestionAnswers(uploadCheckpoint, answers, { taskId }); updateComposerAttachment(attachment, { continuation: null }); showNotice(options.targetColumn ? "数据已导入，预测列也已提交；协调器会从刚才的问题继续。" : "数据已导入，数据集编号已提交；协调器会从刚才的问题继续。", "ok"); }
+      catch (error) { updateComposerAttachment(attachment, { status: "ready", continuation: { kind: "question", rpc_id: uploadCheckpoint.rpc_id, answers }, retry_stage: "continuation", can_retry: true, error: `续接失败：${error.message}` }); showNotice(`数据已真实导入并完成体检（数据集 ${shortId(datasetId)}），但协调器问题续接失败：${error.message}。请不要重复上传；刷新任务后从当前问题继续。重试只会续接原问题，不会重复上传。`, "error"); }
+      return;
+    }
+    // Resume only the checkpoint or message captured before this upload. A
+    // delayed receipt must never answer a newer question or grant permission.
+    if (context?.kind === "message" && state.runtimeReady && !activeCheckpoint && datasetId) {
+      const continuationText = datasetCoordinatorContinuation(options.targetColumn);
+      try {
+        await postQueuedConversationMessage(taskId, datasetCoordinatorContinuation(options.targetColumn)); updateComposerAttachment(attachment, { continuation: null });
+        showNotice("数据已导入并完成体检。训练协调器会读取数据合同并继续完善方案；确认前不会启动训练。", "ok");
+      } catch (error) {
+        const failed = state.messageSubmission;
+        updateComposerAttachment(attachment, { status: "ready", continuation: failed?.status === "failed" ? { kind: "message", text: continuationText, request_id: failed.request_id } : null, retry_stage: failed?.status === "failed" ? "continuation" : null, can_retry: failed?.status === "failed", error: `续接失败：${error.message}` });
+        showNotice(`数据已真实导入并完成体检（数据集 ${shortId(datasetId)}），但协调器没有续接成功：${error.message}。${failed?.status === "failed" ? "文件条目会复用原消息身份重试续接，不会重复上传。" : "请刷新任务确认当前对话状态。"}`, "error");
+      }
+      return;
+    }
+    const reason = activeCheckpoint
+      ? "当前仍有一项决定等待你处理；数据合同已保留，处理后协调器再继续。"
+      : context?.kind === "question"
+        ? "原数据问题已经变化或处理，已保留数据；请按当前对话继续。"
+        : "训练协调器当前不可用，数据合同已保留；恢复连接后可在对话中继续。";
+    showNotice(`数据已真实导入并完成体检。${reason}`, "ok");
+  } finally { if (attachment) attachment.continuation_in_flight = false; }
+}
 async function uploadDataset(file, options = {}) {
   const attachment = options.attachment?.request_id ? options.attachment : state.composerAttachment?.file === file ? state.composerAttachment : null;
   const selectedOptions = { targetColumn: options.targetColumn, ignoredColumns: options.ignoredColumns, delimiter: options.delimiter };
   const taskId = state.selectedTaskId; const activeCheckpoint = currentHumanCheckpoint(state.conversation); const uploadCheckpoint = dataUploadQuestionCheckpoint(activeCheckpoint);
-  const keepPending = (message) => { updateComposerAttachment(attachment, { status: "pending", error: message, retry_stage: "upload", can_retry: true, options: selectedOptions }); showNotice(message, "ok"); };
+  const keepPending = (message) => { updateComposerAttachment(attachment, { status: "pending", error: message, retry_stage: "upload", can_retry: false, options: selectedOptions }); showNotice(message, "ok"); };
   const failUpload = (message, retryable = true) => { updateComposerAttachment(attachment, { status: "failed", error: message, retry_stage: retryable ? "upload" : null, can_retry: retryable, options: selectedOptions }); showNotice(`${message}${retryable ? "。可在文件条目中重试，仍会复用原请求身份。" : "。请先刷新任务确认服务端状态，不要重复上传。"}`, "error"); };
   const awaitReceipt = (message) => { updateComposerAttachment(attachment, { status: "pending", error: message, retry_stage: "reconcile", can_retry: true, options: selectedOptions }); showNotice(`${message}。刷新或点击“核对导入”会读取任务数据集与服务端回执；不会先把它标成失败。`, "ok"); };
   if (!taskId) { keepPending("先发送任务目标创建训练任务，再处理这个文件"); return; }
   if (attachment?.task_id && attachment.task_id !== taskId) { failUpload("文件请求不属于当前任务", false); return; }
   if (attachment && !attachment.task_id) attachment.task_id = taskId;
-  if (state.task?.capability_decision?.status !== "resolved" && !uploadCheckpoint) { keepPending("请先澄清并确认任务理解；确认前不会导入数据或启动训练"); return; }
-  if (state.task?.status === "needs_recipe") { keepPending("当前能力还没有可执行训练方案，请先完成能力扩展并确认数据导入方式"); return; }
-  const lower = file?.name.toLowerCase() || ""; if (!lower.endsWith(".zip") && !lower.endsWith(".csv")) { failUpload("当前只接受类别目录 ZIP 或 CSV；其他格式需要先扩展并验证训练能力", false); return; }
-  if (uploadCheckpoint && !lower.endsWith(".csv")) { failUpload("协调器当前正在等待表格数据，请改选 CSV 文件", false); return; }
+  const availability = datasetUploadAvailability(state.task, activeCheckpoint, taskId);
+  if (availability.blocked) { keepPending(availability.reason); return; }
+  const lower = file?.name.toLowerCase() || ""; if (!lower.endsWith(".zip") && !lower.endsWith(".csv")) { failUpload("当前数据导入入口接受类别目录 ZIP 或 CSV；其他材料可先通过材料检查用于准备训练方案", false); return; }
+  const format = datasetUploadFormat(state.task, uploadCheckpoint);
+  if (format && !lower.endsWith(`.${format}`)) { failUpload(format === "csv" ? "当前任务使用表格数据，请改选 CSV 文件" : "当前任务使用类别目录数据，请改选 ZIP 文件", false); return; }
   if (lower.endsWith(".csv") && !options.targetColumn) { void askCsvOptions(file, attachment); return; }
   updateComposerAttachment(attachment, { status: "validating", error: null, retry_stage: null, can_retry: false, options: selectedOptions });
+  if (attachment?.source_material) {
+    attachment.request_id = materialDatasetRequestId(attachment.source_material, selectedOptions, attachment);
+    if (attachment.material_dataset_needs_review) { requireMaterialDatasetReview(attachment, "上一次请求已要求重新核对"); return; }
+    saveMaterialDatasetPending(attachment);
+  }
+  const uploadContext = uploadCheckpoint ? { kind: "question", rpc_id: uploadCheckpoint.rpc_id } : !activeCheckpoint ? { kind: "message" } : { kind: "none" };
+  if (attachment && !attachment.upload_context) attachment.upload_context = uploadContext;
   hideNotice(); setButtonBusy(ui.datasetButton, true, "体检中");
   const headers = { "content-type": lower.endsWith(".csv") ? "text/csv" : "application/zip", "x-filename": encodeURIComponent(file.name) };
   if (attachment?.request_id) headers["x-request-id"] = attachment.request_id;
@@ -3528,9 +4606,19 @@ async function uploadDataset(file, options = {}) {
   if (options.delimiter) headers["x-delimiter"] = encodeURIComponent(options.delimiter);
   try {
     let response;
-    try { response = await request(`/tasks/${encodeURIComponent(taskId)}/dataset`, { method: "POST", body: file, headers }); }
+    try {
+      const material = attachment?.source_material;
+      if (material) {
+        if (!reusableDatasetMaterial(material)) throw Object.assign(new Error("材料或当前训练入口已经变化，请刷新后重试"), { status: 409 });
+        response = await request(`/tasks/${encodeURIComponent(taskId)}/dataset-from-material`, { method: "POST", json: {
+          material_id: material.material_id, inspection_sha256: material.inspection_sha256, request_id: attachment.request_id, base_spec_revision: attachment.base_spec_revision,
+          options: { ...(selectedOptions.targetColumn ? { target_column: selectedOptions.targetColumn } : {}), ...(selectedOptions.ignoredColumns ? { ignored_columns: selectedOptions.ignoredColumns.split(",").map(value => value.trim()).filter(Boolean) } : {}), ...(selectedOptions.delimiter ? { delimiter: selectedOptions.delimiter } : {}) },
+        } });
+      } else response = await request(`/tasks/${encodeURIComponent(taskId)}/dataset`, { method: "POST", body: file, headers });
+    }
     catch (error) {
-      const responseMayBeLost = !Number.isFinite(error.status) || error.status === 408 || error.status >= 500;
+      if (attachment?.source_material && error.status === 409) { requireMaterialDatasetReview(attachment, error.message); return; }
+      const responseMayBeLost = !Number.isFinite(error.status) || error.status === 0 || error.status === 408 || error.status >= 500 || (error.retryable === true && error.status < 400);
       if (responseMayBeLost && attachment?.request_id) {
         updateComposerAttachment(attachment, { status: "validating", error: "响应中断，正在核对服务端回执", retry_stage: null, can_retry: false });
         try { response = await reconcileDatasetUploadReceipt(taskId, attachment); }
@@ -3541,44 +4629,21 @@ async function uploadDataset(file, options = {}) {
       }
     }
     if (state.selectedTaskId !== taskId) return;
-    const receiptDatasetId = response?.dataset_upload?.dataset_id || null;
-    const datasetId = receiptDatasetId || response?.task?.dataset_id || null;
-    if (receiptDatasetId && !datasetUploadReceiptMatches(response, taskId, attachment?.request_id)) { failUpload("数据请求返回了不属于当前任务或当前请求的回执", false); return; }
-    if (!datasetId) { failUpload("数据请求返回成功，但缺少可核对的数据集身份", false); await refreshSelected({ force: true }); return; }
-    updateComposerAttachment(attachment, { status: "ready", dataset_id: datasetId, error: null, retry_stage: null, can_retry: false, options: selectedOptions }); activateContext("data");
-    if (uploadCheckpoint) {
-      const answers = dataUploadCheckpointAnswers(uploadCheckpoint, datasetId, options.targetColumn);
-      try { await postQuestionAnswers(uploadCheckpoint, answers, { taskId }); updateComposerAttachment(attachment, { continuation: null }); showNotice("数据已导入，预测列也已提交；协调器会从刚才的问题继续。", "ok"); }
-      catch (error) { updateComposerAttachment(attachment, { status: "ready", continuation: { kind: "question", rpc_id: uploadCheckpoint.rpc_id, answers }, retry_stage: "continuation", can_retry: true, error: `续接失败：${error.message}` }); showNotice(`数据已真实导入并完成体检（数据集 ${shortId(datasetId)}），但协调器问题续接失败：${error.message}。请不要重复上传；刷新任务后从当前问题继续。重试只会续接原问题，不会重复上传。`, "error"); }
-      await refreshSelected({ force: true }); return;
-    }
-    if (state.runtimeReady && !activeCheckpoint && datasetId) {
-      const continuationText = datasetCoordinatorContinuation(options.targetColumn);
-      try {
-        await postQueuedConversationMessage(taskId, datasetCoordinatorContinuation(options.targetColumn)); updateComposerAttachment(attachment, { continuation: null });
-        showNotice("数据已导入并完成体检。训练协调器会读取数据合同并继续完善方案；确认前不会启动训练。", "ok");
-      } catch (error) {
-        const failed = state.messageSubmission;
-        updateComposerAttachment(attachment, { status: "ready", continuation: failed?.status === "failed" ? { kind: "message", text: continuationText, request_id: failed.request_id } : null, retry_stage: failed?.status === "failed" ? "continuation" : null, can_retry: failed?.status === "failed", error: `续接失败：${error.message}` });
-        showNotice(`数据已真实导入并完成体检（数据集 ${shortId(datasetId)}），但协调器没有续接成功：${error.message}。${failed?.status === "failed" ? "文件条目会复用原消息身份重试续接，不会重复上传。" : "请刷新任务确认当前对话状态。"}`, "error");
-      }
-      await refreshSelected({ force: true }); return;
-    }
-    const reason = activeCheckpoint
-      ? "当前仍有一项决定等待你处理；数据合同已保留，处理后协调器再继续。"
-      : !datasetId
-        ? "后端没有返回可核对的数据集编号，协调器尚未自动续接。请刷新任务，不要重复上传。"
-        : "训练协调器当前不可用，数据合同已保留；恢复连接后可在对话中继续。";
-    showNotice(`数据已真实导入并完成体检。${reason}`, datasetId ? "ok" : "error"); await refreshSelected({ force: true });
+    try { await completeDatasetUpload(response, attachment, taskId, selectedOptions, attachment?.upload_context || uploadContext); }
+    catch (error) { failUpload(error.message, false); }
+    await refreshSelected({ force: true });
   } finally { setButtonBusy(ui.datasetButton, false, ""); ui.datasetInput.value = ""; }
 }
-function activateContext(name) { const requested = name === "capability" ? "plan" : name; const target = ui.contextTabs.querySelector(`[data-context="${requested}"]`); const selected = target && !target.hidden ? requested : "plan"; document.querySelectorAll("[data-context]").forEach((button) => button.classList.toggle("active", button.dataset.context === selected)); document.querySelectorAll("[data-context-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.contextPanel === selected)); ui.inspectorSheetTitle.textContent = ({ plan: "方案与证据", data: "数据证据", run: "运行现场", evaluation: "评测报告", artifacts: "交付产物" })[selected] || "方案与证据"; }
+function activateContext(name) { const requested = name === "capability" ? "plan" : name; const target = ui.contextTabs.querySelector(`[data-context="${requested}"]`); const selected = target && !target.hidden ? requested : "plan"; document.querySelectorAll("[data-context]").forEach((button) => { const active = button.dataset.context === selected; button.classList.toggle("active", active); button.setAttribute("aria-pressed", String(active)); }); document.querySelectorAll("[data-context-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.contextPanel === selected)); if (state.inspectorMode !== "object-viewer") ui.inspectorSheetTitle.textContent = ({ plan: "方案与证据", data: "数据证据", run: "运行现场", evaluation: "评测报告", artifacts: "交付产物" })[selected] || "方案与证据"; }
 function setMobileView(name) { [ui.mobileConversationButton, ui.mobileContextButton, ui.mobileResultButton].forEach((button) => { const active = button.dataset.mobileView === name; button.classList.toggle("active", active); button.setAttribute("aria-pressed", String(active)); }); }
 function mobileWorkspace() { return inspectorMedia.matches; }
 function overlayWorkspace() { return !dockedWorkspaceMedia.matches; }
 function syncInspectorIsolation() {
   const isolated = overlayWorkspace() && ui.inspector.dataset.open === "true";
-  ui.sidebar.inert = isolated; ui.conversationMain.inert = isolated; ui.mobileViewNav.inert = isolated;
+  const sidebarOffscreen = sidebarMedia.matches && ui.sidebar.dataset.open !== "true";
+  ui.sidebar.inert = isolated || sidebarOffscreen; ui.sidebar.setAttribute("aria-hidden", String(isolated || sidebarOffscreen));
+  ui.menuButton.setAttribute("aria-expanded", String(!sidebarOffscreen));
+  ui.conversationMain.inert = isolated; ui.mobileViewNav.inert = isolated;
   if (isolated) { ui.inspector.setAttribute("role", "dialog"); ui.inspector.setAttribute("aria-modal", "true"); }
   else { ui.inspector.removeAttribute("role"); ui.inspector.removeAttribute("aria-modal"); }
 }
@@ -3599,6 +4664,7 @@ function preferredWorkspacePresentation() {
   return state.workspaceProjection?.workspace?.presentation || (["executing", "result_ready", "blocked", "failed"].includes(state.workspaceProjection?.phase) ? "experience" : "technical");
 }
 function workspaceSheetTitle(context, presentation) {
+  if (pendingExecutionIntegration(state.task, state.conversation, state.workspaceProjection)) return "方案准备";
   if (presentation === "experience") return ({ executing: "执行进展", result_ready: "本轮结果", blocked: "恢复任务", failed: "恢复运行" })[state.workspaceProjection?.phase] || "任务进展";
   return ({ plan: "方案与证据", data: "数据证据", run: "运行现场", evaluation: "评测报告", artifacts: "交付产物" })[context] || "方案与证据";
 }
@@ -3611,7 +4677,7 @@ function openInspector(context = "plan", { objectRef = null, presentation = null
   if (mode === "task-workspace") {
     const chosenPresentation = presentation || preferredWorkspacePresentation(); ui.inspector.dataset.presentation = chosenPresentation; ui.workspaceExperience.hidden = false; activateContext(context); ui.inspectorSheetTitle.textContent = workspaceSheetTitle(context, chosenPresentation); state.inspectorAutoOpened = Boolean(auto);
   } else {
-    delete ui.inspector.dataset.presentation; ui.workspaceExperience.hidden = true; ui.inspectorSheetTitle.textContent = "精确证据"; state.inspectorAutoOpened = false;
+    delete ui.inspector.dataset.presentation; ui.workspaceExperience.hidden = true; ui.inspector.scrollTop = 0; ui.inspectorSheetTitle.textContent = "精确证据"; state.inspectorAutoOpened = false;
   }
   ui.inspector.dataset.open = "true"; document.body.dataset.workspace = "open"; ui.inspectorScrim.hidden = dockedWorkspaceMedia.matches; ui.workspaceToggleButton.setAttribute("aria-expanded", "true"); ui.workspaceToggleButton.setAttribute("aria-label", "关闭任务证据"); setMobileView(["evaluation", "artifacts"].includes(context) ? "result" : "context");
   syncInspectorIsolation();
@@ -3627,23 +4693,25 @@ function closeInspector({ userInitiated = false } = {}) {
   if (wasOpen && restoreTarget?.isConnected && !restoreTarget.disabled) window.requestAnimationFrame(() => restoreTarget.focus());
 }
 function openAllModelSourceCandidates() { openInspector("plan"); ui.modelSourceDiscovery.open = true; window.requestAnimationFrame(() => { ui.modelSourceCard.scrollIntoView({ block: "start", behavior: "smooth" }); if (!mobileWorkspace()) ui.modelSourceCandidates.focus({ preventScroll: true }); }); }
-function openSidebar() { ui.sidebar.dataset.open = "true"; ui.sidebarScrim.hidden = false; }
-function closeSidebar() { ui.sidebar.dataset.open = "false"; ui.sidebarScrim.hidden = true; }
+function openSidebar() { ui.sidebar.dataset.open = "true"; ui.sidebarScrim.hidden = false; syncInspectorIsolation(); }
+function closeSidebar() { ui.sidebar.dataset.open = "false"; ui.sidebarScrim.hidden = true; syncInspectorIsolation(); }
 function stopPolling() { if (state.pollTimer) window.clearInterval(state.pollTimer); state.pollTimer = null; stopConversationStream(); }
 function resizeComposer() { ui.messageInput.style.height = "auto"; ui.messageInput.style.height = `${Math.min(ui.messageInput.scrollHeight, 140)}px`; }
 
 ui.composerForm.addEventListener("submit", (event) => { event.preventDefault(); submitMessage(ui.messageInput.value); });
-ui.messageInput.addEventListener("input", () => { if (state.composerRetryKind === "message" && state.messageSubmission?.text !== ui.messageInput.value.trim()) clearComposerRetry("message"); resizeComposer(); saveDraft(); });
+ui.messageInput.addEventListener("input", () => { if (state.composerRetryKind === "message" && state.messageSubmission?.text !== ui.messageInput.value.trim()) clearComposerRetry("message"); resizeComposer(); saveDraft(); syncComposerDelivery(); });
 ui.messageInput.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); ui.composerForm.requestSubmit(); } });
 ui.composerRetryButton.addEventListener("click", invokeComposerRetry);
 ui.retryAttachmentButton.addEventListener("click", retryComposerAttachment);
 ui.removeAttachmentButton.addEventListener("click", () => clearComposerAttachment());
+ui.closeDialogButton?.addEventListener("click", closeDecisionDialog);
+ui.decisionDialog.addEventListener("cancel", (event) => { if (ui.dialogActions.querySelector('[aria-busy="true"]')) event.preventDefault(); });
 ui.newTaskButton.addEventListener("click", openNewTask); ui.refreshButton.addEventListener("click", () => state.selectedTaskId ? refreshSelected({ force: true }) : refreshHomeAvailability());
 ui.menuButton.addEventListener("click", openSidebar); ui.sidebarScrim.addEventListener("click", closeSidebar);
 ui.datasetButton.addEventListener("click", () => {
   if (state.task?.control?.next_action?.id === "stage_recipe_samples") { ui.recipeSampleInput.click(); return; }
-  ui.datasetInput.click();
-}); ui.inspectorDatasetButton.addEventListener("click", () => ui.datasetInput.click()); ui.datasetInput.addEventListener("change", () => stageComposerAttachment(ui.datasetInput.files?.[0])); ui.recipeSampleInput.addEventListener("change", () => stageRecipeSamples(ui.recipeSampleInput.files?.[0]));
+  ui.datasetInput.accept = !state.selectedTaskId || materialInspectionMode() ? ".csv,.jsonl,.zip" : datasetUploadFormat() === "zip" ? ".zip" : datasetUploadFormat() === "csv" ? ".csv" : ".csv,.zip"; ui.datasetInput.click();
+}); ui.inspectorDatasetButton.addEventListener("click", () => { ui.datasetInput.accept = materialInspectionMode() ? ".csv,.jsonl,.zip" : datasetUploadFormat() === "zip" ? ".zip" : datasetUploadFormat() === "csv" ? ".csv" : ".csv,.zip"; ui.datasetInput.click(); }); ui.datasetInput.addEventListener("change", () => stageComposerAttachment(ui.datasetInput.files?.[0])); ui.recipeSampleInput.addEventListener("change", () => stageRecipeSamples(ui.recipeSampleInput.files?.[0]));
 [
   ui.approveTrainingPlanButton,
   ui.rejectTrainingPlanButton,
@@ -3668,7 +4736,7 @@ ui.scaffoldRecipeButton.addEventListener("click", async () => {
   try {
     const result = await request(`/tasks/${encodeURIComponent(state.selectedTaskId)}/recipe/scaffold`, { method: "POST" });
     const link = document.createElement("a"); link.href = result.scaffold.download_url; link.download = result.scaffold.archive_name; document.body.append(link); link.click(); link.remove();
-    showNotice("已生成可审查的训练能力扩展包。该扩展包不会被自动执行，完成实现和测试后再注册。", "ok"); await refreshSelected({ force: true });
+    showNotice("适配器参考包已生成，可供开发者审阅；当前目标仍可在对话中继续准备方案。", "ok"); await refreshSelected({ force: true });
   } catch (error) { showNotice(error.message); }
   finally { setButtonBusy(ui.scaffoldRecipeButton, false, ""); }
 });
@@ -3678,10 +4746,12 @@ ui.retryRunButton.addEventListener("click", navigateToTrainingRecoveryCheckpoint
 ui.contextTabs.addEventListener("click", (event) => { const button = event.target.closest("[data-context]"); if (button) activateContext(button.dataset.context); });
 ui.closeInspectorButton.addEventListener("click", () => closeInspector({ userInitiated: true })); ui.inspectorScrim.addEventListener("click", () => closeInspector({ userInitiated: true }));
 ui.workspaceToggleButton.addEventListener("click", () => ui.inspector.dataset.open === "true" ? closeInspector({ userInitiated: true }) : openInspector(workspaceContextForProjection(), { presentation: preferredWorkspacePresentation() }));
-ui.workspaceTechnicalButton.addEventListener("click", () => openInspector(workspaceContextForProjection(), { presentation: "technical" }));
+ui.workspaceTechnicalButton.addEventListener("click", () => openInspector(ui.workspaceTechnicalButton.dataset.context || workspaceContextForProjection(), { presentation: "technical" }));
 ui.mobileConversationButton.addEventListener("click", () => closeInspector({ userInitiated: true })); ui.mobileContextButton.addEventListener("click", () => openInspector("plan", { presentation: "technical" })); ui.mobileResultButton.addEventListener("click", () => openInspector("evaluation", { presentation: "technical" }));
 document.addEventListener("keydown", handleInspectorKeydown);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") void refreshTaskListIfDue({ force: true }); });
 inspectorMedia.addEventListener("change", () => { syncInspectorIsolation(); if (mobileWorkspace() && ui.inspector.dataset.open === "true") window.requestAnimationFrame(() => ui.closeInspectorButton.focus()); });
+sidebarMedia.addEventListener("change", syncInspectorIsolation);
 dockedWorkspaceMedia.addEventListener("change", () => {
   if (!dockedWorkspaceMedia.matches && state.inspectorAutoOpened && ui.inspector.dataset.open === "true") closeInspector({ userInitiated: false });
   if (ui.inspector.dataset.open === "true") ui.inspectorScrim.hidden = dockedWorkspaceMedia.matches;
@@ -3696,7 +4766,7 @@ document.querySelectorAll("[data-prompt]").forEach((button) => button.addEventLi
 }));
 
 async function boot() {
-  restoreDraft(null); window.setInterval(() => syncAiTurnElapsedLabels(), 1000);
+  restoreDraft(null); window.setInterval(() => { syncAiTurnElapsedLabels(); void refreshTaskListIfDue(); }, 1000);
   const results = await Promise.allSettled([loadRuntime(), loadHfCapability(), loadModelSourceProviders(), loadTaskSpecFamilies(), loadTasks({ selectFromUrl: true })]);
   const tasksFailure = results[4].status === "rejected" ? results[4].reason : null;
   if (!state.selectedTaskId) enterHomeState({ focusComposer: false });
