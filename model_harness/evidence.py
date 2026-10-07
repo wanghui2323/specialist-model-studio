@@ -967,6 +967,15 @@ class ArtifactBundleBuilder:
             for key in ("root", "csv_path", "manifest_path", "report_path"):
                 if isinstance(dataset.get(key), str) and Path(dataset[key]).is_absolute():
                     private_roots.add(dataset[key])
+                    # The frozen Dataset also identifies its owning host store.
+                    # A parent path outside the Dataset itself is still private,
+                    # including Linux installations rooted under /tmp. Do not
+                    # blacklist /tmp generally: it is a valid container path.
+                    for parent in Path(dataset[key]).parents:
+                        if (parent.name == contract.get("task_id")
+                                and parent.parent.name in {"tasks", "conversations"}):
+                            private_roots.update({str(parent), str(parent.parent), str(parent.parent.parent)})
+                            break
             for asset in contract.get("execution_assets", []):
                 if isinstance(asset, dict) and isinstance(asset.get("root"), str):
                     private_roots.add(asset["root"])
