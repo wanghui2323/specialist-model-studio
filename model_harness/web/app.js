@@ -287,7 +287,7 @@ function renderComposerAttachment() {
   ui.composerAttachment.dataset.waiting = String(Boolean(waiting));
   ui.composerAttachment.dataset.state = attachment.status || "pending"; ui.attachmentType.textContent = attachmentTypeLabel(attachment.file); ui.attachmentName.textContent = attachment.file?.name || "未命名文件"; ui.attachmentName.title = attachment.file?.name || "";
   const details = [attachment.file?.type || attachmentTypeLabel(attachment.file), formatBytes(attachment.file?.size)];
-  if (attachment.dataset_id) details.push("已写入当前任务"); if (attachment.material_id) details.push(`只读材料检查 · 未导入训练数据 · ${materialFactSummary(attachment.material)}`); if (attachment.note) details.push(attachment.note); if (attachment.error) details.push(attachment.error);
+  if (attachment.dataset_id) details.push("已写入当前任务"); if (attachment.material_id) details.push(`材料检查结果 · ${materialFactSummary(attachment.material)}`); if (attachment.note) details.push(attachment.note); if (attachment.error) details.push(attachment.error);
   ui.attachmentMeta.textContent = details.filter(Boolean).join(" · "); ui.attachmentMeta.title = attachment.error || ""; ui.attachmentStatus.textContent = status; ui.attachmentStatus.dataset.state = attachment.status || "pending";
   const canRetry = (attachment.status === "failed" && attachment.can_retry === true) || ["continuation", "material_continuation"].includes(attachment.retry_stage) || (attachment.status === "pending" && attachment.can_retry === true);
   ui.retryAttachmentButton.hidden = !canRetry; ui.retryAttachmentButton.textContent = attachment.retry_stage === "material_dataset_review" ? "重新确认导入" : attachment.retry_stage === "material_continuation" ? "重试AI续接" : attachment.retry_stage === "material_reconcile" ? "核对检查" : waiting && attachment.waiting_action_label ? attachment.waiting_action_label : attachment.retry_stage === "continuation" ? "重试续接" : attachment.retry_stage === "reconcile" ? "核对导入" : attachment.upload_mode === "materials" ? attachment.status === "failed" ? "重试检查" : "检查材料" : attachment.status === "pending" ? "继续处理" : "重试导入";
@@ -1224,7 +1224,7 @@ function renderRuntimeMode(mode) {
   if (state.selectionLoadingOwnerId && state.selectionLoadingOwnerId === state.selectedTaskId) renderSelectionLoading();
 }
 function compatibleAgentRuntime(agent) {
-  return agent?.available === true && agent.real_agent === true && agent.implementation === "dsh_native_subagents" && agent.conversation_schema_version === "2.0" && agent.conversation_projector_revision === "3.3" && agent.synthesis_verdict_version === "1.0" && agent.conversation_action_schema_version === "1.0" && agent.task_truth_source === "TrainingTask";
+  return agent?.available === true && agent.real_agent === true && agent.implementation === "dsh_native_subagents" && agent.conversation_schema_version === "2.0" && agent.conversation_projector_revision === "3.4" && agent.synthesis_verdict_version === "1.0" && agent.conversation_action_schema_version === "1.0" && agent.task_truth_source === "TrainingTask";
 }
 function agentProviderReady(agent) { return agent?.provider?.ready === true && agent.provider.active === true && agent.provider.configured === true; }
 function applyAgentRuntimeStatus(agent) {
@@ -2679,7 +2679,7 @@ function renderPredictionValue(prediction, target) {
   Object.entries(prediction).slice(0, 24).forEach(([key, value]) => {
     if (value === null || typeof value === "object" || ["wav", "model_route"].includes(key)) return;
     const row = document.createElement("div"), label = document.createElement("dt"), text = document.createElement("dd");
-    label.textContent = predictionFieldLabel(key); text.textContent = predictionDisplayValue(value); row.append(label, text); facts.append(row);
+    label.textContent = Array.isArray(prediction) ? `预测值 ${Number(key) + 1}` : predictionFieldLabel(key); text.textContent = predictionDisplayValue(value); row.append(label, text); facts.append(row);
   });
   if (facts.children.length) target.append(facts);
   const records = Array.isArray(prediction) && prediction.every(row => row && typeof row === "object" && !Array.isArray(row)) ? prediction : Object.values(prediction).find(value => Array.isArray(value) && value.length && value.every(row => row && typeof row === "object" && !Array.isArray(row)));

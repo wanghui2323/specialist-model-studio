@@ -174,7 +174,7 @@ esac
             "real_agent": True,
             "implementation": "dsh_native_subagents",
             "conversation_schema_version": "2.0",
-            "conversation_projector_revision": "3.3",
+            "conversation_projector_revision": "3.4",
             "synthesis_verdict_version": "1.0",
             "conversation_action_schema_version": "1.0",
             "task_truth_source": "TrainingTask",

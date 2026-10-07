@@ -1400,7 +1400,7 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
         )
         event_ref = action["event_result_ref"]
         self.assertEqual(event_ref["task_id"], self.task_id)
-        self.assertEqual(event_ref["projector_revision"], "3.3")
+        self.assertEqual(event_ref["projector_revision"], "3.4")
         viewed = self.runtime.conversation_event_result(
             self.task_id,
             event_ref["id"],
@@ -1580,7 +1580,7 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
             for item in conversation["items"]
             if item["event_type"] == "turn_error"
         )
-        self.assertEqual(turn_error["projector_revision"], "3.3")
+        self.assertEqual(turn_error["projector_revision"], "3.4")
         self.assertEqual(turn_error["status"], "failed")
         self.assertEqual(
             turn_error["payload"]["error"],
@@ -1993,10 +1993,10 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
         ]
         self.assertTrue(pending_audit)
         self.assertTrue(
-            all(item["projector_revision"] == "3.3" for item in pending_audit)
+            all(item["projector_revision"] == "3.4" for item in pending_audit)
         )
         self.assertTrue(
-            all(item["source_key"].startswith("dsh-pending:3.3:") for item in pending_audit)
+            all(item["source_key"].startswith("dsh-pending:3.4:") for item in pending_audit)
         )
 
     def test_pending_question_keeps_originating_agent_turn_and_tool_call(self) -> None:
@@ -2213,7 +2213,7 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
         session_id = self.runtime.prompt(self.task_id, "升级", "恢复记录")
         identity = {"session_id": session_id, "agent_run_id": self._latest_agent_run_id(), "turn_id": f"{session_id}:turn:1", "call_id": "approval-call"}
         self.runtime.store.append_event(task_id=self.task_id, event={**identity,
-            "source": "dsh", "projector_revision": "3.3", "source_key": "current-call", "type": "tool_call", "payload": {"tool_name": "model_harness_confirm_contract"}})
+            "source": "dsh", "projector_revision": "3.4", "source_key": "current-call", "type": "tool_call", "payload": {"tool_name": "model_harness_confirm_contract"}})
         for label, overrides in [("exact", {}), ("wrong-run", {"agent_run_id": "other"}), ("child", {"session_id": "child"})]:
             for phase in ("requested", "resolved"):
                 self.runtime.store.append_event(task_id=self.task_id, event={**identity, **overrides,
@@ -2226,7 +2226,7 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
         replayed = [event for event in after if event.get("payload", {}).get("replayed_from_event_id")]
         self.assertEqual(len(replayed), 2)
         self.assertEqual({event["payload"]["rpc_id"] for event in replayed}, {"rpc-exact"})
-        self.assertTrue(all(event["projector_revision"] == "3.3" for event in replayed))
+        self.assertTrue(all(event["projector_revision"] == "3.4" for event in replayed))
         self.assertEqual(after[:len(before)], before)
         self.assertEqual(self.events.pending, {})
 
@@ -3117,6 +3117,33 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
 
 
 class ProjectorUnitTests(unittest.TestCase):
+    def test_native_pruning_keeps_original_tool_execution_evidence(self) -> None:
+        team = {"root_session_id": "root", "root_agent_id": "training_orchestrator"}
+        original = {"seq": 2, "type": "tool/result", "surfaceOp": "append", "data": {
+            "turn": 1, "step": 1, "message": {"role": "tool", "content": [{
+                "type": "tool-result", "toolCallId": "call-a", "isError": False,
+                "content": [{"type": "text", "text": "original execution evidence"}]}]}}}
+        rewrite = deepcopy(original)
+        rewrite.update(seq=3, surfaceOp={"op": "replace", "start": 2, "end": 2}, sourceEventSeqs=[2])
+        rewrite["data"]["message"]["content"][0]["content"] = [{"type": "text", "text": "short context copy"}]
+        call = dsh_event(1, "tool/call", {"callId": "call-a", "name": "model_harness_get_task"})
+        def project(replacement):
+            return DshConversationV2Projector().project(task_id="task", team=team,
+                history={"events": [call, {"event": original}, {"event": replacement}]})
+        projected = project(rewrite)
+        results = [event for event in projected if event["type"] == "tool_result"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["source_seq"], 2)
+        self.assertEqual(results[0]["payload"]["result"][0]["text"], "original execution evidence")
+        for change in ("missing_source", "changed_error", "unmarked_duplicate", "wrong_range"):
+            bad = deepcopy(rewrite)
+            if change == "missing_source": bad["sourceEventSeqs"] = [999]
+            elif change == "changed_error": bad["data"]["message"]["content"][0]["isError"] = True
+            elif change == "unmarked_duplicate": bad["surfaceOp"] = "append"
+            else: bad["surfaceOp"]["end"] = 1
+            with self.subTest(change=change):
+                self.assertEqual(sum(event["type"] == "tool_result" for event in project(bad)), 2)
+
     @staticmethod
     def _verified_child_team(*, nested: bool = False) -> dict[str, Any]:
         team: dict[str, Any] = {

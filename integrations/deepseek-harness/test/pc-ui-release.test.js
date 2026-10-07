@@ -57,7 +57,7 @@ test("the coupled PC UI scripts and styles use one incremented cache version and
     const match = [...html.matchAll(/(?:src|href)="\/app\/static\/([^"?]+)\?v=([^"#]+)"/g)].find(item => item[1] === name);
     assert.ok(match, name); assert.equal(existsSync(new URL(`../../../model_harness/web/${name}`, import.meta.url)), true); return match[2];
   });
-  assert.deepEqual([...new Set(versions)], ["2.4.52-pc-rc"]);
+  assert.deepEqual([...new Set(versions)], ["2.4.53-pc-rc"]);
 });
 
 test("persistent result uses only the current canonical completed Run and owned prediction", () => {

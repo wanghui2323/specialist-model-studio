@@ -512,7 +512,7 @@ test("runtime failure stops conversation instead of impersonating an Agent with 
   assert.match(app, /state\.runtimeReady = transportCompatible && providerReady/);
   assert.match(app, /state\.runtimeIssue = "provider"/);
   assert.match(app, /agent\.real_agent === true && agent\.implementation === "dsh_native_subagents"/);
-  assert.match(app, /agent\.conversation_projector_revision === "3\.3" && agent\.synthesis_verdict_version === "1\.0" && agent\.conversation_action_schema_version === "1\.0" && agent\.task_truth_source === "TrainingTask"/);
+  assert.match(app, /agent\.conversation_projector_revision === "3\.4" && agent\.synthesis_verdict_version === "1\.0" && agent\.conversation_action_schema_version === "1\.0" && agent\.task_truth_source === "TrainingTask"/);
   assert.match(app, /\["working", "waiting_for_human", "cancelling", "idle", "terminal"\]/);
   assert.match(app, /AI 服务版本不兼容/);
   assert.match(app, /AI 服务未连接/);

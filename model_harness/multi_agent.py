@@ -45,7 +45,7 @@ from .synthesis_evidence import (
 
 TEAM_SCHEMA_VERSION = "1.0"
 CONVERSATION_EVENT_SCHEMA_VERSION = "2.0"
-CONVERSATION_PROJECTOR_REVISION = "3.3"
+CONVERSATION_PROJECTOR_REVISION = "3.4"
 AGENT_WORK_ITEM_SCHEMA_VERSION = "1.0"
 COMPOSER_REQUEST_SCHEMA_VERSION = "1.0"
 SUPPORTED_COMPOSER_MODES = frozenset({"queue_after_turn"})
@@ -697,7 +697,7 @@ class DshAgentTeamStore:
         ]
 
     def reproject_root_checkpoint_audit(self, task_id: str) -> None:
-        """Preserve 3.2 human receipts only after exact 3.3 root-call replay.
+        """Preserve older human receipts only after exact current root-call replay.
 
         Child ownership changed in 3.3; those old receipts are audit-only.
         This never recreates a live pending RPC or grants an authorization.
@@ -713,7 +713,7 @@ class DshAgentTeamStore:
         identity_fields = ("task_id", "agent_run_id", "session_id", "turn_id", "call_id")
         for event in events:
             payload = event.get("payload", {})
-            if (event.get("source") != "dsh_pending" or event.get("projector_revision") != "3.2"
+            if (event.get("source") != "dsh_pending" or event.get("projector_revision") not in {"3.2", "3.3"}
                 or event.get("event_type") not in {"approval", "question"}
                 or payload.get("phase") not in {"requested", "resolved"}
                 or not payload.get("rpc_id")
@@ -732,7 +732,7 @@ class DshAgentTeamStore:
                 "projector_revision": CONVERSATION_PROJECTOR_REVISION,
                 "source_key": f"dsh-pending:{CONVERSATION_PROJECTOR_REVISION}:replay:{event['event_id']}",
                 "payload": {**payload, "origin_event_id": matches[0]["event_id"],
-                    "replayed_from_event_id": event["event_id"], "replayed_from_projector_revision": "3.2"},
+                    "replayed_from_event_id": event["event_id"], "replayed_from_projector_revision": event["projector_revision"]},
             })
 
     def get_projected_event(
@@ -803,6 +803,41 @@ class DshConversationV2Projector:
         if not profile.root
     }
 
+    @staticmethod
+    def _content_only_result_rewrite(event: Mapping[str, Any], prior: Mapping[int, Mapping[str, Any]]) -> bool:
+        """Native context pruning rewrites a surface node, not a tool execution.
+
+        Keep the original result as execution evidence. Only accept a bounded
+        native replacement whose provenance and all non-content fields match;
+        an unmarked or conflicting second result remains an identity error.
+        """
+        op = event.get("surfaceOp")
+        seq = event.get("seq")
+        if not isinstance(op, Mapping) or op.get("op") != "replace":
+            return False
+        start = op.get("start")
+        if (not isinstance(seq, int) or isinstance(seq, bool)
+            or not isinstance(start, int) or isinstance(start, bool)
+            or start < 0 or start >= seq or op.get("end") != start
+            or event.get("sourceEventSeqs") != [start]):
+            return False
+        original = prior.get(start)
+        if not original or original.get("type") != "tool/result":
+            return False
+        def without_content(value: Mapping[str, Any]) -> dict[str, Any] | None:
+            data = deepcopy(value.get("data"))
+            if not isinstance(data, dict) or not isinstance(data.get("message"), dict):
+                return None
+            content = data["message"].get("content")
+            if (not isinstance(content, list) or len(content) != 1
+                or not isinstance(content[0], dict) or content[0].get("type") != "tool-result"
+                or not content[0].get("toolCallId") or "content" not in content[0]):
+                return None
+            content[0]["content"] = None
+            return data
+        original_rest = without_content(original)
+        return original_rest is not None and original_rest == without_content(event)
+
     def project(
         self,
         *,
@@ -849,11 +884,19 @@ class DshConversationV2Projector:
             if child_identity is not None
             else None
         )
+        native_results: dict[int, Mapping[str, Any]] = {}
         for index, entry in enumerate(entries):
             raw_event = entry.get("event", {}) if isinstance(entry, dict) else {}
             if not isinstance(raw_event, dict):
                 continue
             event_type = str(raw_event.get("type") or "")
+            if event_type == "tool/result":
+                rewrite = self._content_only_result_rewrite(raw_event, native_results)
+                native_seq = raw_event.get("seq")
+                if isinstance(native_seq, int) and not isinstance(native_seq, bool):
+                    native_results[native_seq] = raw_event
+                if rewrite:
+                    continue
             data = raw_event.get("data", {})
             if not isinstance(data, dict):
                 data = {}

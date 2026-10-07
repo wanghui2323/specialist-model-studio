@@ -58,7 +58,7 @@ for (const [scene, filename, facts] of [["语音", "voice-paired.zip", { wav_cou
     assert.equal(f.requests.length, 2); assert.equal(f.requests[0][0], "/tasks/task-a/materials");
     assert.equal(f.requests[0][1].body, f.attachment.file); assert.equal(f.requests[0][1].headers["x-request-id"], "upload-a");
     assert.equal(f.attachment.status, "inspected"); assert.equal(f.attachment.material_id, materialId); assert.equal(f.attachment.dataset_id, undefined);
-    assert.equal(f.ui.attachmentStatus.textContent, "已检查材料"); assert.match(f.ui.attachmentMeta.textContent, /未导入训练数据/);
+    assert.equal(f.ui.attachmentStatus.textContent, "已检查材料"); assert.match(f.ui.attachmentMeta.textContent, /材料检查结果/); assert.doesNotMatch(f.ui.attachmentMeta.textContent, /未导入训练数据/);
     const message = f.requests[1][1].json;
     assert.match(message.message, new RegExp(materialId)); assert.match(message.message, /解读报告/); assert.doesNotMatch(message.message, /已上传.*回复|\/Users\/|dataset_id=/);
     assert.equal(message.checkpoint_rpc_id, undefined); assert.equal(message.mode, "queue_after_turn");
