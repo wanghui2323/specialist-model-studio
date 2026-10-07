@@ -1,8 +1,10 @@
-# 当前整体验收记录 · 2026-10-06
+# 历史整体验收记录 · 2026-10-06
 
-当前结论：**本地五个代表性任务的页面交付与下载包独立重载已收尾；完整建设方案的发布验收尚未通过。** 这些任务是验收样本，不是平台支持类型的白名单。
+本文件保留 2026-10-06 的阶段结果与失败证据。2026-10-07 已完成开发者源码预览的发布门禁并发布 `v1.0.0-rc.2`，当前发布状态见[rc.2 发布回执](RC2-RELEASE-20261007.md)。历史模型质量失败与完整建设方案的未完成项仍保留。
 
-机器记录为 [overall-acceptance.json](../../runs/acceptance/20261006-whole-acceptance/overall-acceptance.json)，下载、摘要与重载索引为 [delivery-replay-index.json](../../runs/acceptance/20261006-whole-acceptance/delivery-replay-index.json)。原始页面截图、DOM、操作日志及原失败记录均保留在同一证据目录。
+当时结论：**本地五个代表性任务的页面交付与下载包独立重载已收尾；完整建设方案的发布验收尚未通过。** 这些任务是验收样本，不是平台支持类型的白名单。
+
+内部机器记录保存在本地 `runs/acceptance/20261006-whole-acceptance/overall-acceptance.json`，下载、摘要与重载索引为同目录下的 `delivery-replay-index.json`。原始页面截图、DOM、操作日志及原失败记录均保留在该运行目录，不属于公开源码文件。当前公开的脱敏证据见 [rc.2 验收附件](https://github.com/wanghui2323/specialist-model-studio/releases/download/v1.0.0-rc.2/specialist-model-studio-1.0.0-rc.2-acceptance.zip)。
 
 ## 页面流程与模型效果
 
@@ -52,4 +54,4 @@ Python 全量 **919 项通过**；Node 全量 **455 项通过**。保留了首�
 
 下一轮应优先补通用推理版本和实验预算/恢复，再用页面修复并复验具体反例；不能通过重跑已曝光最终测试、下调指标或追加领域话术特例来制造通过结果。
 
-本地入口：[Specialist Model Studio](http://127.0.0.1:8878/app)。当前服务已保持运行；公开发布和 Git 推送尚未执行。
+当时的本地入口：[Specialist Model Studio](http://127.0.0.1:8878/app)。该阶段结束时服务保持运行，尚未执行公开发布和 Git 推送；后续发布状态见上述回执。
