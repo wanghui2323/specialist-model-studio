@@ -243,7 +243,7 @@ test("engineering recovery follows actual diagnostics and preserves existing inp
 
 test('fresh specialists use the operator configured model route rather than a hidden vendor default',()=>{
   const source=readFileSync(new URL('../presets/model-training/agent.cordis.yml',import.meta.url),'utf8');
-  const expressions=[...source.matchAll(/agentOptions: !!js ([^\n]+)/g)].map(m=>m[1]);
+  const expressions=[...source.matchAll(/agentOptions: !!js >-\n\s+([^\n]+)/g)].map(m=>m[1]);
   assert.equal(expressions.length,5);
   for(const expression of expressions){
     const evaluate=new Function('process','return ('+expression+')');

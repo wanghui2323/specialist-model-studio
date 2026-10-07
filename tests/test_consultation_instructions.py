@@ -50,3 +50,19 @@ class ConsultationInstructionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class FreshSpecialistPresetSyntaxTest(unittest.TestCase):
+    def test_operator_route_expressions_are_valid_yaml_and_apply_to_each_delegate(self):
+        import yaml
+        class Loader(yaml.SafeLoader):pass
+        Loader.add_constructor('tag:yaml.org,2002:js',lambda loader,node:loader.construct_scalar(node))
+        root=Path(__file__).resolve().parents[1]
+        preset=yaml.load((root/'integrations/deepseek-harness/presets/model-training/agent.cordis.yml').read_text(),Loader=Loader)
+        group=next(item for item in preset if item['id']=='delegation')
+        delegates=[item for item in group['config'] if item['name']=='@deepseek-ai/dsh-tool-subagent']
+        self.assertEqual(len(delegates),5)
+        for item in delegates:
+            expression=item['config']['agentOptions']
+            self.assertIn('MODEL_HARNESS_AGENT_PROVIDER',expression)
+            self.assertIn('MODEL_HARNESS_AGENT_MODEL',expression)
+            self.assertNotIn('deepseek-official',expression)

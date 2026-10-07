@@ -170,7 +170,8 @@
         # A fresh specialist loop has SDK defaults independent of the root.
         # Use the operator-configured route for every child, without a vendor
         # or business-family allowlist; existing sessions remain immutable.
-        agentOptions: !!js process.env.MODEL_HARNESS_AGENT_PROVIDER ? { provider: process.env.MODEL_HARNESS_AGENT_PROVIDER, ...(process.env.MODEL_HARNESS_AGENT_MODEL ? { model: process.env.MODEL_HARNESS_AGENT_MODEL } : {}) } : undefined
+        agentOptions: !!js >-
+          process.env.MODEL_HARNESS_AGENT_PROVIDER ? { provider: process.env.MODEL_HARNESS_AGENT_PROVIDER, ...(process.env.MODEL_HARNESS_AGENT_MODEL ? { model: process.env.MODEL_HARNESS_AGENT_MODEL } : {}) } : undefined
         maxDepth: 1
         persona: >-
           You are the Research & Source Agent. Work only on upstream model discovery,
@@ -209,7 +210,8 @@
         # A fresh specialist loop has SDK defaults independent of the root.
         # Use the operator-configured route for every child, without a vendor
         # or business-family allowlist; existing sessions remain immutable.
-        agentOptions: !!js process.env.MODEL_HARNESS_AGENT_PROVIDER ? { provider: process.env.MODEL_HARNESS_AGENT_PROVIDER, ...(process.env.MODEL_HARNESS_AGENT_MODEL ? { model: process.env.MODEL_HARNESS_AGENT_MODEL } : {}) } : undefined
+        agentOptions: !!js >-
+          process.env.MODEL_HARNESS_AGENT_PROVIDER ? { provider: process.env.MODEL_HARNESS_AGENT_PROVIDER, ...(process.env.MODEL_HARNESS_AGENT_MODEL ? { model: process.env.MODEL_HARNESS_AGENT_MODEL } : {}) } : undefined
         maxDepth: 1
         persona: >-
           You are the Data & Experiment Agent. Work only on data-adapter capability,
@@ -241,7 +243,8 @@
         # A fresh specialist loop has SDK defaults independent of the root.
         # Use the operator-configured route for every child, without a vendor
         # or business-family allowlist; existing sessions remain immutable.
-        agentOptions: !!js process.env.MODEL_HARNESS_AGENT_PROVIDER ? { provider: process.env.MODEL_HARNESS_AGENT_PROVIDER, ...(process.env.MODEL_HARNESS_AGENT_MODEL ? { model: process.env.MODEL_HARNESS_AGENT_MODEL } : {}) } : undefined
+        agentOptions: !!js >-
+          process.env.MODEL_HARNESS_AGENT_PROVIDER ? { provider: process.env.MODEL_HARNESS_AGENT_PROVIDER, ...(process.env.MODEL_HARNESS_AGENT_MODEL ? { model: process.env.MODEL_HARNESS_AGENT_MODEL } : {}) } : undefined
         maxDepth: 1
         persona: >-
           You are the Resource & Safety Agent. Work only on immutable training-plan evidence,
@@ -277,7 +280,8 @@
         # A fresh specialist loop has SDK defaults independent of the root.
         # Use the operator-configured route for every child, without a vendor
         # or business-family allowlist; existing sessions remain immutable.
-        agentOptions: !!js process.env.MODEL_HARNESS_AGENT_PROVIDER ? { provider: process.env.MODEL_HARNESS_AGENT_PROVIDER, ...(process.env.MODEL_HARNESS_AGENT_MODEL ? { model: process.env.MODEL_HARNESS_AGENT_MODEL } : {}) } : undefined
+        agentOptions: !!js >-
+          process.env.MODEL_HARNESS_AGENT_PROVIDER ? { provider: process.env.MODEL_HARNESS_AGENT_PROVIDER, ...(process.env.MODEL_HARNESS_AGENT_MODEL ? { model: process.env.MODEL_HARNESS_AGENT_MODEL } : {}) } : undefined
         maxDepth: 1
         persona: >-
           You are the Build & Training Agent. Author task-owned execution proposals with actual UTF-8
@@ -334,7 +338,8 @@
         # A fresh specialist loop has SDK defaults independent of the root.
         # Use the operator-configured route for every child, without a vendor
         # or business-family allowlist; existing sessions remain immutable.
-        agentOptions: !!js process.env.MODEL_HARNESS_AGENT_PROVIDER ? { provider: process.env.MODEL_HARNESS_AGENT_PROVIDER, ...(process.env.MODEL_HARNESS_AGENT_MODEL ? { model: process.env.MODEL_HARNESS_AGENT_MODEL } : {}) } : undefined
+        agentOptions: !!js >-
+          process.env.MODEL_HARNESS_AGENT_PROVIDER ? { provider: process.env.MODEL_HARNESS_AGENT_PROVIDER, ...(process.env.MODEL_HARNESS_AGENT_MODEL ? { model: process.env.MODEL_HARNESS_AGENT_MODEL } : {}) } : undefined
         maxDepth: 1
         persona: >-
           You are the Evaluation & Delivery Agent. Work only on canonical EvaluationReports,
