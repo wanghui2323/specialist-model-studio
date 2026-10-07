@@ -2,14 +2,26 @@
 
 **用自然对话推进模型任务：准备数据与实现、隔离训练、独立评估、试用和交付。**
 
-当前候选版本为 **`v1.0.0-rc.2` 开发者源码预览版（源码 RC）**（Python `1.0.0rc2`，API/插件 `1.0.0-rc.2`）。它供代码审核、本地体验和问题反馈，**不表示生产就绪**。只有精确提交的远端 CI、冷克隆与页面验收通过并创建 Tag/Prerelease，才算公开发布；版本字符串本身不是发布证据。
+**`v1.0.0-rc.2` 已于 2026-10-07 发布为 [GitHub Prerelease](https://github.com/wanghui2323/specialist-model-studio/releases/tag/v1.0.0-rc.2)。** 这是开发者源码预览版（Python `1.0.0rc2`，API/插件 `1.0.0-rc.2`），用于代码审核、本地体验和问题反馈，**不表示生产就绪**。
 
 - [项目与反馈](https://github.com/wanghui2323/specialist-model-studio)
 - [当前版本安装与验收指南](docs/v1.0-source-release-candidate.md)
 - [通用训练架构](plans/v1.0-conversation-native/ADR-002-GENERAL-TRAINING-EXECUTION.md)
 - [上下文机制](plans/v1.0-conversation-native/ADR-003-CONTEXT-RUNTIME.md)
-- [2026-10-06 页面、效果与重载记录](plans/v1.0-conversation-native/OVERALL-ACCEPTANCE-20261006.md)
-- [rc.2 发布收尾记录](plans/v1.0-conversation-native/RC2-RELEASE-20261007.md)
+- [rc.2 发布回执与验收结果](plans/v1.0-conversation-native/RC2-RELEASE-20261007.md)
+- [2026-10-06 历史页面、效果与重载记录](plans/v1.0-conversation-native/OVERALL-ACCEPTANCE-20261006.md)
+
+## 本次发布验收
+
+Tag 固定到已验证提交 `3f6292358f8d1e6f59a73a3d307169539341c6b0`；[PR #7](https://github.com/wanghui2323/specialist-model-studio/pull/7) 已合并，合并后的文件树与候选一致。[该提交的远端 CI](https://github.com/wanghui2323/specialist-model-studio/actions/runs/37592029010) 两项检查均通过。
+
+- 8 项发布门禁全部通过，包括 GitHub 精确提交的冷克隆复现。
+- Python 执行 926 项检查：924 项通过、2 项条件跳过；Node 456 项通过；npm audit 0 告警。
+- 全新环境通过两条真实页面流程：已注册的表格回归，以及没有预设领域 Recipe 的搜索排序。包含文件选择上传、原生审批、隔离资格、训练、独立测试、新输入、模型包保存与重载。
+- 回归 MAE 为 2371.63，冻结门槛为 91442.44；排序 NDCG@5 为 0.9964，冻结门槛为 0.85。这些是合成实验结果，不代表真实业务质量。
+- 三档实际桌面视口（1280×800、1440×900、1920×1080）、进行中咨询的取消、刷新重入和服务重启均已验证；两个 Run 及 24 个产物摘要保留，未重放批准或重复执行。
+
+[脱敏验收附件](https://github.com/wanghui2323/specialist-model-studio/releases/download/v1.0.0-rc.2/specialist-model-studio-1.0.0-rc.2-acceptance.zip) · [SHA-256 校验文件](https://github.com/wanghui2323/specialist-model-studio/releases/download/v1.0.0-rc.2/SHA256SUMS)。附件不包含模型权重、私人数据、声音材料、凭据或原始运行日志。
 
 ## 当前可以验证什么
 
@@ -27,7 +39,7 @@
 - 训练/验证用于候选选择，最终测试保持独立；不能为了通过而下调门槛或重复利用已曝光测试选模。
 - 运行完成、模型效果达标、公开发布是不同判断。Agent 应说明失败与下一步，不能把有声音或有预测值说成效果合格。
 
-语音、OCR、NLP、时序与未注册的学习排序已经用于代表性真实页面验证。这些是测试样本，不是支持类型清单。排序样例通过；语音/OCR存在质量失败，NLP有否定语义反例，时序新输入存在旧历史上下文问题，详见对应验收记录。
+语音、OCR、NLP、时序与未注册的学习排序已经用于代表性真实页面验证。这些是测试样本，不是支持类型清单。[历史场景记录](plans/v1.0-conversation-native/OVERALL-ACCEPTANCE-20261006.md)保留了语音/OCR质量失败、NLP否定语义反例及时序旧历史上下文的限制；发布验收通过不将这些模型效果问题改写为达标。
 
 本预览版的实测训练后端为本地 CPU OCI，实测协调模型服务为 Codex CLI。远程 GPU、其他服务等价实测、环境自主构建、总实验预算和完整检查点恢复仍在建设；不以接口存在推定已经验证。
 
@@ -40,7 +52,7 @@
 ```bash
 git clone https://github.com/wanghui2323/specialist-model-studio.git
 cd specialist-model-studio
-# 发布后使用固定 Tag；发布前以验收记录中的精确 candidate commit 为准。
+# 使用已发布、完成验收的固定 Tag。
 git checkout v1.0.0-rc.2
 uv sync --frozen --extra server --extra test
 npm ci --prefix integrations/deepseek-harness --ignore-scripts
@@ -48,6 +60,8 @@ npm ci --prefix acceptance/dsh-runtime --ignore-scripts
 ```
 
 等价的 Python 安装入口为 `uv pip install '.[server,test]'`；发布复现以 `uv.lock` 的冻结安装为准。
+
+运行目录、模型缓存和 Python 虚拟环境建议放在 iCloud 同步目录之外；本次验证发现同步隐藏标记会影响 Python editable 安装。需要把虚拟环境移出同步目录时，可在执行 `uv sync` 和 `uv run` 前设置 `UV_PROJECT_ENVIRONMENT` 为本机独立目录。
 
 准备可复现 CPU 镜像（只有审阅 recipe 和哈希校验的依赖 wheel 进入断网构建上下文，不含模型权重或用户训练数据）：
 
@@ -82,6 +96,8 @@ uv run specialist-model-studio start
 模型包排除原始数据文件与内部运行文件；模型状态仍可能保存数据上下文，需要另外审查才能分享。默认保持实验数据、下载的权重、生成声音、凭据与 `runs/` 在版本控制外。代码许可、权重许可、数据许可分别核对。
 
 页面刷新不应丢失任务和已完成产物；停止需要以实际进程与任务状态确认。服务重启后，已中断的执行应如实显示，不能制造“继续运行”的状态。确定性复验覆盖协议行为，它不冒充真实 PID 重启；发布验收另检查实际重启。
+
+模型包默认保存到所选运行目录的 `_workspace/exports`。必要的固定容器路径会保留，私有本机路径会被过滤。少量停止过程提示及复杂数组输入仍可继续改善；当前预览没有声明完整的训练检查点恢复。
 
 反馈请附版本/提交、目标、操作步骤和脱敏现象；不要发送密钥、私人声音、客户原始材料或包含它们的运行目录。
 
