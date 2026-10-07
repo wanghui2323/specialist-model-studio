@@ -55,3 +55,12 @@ class PluginRegistryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_implementation_reuse_preference_is_not_a_training_route_requirement(self):
+        registry=PluginRegistry()
+        capability={'modality':'tabular','objective':'regression','target_kind':'continuous','data_adapter':'tabular-csv'}
+        baseline=registry.match_recipes(capability)
+        self.assertIn('tabular-regression',[m['recipe']['plugin_id'] if 'recipe' in m else m['plugin_id'] for m in baseline])
+        for preference in ['verified_recipe','registered_recipe','existing_recipe','generic_execution']:
+            self.assertEqual(registry.match_recipes({**capability,'training_route':preference}),baseline)
+        self.assertEqual(registry.match_recipes({**capability,'training_route':'fine_tune'}),[])

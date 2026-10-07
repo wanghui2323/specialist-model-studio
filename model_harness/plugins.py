@@ -71,6 +71,12 @@ class PluginRegistry:
         target_kind = str(capability.get("target_kind", "")).strip().lower()
         data_adapter = str(capability.get("data_adapter", "")).strip().lower()
         training_route = str(capability.get("training_route", "")).strip().lower()
+        # Reusing a prepared implementation is a workflow preference, not a
+        # requirement to fine-tune or fit a particular model architecture.
+        # Keep real training-route constraints (including unfamiliar explicit
+        # routes) strict so a user choice cannot be silently substituted.
+        if training_route in {"verified_recipe", "registered_recipe", "existing_recipe", "generic_execution"}:
+            training_route = ""
         requested_tags = {
             str(tag).strip().lower()
             for tag in capability.get("tags", [])

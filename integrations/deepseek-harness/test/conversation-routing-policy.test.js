@@ -240,3 +240,15 @@ test("engineering recovery follows actual diagnostics and preserves existing inp
   assert.match(principle, /不静默扩展已冻结的输入或执行范围/);
   assert.doesNotMatch(principle, /CSV|JSON|OCR|TTS|语音|时序|单文件|多文件|422/);
 });
+
+test('fresh specialists use the operator configured model route rather than a hidden vendor default',()=>{
+  const source=readFileSync(new URL('../presets/model-training/agent.cordis.yml',import.meta.url),'utf8');
+  const expressions=[...source.matchAll(/agentOptions: !!js ([^\n]+)/g)].map(m=>m[1]);
+  assert.equal(expressions.length,5);
+  for(const expression of expressions){
+    const evaluate=new Function('process','return ('+expression+')');
+    assert.deepEqual(evaluate({env:{MODEL_HARNESS_AGENT_PROVIDER:'codex-cli',MODEL_HARNESS_AGENT_MODEL:'gpt-5.6-sol'}}),{provider:'codex-cli',model:'gpt-5.6-sol'});
+    assert.deepEqual(evaluate({env:{MODEL_HARNESS_AGENT_PROVIDER:'arbitrary-installed-adapter',MODEL_HARNESS_AGENT_MODEL:'operator-model'}}),{provider:'arbitrary-installed-adapter',model:'operator-model'});
+    assert.equal(evaluate({env:{}}),undefined);
+  }
+});
