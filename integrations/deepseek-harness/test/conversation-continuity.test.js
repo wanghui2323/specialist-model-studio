@@ -28,18 +28,22 @@ test("exact result viewer summarizes observed evidence without assuming privacy 
   assert.match(report.rows[4][1], /不能据此发布/);
   assert.equal(context.present({ type: "artifact_bundle" }, { task: {} }), null);
   const blocker = context.present({ type: "blocker" }, { blocker: { code: "recipe_unavailable", message: "没有已验证能力", rule: { run_creation_allowed: false } } });
-  assert.equal(blocker.rows[3][1], "不允许");
-  assert.match(blocker.note, /不是训练成功/);
+  assert.equal(blocker.title, "方案匹配记录");
+  assert.equal(blocker.rows[3][1], "否");
+  assert.match(blocker.note, /目标仍可继续准备方案/);
+  const unsafe = context.present({ type: "blocker" }, { blocker: { code: "blocked_security", message: "禁止执行不安全代码", rule: { run_creation_allowed: false } } });
+  assert.equal(unsafe.title, "当前阻断原因"); assert.equal(unsafe.rows[3][1], "不允许");
 });
 
 test("completed evidence header never overrides an active checkpoint or failure", () => {
   const source = section("function renderWorkspaceExperience", "function workspaceContextForPhase");
   const expression = source.match(/const displayPhase = ([^;]+);/)[1];
+  const expressionWithCapabilities = section("function pendingExecutionIntegration", "function workflowStatus") + "\n" + expression;
   for (const phase of ["executing", "clarifying", "awaiting_approval", "blocked"]) {
-    assert.equal(vm.runInNewContext(expression, { projection: { phase }, evaluationOutcome: { ready: true } }), phase);
+    assert.equal(vm.runInNewContext(expressionWithCapabilities, { task: {}, conversation: null, projection: { phase }, evaluationOutcome: { ready: true } }), phase);
   }
-  assert.equal(vm.runInNewContext(expression, { projection: { phase: "idle" }, evaluationOutcome: { ready: true } }), "result_ready");
-  assert.equal(vm.runInNewContext(expression, { projection: { phase: "idle" }, evaluationOutcome: { ready: false } }), "idle");
+  assert.equal(vm.runInNewContext(expressionWithCapabilities, { task: {}, conversation: null, projection: { phase: "idle" }, evaluationOutcome: { ready: true } }), "result_ready");
+  assert.equal(vm.runInNewContext(expressionWithCapabilities, { task: {}, conversation: null, projection: { phase: "idle" }, evaluationOutcome: { ready: false } }), "idle");
 });
 
 test("inference input opens only its exact task run id and content digest", () => {
@@ -108,14 +112,17 @@ test("native approval labels use the tool identity, never generic data or comput
   assert.equal(binding.allow, "确认绑定并分析");
   assert.match(binding.copy, /不代表批准下载权重、安装代码或训练/);
   assert.equal(context.present({ tool_name: "model_harness_import_dataset", reason }).title, "批准导入并体检这份数据");
+  const reuse = context.present({ tool_name: "model_harness_import_material_dataset", reason });
+  assert.equal(reuse.title, "复用已上传材料导入"); assert.equal(reuse.allow, "批准导入并体检"); assert.equal(reuse.reject, "暂不导入");
+  assert.match(reuse.copy, /无需重新上传/); assert.match(reuse.copy, /本次批准不会启动训练/);
   assert.equal(context.present({ tool_name: "unrecognized_action", reason }).title, "批准关键操作");
   assert.equal(context.present({ reason: "dataset train contract" }).title, "批准关键操作");
   for (const [tool_name, allow] of [
-    ["model_harness_authorize_task_run_start", "批准并启动训练"],
-    ["model_harness_confirm_contract", "确认并锁定"],
-    ["model_harness_authorize_artifact_bundle_build", "批准构建交付包"],
-    ["model_harness_download_artifact_bundle", "确认并下载"],
-    ["model_harness_authorize_sample_inference", "批准本次试跑"],
+    ["model_harness_authorize_task_run_start", "开始训练"],
+    ["model_harness_confirm_contract", "确认标准"],
+    ["model_harness_authorize_artifact_bundle_build", "生成模型包"],
+    ["model_harness_download_artifact_bundle", "下载模型包"],
+    ["model_harness_authorize_sample_inference", "开始试用"],
   ]) assert.equal(context.present({ tool_name, reason }).allow, allow);
 });
 
@@ -134,9 +141,9 @@ test("historical action timelines never borrow a newer turn's waiting or running
   const source = section("function renderConversationTurn", "function isWaitingForAnswerAction");
   const expression = source.match(/const turnInteractionState = ([^;]+);/)[1];
   for (const phase of ["executing", "clarifying", "awaiting_approval"]) {
-    assert.equal(vm.runInNewContext(expression, { current: false, projection: { phase } }), "idle");
+    assert.equal(vm.runInNewContext(expression, { current: false, settled: false, projection: { phase } }), "historical");
   }
-  assert.equal(vm.runInNewContext(expression, { current: true, projection: { phase: "awaiting_approval" } }), "waiting_for_human");
+  assert.equal(vm.runInNewContext(expression, { current: true, settled: false, projection: { phase: "awaiting_approval" } }), "waiting_for_human");
 });
 
 test("task hydration never offers to resend before checking its saved conversation", () => {
@@ -151,6 +158,27 @@ test("task hydration never offers to resend before checking its saved conversati
   assert.equal(rendered[0].textContent, "正在恢复对话和执行记录…");
 });
 
+test("an unavailable AI service shows one actionable connection card without duplicate stream alerts", () => {
+  const rendered = [];
+  class Node {
+    constructor() { this.dataset = {}; this.children = []; this.textContent = ""; }
+    append(...children) { this.children.push(...children); }
+    setAttribute() {}
+    addEventListener() {}
+  }
+  const context = { state: { runtimeReady: false, conversation: { session_id: "saved-session" }, conversationStreamDegraded: true },
+    ui: { messageList: { append: node => rendered.push(node) } }, document: { createElement: () => new Node() } };
+  vm.runInNewContext(section("function renderProjectionHealth", "function renderConversation(") + "\nglobalThis.render={renderProjectionHealth,renderAgentSurfaceState};", context);
+  const saved = { session_id: "saved-session", projection_health: { status: "observation_degraded" } };
+  context.render.renderProjectionHealth(saved);
+  context.render.renderAgentSurfaceState(saved, {});
+  assert.equal(rendered.length, 1);
+  assert.equal(rendered[0].dataset.state, "unavailable");
+  assert.equal(rendered[0].children[1].children[0].textContent, "AI 服务未连接，对话已暂停");
+  assert.equal(rendered[0].children[1].children[1].textContent, "可以查看已保存的任务与证据，恢复连接后继续对话。");
+  assert.equal(rendered[0].children[2].textContent, "重新检查连接");
+});
+
 for (const [kind, id, message] of [
   ["approval", "train", "这一步有什么风险？"],
   ["question", "data_upload", "我没有数据，能给我一个格式例子吗？"],
@@ -163,8 +191,8 @@ for (const [kind, id, message] of [
     const ui = { sendButton: { dataset: {} }, messageInput: { value: message } };
     const state = { runtimeReady: true, selectedTaskId: "task-1", conversation: {} };
     const context = { state, ui,
-      clearComposerRetry() {}, hideNotice() {}, clearDraft() {}, resizeComposer() {},
-      showTransientNotice() {}, refreshSelected() {},
+      clearComposerRetry() {}, hideNotice() {}, clearDraft() {}, resizeComposer() {}, resumeNewConversationAttachment: async () => {},
+      showTransientNotice() {}, refreshSelected() {}, syncComposerDelivery() {},
       backgroundCancellationPending: () => false,
       currentHumanCheckpoint: () => ({ kind, rpc_id: "rpc-1", questions: [{ id }] }),
       conversationAgentResponseRunning: () => true,
@@ -190,6 +218,7 @@ test("ambiguous send retry preserves both message identity and checkpoint identi
     renderConversation() {},
     conversationTransportPath: (task, suffix) => `/tasks/${task}/conversation/${suffix}`,
     DEFAULT_CONVERSATION_MESSAGE_MODE: "queue_after_turn",
+    conversationAgentResponseRunning: () => false, clearObservedPendingMessage() {},
     runtimeStatusToken: (v) => v,
     request: async (url, options) => {
       requests.push(JSON.parse(JSON.stringify({ url, body: options.json })));
@@ -265,4 +294,130 @@ test("rich tables cannot impose an intrinsic width on an entire AI turn", async 
   assert.match(css, /body \.ai-turn-main,\s*body \.ai-turn-content\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(css, /body \.ai-turn-content > \*\s*\{\s*min-width: 0/);
   assert.match(css, /body \.rich-message table\s*\{\s*min-width: 100%/);
+});
+
+test("message submission stays quiet on ordinary and queued success while checkpoint and failure feedback remain", async () => {
+  for (const scenario of ["ordinary", "created", "queued", "checkpoint", "failed"]) {
+    const text = "请继续", notices = [], transient = [], retries = [];
+    let activeNotice = "上一条提示";
+    const state = { runtimeReady: true, selectedTaskId: scenario === "created" ? null : "task-1", conversation: {} };
+    const ui = { sendButton: { dataset: {} }, messageInput: { value: text } };
+    const context = {
+      state, ui, clearComposerRetry() {}, hideNotice() { activeNotice = null; }, clearDraft() {}, saveDraft() {}, resizeComposer() {}, resumeNewConversationAttachment: async () => {}, renderConversation() {}, refreshSelected() {}, syncComposerDelivery() {},
+      showNotice(value) { notices.push(value); activeNotice = value; },
+      showTransientNotice(value) { transient.push(value); activeNotice = value; },
+      showComposerRetry(value) { retries.push(value); },
+      backgroundCancellationPending: () => false,
+      currentHumanCheckpoint: () => scenario === "checkpoint" ? { kind: "approval", rpc_id: "approval-1" } : null,
+      conversationAgentResponseRunning: () => scenario === "queued",
+      beginTaskCreationSubmission: () => ({ create_request_id: "create-1", request_id: "message-1" }),
+      runtimeStatusToken: value => value,
+      request: async () => ({ created: true, submission: { accepted: true, status: "queued" }, conversation: { conversation_id: "conversation-1" } }),
+      selectConversation: async id => { state.selectedTaskId = id; },
+      postQueuedConversationMessage: async () => {
+        if (scenario === "failed") {
+          state.messageSubmission = { status: "failed", task_id: "task-1", text, request_id: "message-1" };
+          throw new Error("网络中断");
+        }
+        return { accepted: true };
+      },
+      window: { setTimeout() {} },
+    };
+    vm.runInNewContext(section("async function submitMessage", "function deriveTaskName") + "\nglobalThis.submit = submitMessage;", context);
+    await context.submit(text);
+    assert.equal(ui.sendButton.disabled, false, scenario);
+    if (scenario === "ordinary" || scenario === "created") {
+      assert.equal(activeNotice, null, `${scenario}: accepted messages must not leave a success banner`);
+      assert.equal(transient.length, 0, scenario);
+      assert.equal(ui.messageInput.value, "", scenario);
+      assert.equal(notices.length, scenario === "created" ? 1 : 0, scenario);
+      if (scenario === "created") assert.match(notices[0], /正在开始对话/);
+    } else if (scenario === "queued") {
+      assert.equal(activeNotice, null); assert.equal(transient.length, 0); assert.equal(ui.messageInput.value, "");
+    } else if (scenario === "checkpoint") {
+      assert.equal(transient.length, 1); assert.match(transient[0], /已暂缓当前确认.*没有批准执行或提交答案/);
+    } else {
+      assert.match(activeNotice, /消息发送失败.*网络中断/);
+      assert.equal(retries.length, 1); assert.equal(retries[0].label, "重试发送");
+      assert.equal(ui.messageInput.value, text); assert.equal(transient.length, 0);
+    }
+  }
+});
+
+test("queue feedback stays beside a nonempty draft or its exact submitted user message and clears on handoff", async () => {
+  const element = () => ({ children: [], dataset: {}, attrs: {}, append(...nodes) { this.children.push(...nodes); }, setAttribute(key, value) { this.attrs[key] = value; } });
+  const ui = { composerHint: element(), sendButton: element(), messageInput: { value: "" }, messageList: element() };
+  const state = { runtimeReady: true, selectedTaskId: "task-1", conversation: { agent_response_running: true, items: [], pending: [], runs: [] } };
+  const context = { state, ui, document: { createElement: element }, formatTime: () => "12:00",
+    createConversationRequestId: () => "request-new", renderConversation() {}, runtimeStatusToken: value => value,
+    conversationTransportPath: () => "/tasks/task-1/conversation/messages", DEFAULT_CONVERSATION_MESSAGE_MODE: "queue_after_turn",
+    request: async () => ({ accepted: true, status: "queued", agent_run_id: "run-new" }),
+  };
+  const functions = section("function isPendingHumanCheckpoint", "const DATA_UPLOAD_QUESTION_IDS")
+    + section("function conversationAgentResponseRunning", "function conversationTrainingEntries")
+    + section("function syncComposerDelivery", "function createConversationRequestId")
+    + section("function beginMessageSubmission", "function pendingExecutionIntegration")
+    + section("function clearObservedPendingMessage", "function clientDegradedConversation")
+    + section("function renderMessage", "function appendInlineMarkdown");
+  vm.runInNewContext(functions + "\nglobalThis.api={syncComposerDelivery,postQueuedConversationMessage,clearObservedPendingMessage,queuedConversationMessages,renderMessage};", context);
+  const { api } = context;
+  for (const value of ["", " \n "]) {
+    ui.messageInput.value = value; api.syncComposerDelivery();
+    assert.equal(ui.composerHint.dataset.delivery, "immediate"); assert.equal(ui.sendButton.attrs["aria-label"], "发送消息");
+  }
+  ui.messageInput.value = "同一句消息"; api.syncComposerDelivery();
+  assert.equal(ui.composerHint.textContent, "等待回复后发送"); assert.equal(ui.sendButton.attrs["aria-label"], "等待回复后发送");
+  state.conversation.agent_response_running = false;
+  for (const background of [false, true]) {
+    state.conversation.background_action_running = background; api.syncComposerDelivery();
+    assert.equal(ui.composerHint.dataset.delivery, "immediate"); assert.match(ui.composerHint.textContent, /^Enter 发送/);
+  }
+  state.conversation.agent_response_running = true;
+  state.conversation.pending = [{ kind: "approval", rpc_id: "approval-1", status: "pending" }];
+  api.syncComposerDelivery(); assert.equal(ui.sendButton.attrs["aria-label"], "发送消息");
+  state.conversation.pending = [];
+  const oldMessage = { kind: "message", role: "user", text: "同一句消息", agent_run_id: "run-old" };
+  state.conversation.items = [oldMessage];
+  const submission = api.postQueuedConversationMessage("task-1", "同一句消息");
+  api.clearObservedPendingMessage("task-1", state.conversation);
+  assert.equal(state.pendingMessage.request_id, "request-new", "same-text history cannot clear a request before its server identity arrives");
+  await submission;
+  assert.equal(state.pendingMessage.delivery, "queued"); assert.equal(state.pendingMessage.agent_run_id, "run-new");
+  assert.equal(state.pendingMessage.request_id, "request-new", "an older identical message must not claim this request");
+  api.renderMessage({ ...state.pendingMessage, role: "user" }); api.renderMessage(oldMessage);
+  const labels = ui.messageList.children.map(row => row.children[1].children[0].children[1].textContent);
+  assert.deepEqual(labels, ["等待回复后发送", "12:00"]);
+  state.conversation.runs = [
+    { run_id: "run-old", status: "completed", user_message: "同一句消息" },
+    { run_id: "run-new", status: "queued", user_message: "同一句消息", composer_request: { request_id: "request-new" } },
+  ];
+  api.clearObservedPendingMessage("task-1", state.conversation);
+  assert.equal(state.pendingMessage, null, "canonical queue evidence replaces the optimistic copy");
+  assert.deepEqual([...api.queuedConversationMessages(state.conversation)].map(item => item.agent_run_id), ["run-new"]);
+  const keyExpression = section("function renderConversation(", "function actionsForTurn").match(/const renderKey = (JSON\.stringify[^\n]+);/)[1];
+  const renderKey = () => vm.runInNewContext(keyExpression, { state, conversation: state.conversation,
+    projection: { phase: "executing", workspace: {} }, backgroundRun: null, observation: "same", optimistic: null,
+    queuedMessages: api.queuedConversationMessages(state.conversation) });
+  const queuedKey = renderKey();
+  state.conversation.items.push({ ...oldMessage, agent_run_id: "run-new" });
+  assert.equal(api.queuedConversationMessages(state.conversation).length, 0, "an observed user message is no longer rendered as waiting");
+  state.conversation.items.pop(); state.conversation.runs[1].status = "running";
+  assert.equal(api.queuedConversationMessages(state.conversation).length, 0);
+  assert.notEqual(renderKey(), queuedKey, "a canonical queue transition must invalidate the renderer cache even when messages are unchanged");
+});
+
+
+test("home conversation creation marks only a new local attachment and preserves failed request identity", () => {
+  for (const [attachment, expectedPrefix] of [[null, false], [{ file: { name: "data.zip" }, task_id: null }, true], [{ file: { name: "old.csv" }, task_id: "task-other" }, false]]) {
+    let sequence = 0; const state = { selectedTaskId: null, composerAttachment: attachment, messageSubmission: null };
+    const context = { state, createConversationRequestId: () => `request-${++sequence}` };
+    vm.runInNewContext(section("function beginTaskCreationSubmission", "async function postQueuedConversationMessage") + "\nglobalThis.begin = beginTaskCreationSubmission;", context);
+    const first = context.begin("请检查材料并给出方案"); const requestId = first.request_id, createId = first.create_request_id;
+    assert.equal(requestId.startsWith("material-intake-"), expectedPrefix);
+    assert.equal(createId, "request-1", "creation identity itself does not signal a material upload");
+    first.status = "failed"; state.composerAttachment = null;
+    const retry = context.begin("请检查材料并给出方案");
+    assert.equal(retry.request_id, requestId); assert.equal(retry.create_request_id, createId); assert.equal(sequence, 2);
+    assert.equal(retry.material_id, undefined); assert.equal(retry.execution_authorized, undefined);
+  }
 });

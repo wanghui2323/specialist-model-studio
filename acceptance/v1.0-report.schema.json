@@ -31,8 +31,8 @@
       "properties": {
         "product_name": {"const": "Specialist Model Studio"},
         "distribution_name": {"const": "specialist-model-studio"},
-        "package_version": {"const": "1.0.0rc1"},
-        "api_version": {"const": "1.0.0-rc.1"},
+        "package_version": {"const": "1.0.0rc2"},
+        "api_version": {"const": "1.0.0-rc.2"},
         "distribution_kind": {"const": "source_checkout_rc"},
         "wheel_scope": {"const": "backend_only"}
       }

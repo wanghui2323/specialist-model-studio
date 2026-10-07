@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -21,10 +21,11 @@ class RecipeManifest:
     data_adapter: str | None = None
     target_kinds: tuple[str, ...] = ()
     capability_tags: tuple[str, ...] = ()
+    training_routes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
-        for key in ("modalities", "objectives", "target_kinds", "capability_tags"):
+        for key in ("modalities", "objectives", "target_kinds", "capability_tags", "training_routes"):
             value[key] = list(value[key])
         return value
 
@@ -46,6 +47,32 @@ class StrategyProposal:
         value = asdict(self)
         value["changes"] = list(self.changes)
         return value
+
+
+@dataclass(frozen=True)
+class RunExecutionContext:
+    """Trusted host controls supplied to a backend, never to model code."""
+
+    task_id: str
+    run_id: str
+    run_dir: Path
+    isolated_root: Path
+    event_sink: Callable[[str, Mapping[str, Any]], None] | None = None
+    cancel_check: Callable[[], bool] | None = None
+
+    def is_cancelled(self) -> bool:
+        return bool(self.cancel_check and self.cancel_check())
+
+    def emit(self, event_type: str, payload: Mapping[str, Any]) -> None:
+        if self.event_sink:
+            self.event_sink(event_type, payload)
+
+
+@runtime_checkable
+class ContextualRecipePlugin(Protocol):
+    """Optional extension; existing trusted in-process Recipes stay compatible."""
+
+    def train_with_context(self, contract: dict[str, Any], context: RunExecutionContext) -> Any: ...
 
 
 @runtime_checkable

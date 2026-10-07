@@ -54,8 +54,20 @@
     training_orchestrator: "训练协调器",
   };
   const TOOL_LABELS = {
+    model_harness_get_context_state: "读取目标与已回答事项",
+    model_harness_record_context_state: "保留目标与选择",
+    model_harness_read_context_evidence: "按需读取历史证据",
+    model_harness_inspect_context: "核对本轮上下文",
     model_harness_list_recipes: "检查可用训练方案",
     model_harness_list_data_adapters: "检查数据导入方式",
+    model_harness_list_execution_assets: "查看已获取模型文件",
+    model_harness_acquire_execution_asset: "获取固定版本模型文件",
+    model_harness_get_execution_workspace: "检查工程运行条件",
+    model_harness_create_execution_proposal: "保存工程代码与方案",
+    model_harness_list_execution_proposals: "查看工程方案历史",
+    model_harness_get_execution_proposal: "读取工程验证与日志",
+    model_harness_qualify_execution_proposal: "隔离验证工程方案",
+    model_harness_activate_execution_proposal: "启用已验证方案",
     model_harness_match_capability: "匹配训练能力",
     model_harness_list_tasks: "检查现有训练任务",
     model_harness_create_task: "创建训练任务",
@@ -64,6 +76,7 @@
     model_harness_update_task_spec: "确认任务理解",
     model_harness_clarify_task_spec: "补充任务理解",
     model_harness_import_dataset: "导入并体检数据",
+    model_harness_import_material_dataset: "导入已上传材料",
     model_harness_configure_contract: "设置训练条件",
     model_harness_confirm_contract: "确认训练设置",
     model_harness_authorize_task_run_start: "申请启动本次训练",
@@ -99,6 +112,10 @@
     model_harness_decide_training_plan: "审批训练计划",
     model_harness_check_resource_feasibility: "检查本机资源可行性",
     model_harness_get_resource_feasibility: "读取资源可行性证据",
+    model_harness_get_local_resources: "查看本机资源",
+    model_harness_get_conversation: "核对对话与任务状态",
+    model_harness_list_materials: "查看已上传材料",
+    model_harness_get_material: "读取材料检查报告",
     model_harness_hf_capability: "检查 Hugging Face 能力边界",
     model_harness_hf_search: "搜索 Hugging Face 模型",
     model_harness_hf_card: "读取 Hugging Face 模型卡",
@@ -209,6 +226,9 @@
         reason: feasibility.blockers?.[0]?.message || "当前机器或隔离环境不满足已批准计划。",
       };
     }
+    const activeBlocker = (selected.blockers || []).find(item => item.active !== false && !["recipe_unavailable", "verified_recipe_unavailable"].includes(item.code));
+    if (activeBlocker) return { code: activeBlocker.code || "execution_condition_blocked", label: "执行条件需处理", state: "blocked", reason: activeBlocker.message || "请核对当前任务的阻断证据，并据此调整方案。" };
+    if (selected.capability_status === "matched" && selected.recipe_source === "qualified-execution" && selected.current_execution_proposal_id) return { code: "available_qualified_execution", label: "工程方案已验证", state: "available", reason: "本任务实现已有真实隔离验证证据；正式训练仍需合同确认与运行审批。" };
     if (selected.capability_status === "matched" && selected.recipe_id) {
       return {
         code: decision === "fit" ? "available_resource_fit" : "available_verified_recipe",
@@ -217,7 +237,7 @@
         reason: `已注册 ${selected.recipe_id}；仍需数据体检、合同确认和运行审批。`,
       };
     }
-    if (selected.capability_decision?.selected_family === "audio_classification" && selected.current_recipe_build?.status === "awaiting_registration") {
+    if (selected.current_recipe_build?.status === "awaiting_registration") {
       return {
         code: "requires_recipe_registration",
         label: "等待注册训练方案",
@@ -225,14 +245,12 @@
         reason: "可信声明式 Recipe 已验证，但尚未获得人工注册批准。",
       };
     }
-    if (selected.capability_status === "needs_recipe") {
+    if (selected.capability_status === "needs_recipe" || selected.status === "needs_recipe") {
       return {
         code: "unavailable_no_verified_recipe",
-        label: "暂无可执行训练方案",
-        state: "blocked",
-        reason: selected.capability_decision?.selected_family === "asr"
-          ? "语音转文字可继续静态诊断，但当前没有已验证训练 Recipe。"
-          : "当前模型族没有已验证、已注册的训练 Recipe。",
+        label: "准备训练方案",
+        state: "pending",
+        reason: "暂未匹配现成方案，继续准备实现路线、数据要求和资源预算；具体运行需通过方案验证与授权。",
       };
     }
     return {
@@ -281,6 +299,7 @@
       truth_type: truthType,
       title: item?.title || item?.label || null,
       summary: item?.summary || item?.detail || item?.text || payload.text || null,
+      reason: item?.reason || payload.reason || null,
       text: item?.text || payload.text || null,
       call_id: item?.call_id || payload.call_id || null,
       tool_name: item?.tool_name || payload.tool_name || null,

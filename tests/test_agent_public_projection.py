@@ -96,6 +96,38 @@ class AgentPublicProjectionTests(unittest.TestCase):
         self.assertNotIn("/tmp/private/cache.bin", projected["note"])
         self.assertIn("[local-path-redacted]", projected["note"])
 
+    def test_markdown_and_chinese_quoted_slash_pairs_keep_their_meaning(self) -> None:
+        examples = [
+            "`day_of_week`/`is_weekend` 与日期必须一致。",
+            "先复核「退货」/「退款」与「换货」的边界。",
+            "比较“训练”/“验证”与‘准确率’/‘召回率’。",
+            "路径保留语义：`x`/`y`；缓存 `/tmp/private/cache.bin`，附件「/Users/person/data.csv」。",
+        ]
+        for text in examples[:3]:
+            with self.subTest(text=text):
+                self.assertEqual(agent_public_projection(text), text)
+        projected = agent_public_projection(examples[3])
+        self.assertIn("`x`/`y`", projected)
+        self.assertNotIn("/tmp/private", projected)
+        self.assertNotIn("/Users/person", projected)
+        self.assertIn("`[local-path-redacted]`", projected)
+        self.assertIn("「[local-path-redacted]」", projected)
+        self.assertNotIn("source_path", agent_public_projection({"source_path": "/Users/person/data.csv"}))
+
+    def test_host_paths_adjacent_to_chinese_and_embedded_file_uris_stay_private(self) -> None:
+        value = agent_public_projection({"note": "路径/Users/person/private.csv；打开 file:///tmp/private.csv 或 ~/private.csv"})
+        self.assertNotIn("/Users/person", value["note"])
+        self.assertNotIn("/tmp/private", value["note"])
+        self.assertNotIn("~/private", value["note"])
+        self.assertIn("[local-path-redacted]", value["note"])
+
+    def test_known_host_root_after_chinese_text_is_redacted_but_url_is_not(self) -> None:
+        projected = agent_public_projection("路径/Users/private/file 与缓存/tmp/cache.bin；参考 https://example.com/Users/private/file")
+        self.assertIn("路径[local-path-redacted]", projected)
+        self.assertIn("缓存[local-path-redacted]", projected)
+        self.assertIn("https://example.com/Users/private/file", projected)
+        self.assertEqual(agent_public_projection("`day_of_week`/`is_weekend`"), "`day_of_week`/`is_weekend`")
+
     def test_agent_header_is_path_safe_while_local_ui_projection_is_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             runs_dir = Path(temporary) / "runs"

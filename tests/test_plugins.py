@@ -13,6 +13,7 @@ class PluginRegistryTests(unittest.TestCase):
             registry.recipe_ids(),
             [
                 "digit-classification",
+                "generic-isolated-execution",
                 "image-folder-classification",
                 "tabular-classification",
                 "tabular-regression",
@@ -42,6 +43,14 @@ class PluginRegistryTests(unittest.TestCase):
         plugin = registry.get_recipe("digit-classification")
         with self.assertRaisesRegex(PluginError, "duplicate"):
             registry.register_recipe(plugin)
+
+    def test_explicit_training_route_cannot_be_replaced_by_a_cached_recipe(self) -> None:
+        registry = PluginRegistry()
+        self.assertTrue(registry.match_recipes({"modality": "image", "objective": "classification"}))
+        self.assertEqual(registry.match_recipes({
+            "modality": "image", "objective": "classification",
+            "training_route": "fine_tune",
+        }), [])
 
 
 if __name__ == "__main__":

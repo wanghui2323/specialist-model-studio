@@ -25,8 +25,10 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from ..data_adapters import verify_training_dataset_integrity
+from ..errors import ContractError
 from ..io_utils import read_json, write_json
 from ..plugin_api import StrategyProposal
+from ..tabular_values import normalize_tabular_value, tabular_inference_example
 
 
 @dataclass
@@ -56,13 +58,17 @@ def _load_rows(contract: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, np.nda
     dataset = contract["dataset"]
     feature_columns = list(dataset["feature_columns"])
     target_column = str(dataset["target_column"])
+    numeric_columns = set(dataset.get("numeric_columns", []))
     rows: list[list[Any]] = []
     targets: list[str] = []
     row_numbers: list[int] = []
     with Path(dataset["csv_path"]).open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         for row_number, row in enumerate(reader, start=2):
-            rows.append([row.get(column, "") for column in feature_columns])
+            rows.append([
+                normalize_tabular_value(row.get(column), column in numeric_columns)
+                for column in feature_columns
+            ])
             targets.append(str(row[target_column]).strip())
             row_numbers.append(row_number)
     return (
@@ -116,7 +122,9 @@ def _preprocessor(dataset: dict[str, Any]) -> ColumnTransformer:
                 "numeric",
                 Pipeline(
                     [
-                        ("impute", SimpleImputer(strategy="median")),
+                        ("impute", SimpleImputer(
+                            strategy="median", keep_empty_features=True,
+                        )),
                         ("scale", StandardScaler()),
                     ]
                 ),
@@ -129,7 +137,10 @@ def _preprocessor(dataset: dict[str, Any]) -> ColumnTransformer:
                 "categorical",
                 Pipeline(
                     [
-                        ("impute", SimpleImputer(strategy="most_frequent")),
+                        ("impute", SimpleImputer(
+                            missing_values=None, strategy="most_frequent",
+                            keep_empty_features=True,
+                        )),
                         (
                             "encode",
                             OneHotEncoder(handle_unknown="ignore", sparse_output=False),
@@ -213,6 +224,8 @@ def classification_metrics(
 def train(contract: dict[str, Any]) -> TrainingContext:
     verify_training_dataset_integrity(contract["dataset"])
     X, y, row_numbers = _load_rows(contract)
+    if len({tuple(row) for row in X}) != len(X):
+        raise ContractError("分类数据存在重复有效特征或标签冲突，请重新导入以完成去重检查")
     dataset = contract["dataset"]
     labels = sorted({str(value) for value in y.tolist()})
     train_idx, validation_idx, test_idx = _split_indices(
@@ -355,6 +368,9 @@ def package(
         {
             "estimator": context.final_model,
             "feature_columns": context.feature_columns,
+            "numeric_columns": list(contract["dataset"]["numeric_columns"]),
+            "categorical_columns": list(contract["dataset"]["categorical_columns"]),
+            "feature_value_policy": "typed_values_missing_none_v1",
             "target_column": context.target_column,
             "labels": context.labels,
             "task_type": "classification",
@@ -441,7 +457,7 @@ This local model assigns a class in `{context.target_column}` from a user-import
         encoding="utf-8",
     )
     (artifact_dir / "inference_example.py").write_text(
-        """import csv\nimport joblib\n\nbundle = joblib.load('model.joblib')  # trusted artifact only\nwith open('one-row.csv', encoding='utf-8', newline='') as handle:\n    row = next(csv.DictReader(handle))\nX = [[row.get(name, '') for name in bundle['feature_columns']]]\nprint(bundle['estimator'].predict(X)[0])\n""",
+        tabular_inference_example(),
         encoding="utf-8",
     )
     return metrics

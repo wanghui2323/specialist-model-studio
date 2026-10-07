@@ -1,394 +1,99 @@
 # Specialist Model Studio
 
-**用自然语言协作完成专业模型训练的本地优先 AI 工作台。**
+**用自然对话推进模型任务：准备数据与实现、隔离训练、独立评估、试用和交付。**
 
-Specialist Model Studio 面向希望训练专业小模型、但不具备完整算法工程能力的 AI 产品经理、独立开发者和业务团队。你先像使用普通 AI 助手一样描述目标；问候、能力咨询和尚未成型的想法只停留在对话中。只有当输入与期望输出已经足够明确时，AI 才会把同一段对话晋升为可恢复的 `TrainingTask`，继续组织模型研究、数据检查、训练、评测、新样本验证和交付。
+当前候选版本为 **`v1.0.0-rc.2` 开发者源码预览版（源码 RC）**（Python `1.0.0rc2`，API/插件 `1.0.0-rc.2`）。它供代码审核、本地体验和问题反馈，**不表示生产就绪**。只有精确提交的远端 CI、冷克隆与页面验收通过并创建 Tag/Prerelease，才算公开发布；版本字符串本身不是发布证据。
 
-它不是一个展示固定步骤的训练 Demo。每次真实操作都必须对应可持久化的任务对象、工具动作、人工确认或证据对象；无法训练时，系统会返回可审查的 `BlockerEvidence`，而不是生成假的进度、指标或制品。
+- [项目与反馈](https://github.com/wanghui2323/specialist-model-studio)
+- [当前版本安装与验收指南](docs/v1.0-source-release-candidate.md)
+- [通用训练架构](plans/v1.0-conversation-native/ADR-002-GENERAL-TRAINING-EXECUTION.md)
+- [上下文机制](plans/v1.0-conversation-native/ADR-003-CONTEXT-RUNTIME.md)
+- [2026-10-06 页面、效果与重载记录](plans/v1.0-conversation-native/OVERALL-ACCEPTANCE-20261006.md)
+- [rc.2 发布收尾记录](plans/v1.0-conversation-native/RC2-RELEASE-20261007.md)
 
-> 当前版本：`1.0.0rc1`（API：`1.0.0-rc.1`，功能轨道：`v1.0-conversation-native`，发布状态：`unreleased_rc`）。这是可供代码审核和本地体验的源码 RC，不表示生产就绪，也不自动代表 CI、Tag 或 GitHub Prerelease 已发布。
+## 当前可以验证什么
 
-- 项目地址：<https://github.com/wanghui2323/specialist-model-studio>
-- 最新 PC 验收：[2026-09-10 收尾记录](plans/v1.0-conversation-native/FINAL-PC-RELEASE-20260910.md)
-- 源码候选说明：[v1.0 源码 RC 指南](docs/v1.0-source-release-candidate.md)
-- 产品边界决策：[v1.0 发布统一方案](plans/v1.0-conversation-native/PRODUCT-RELEASE-UNIFICATION.md)
-
-| 发布项 | 当前状态 |
-| --- | --- |
-| Version | `1.0.0rc1` |
-| Source branch | `codex/v1.0-conversation-native` |
-| 本地回归 | Python 650 / Node 182；真实双旅程与三种 PC 视口已复验 |
-| 远端、冷克隆、Tag / Prerelease | 独立发布门；以精确提交的验收附件及 GitHub Release 为准，不由本地通过推定 |
-| 生产就绪 | 否 |
-
-## 它如何工作
+用户表达目标，Agent 逐步明确输入、输出、路线、数据和资源；必要时从同一对话创建可恢复的 `TrainingTask`。已有 Recipe 是可复用实现，没有现成 Recipe 时由 Agent 准备不可变代码方案，完成真实 OCI 资格验证，再通过本次批准创建 Run。模型类型不构成产品白名单。
 
 ```text
-用户开始普通对话
-  → AI 回答咨询或一次澄清一个关键问题
-  → 输入与输出明确后，将同一对话晋升为 TrainingTask
-  → 研究模型来源并检查许可证、资源与风险
-  → 导入和体检用户数据
-  → 人工确认训练合同与验收门槛
-  → 专家智能体执行真实训练
-  → 独立评测与失败样本分析
-  → 用一条全新样本做推理验证
-  → 生成带哈希和隐私边界的交付 Bundle
+对话与材料上传 → 数据版本与方案 → 隔离资格验证
+→ 确认训练范围 → 真实训练 → 独立测试
+→ 全新输入试用 → 模型包下载 → 独立重载
 ```
 
-- 对话是第一层对象：问候、能力咨询和模糊意图不会创建训练任务，也不会出现在任务列表。
-- 当目标已经具备可辨认的输入与输出时，根协调器通过类型化工具调用将当前对话原子晋升为 `TrainingTask`；会话 ID、历史和执行血缘保持不变。
-- 对话、计划、工具调用、人工确认和结果属于同一个 AI 回合，不拆成互相矛盾的技术面板。
-- 用户始终面对一个 AI 助手。根协调器负责澄清、路由和人工检查点；研究、数据、资源、训练和交付由五个真实子智能体按权限分工，但具体角色只在真实动作或委派的执行明细中出现。
-- 长执行过程默认折叠，用户先看到结论、当前状态和下一步；完整脱敏证据仍可随时展开。
-- 对话与任务使用同一个与展示名称解耦的不可读稳定 ID（形如 `task-<uuid>`）；晋升任务不会改写 URL 身份。Dataset、合同、Run、评测、推理检查和 Bundle 也都有稳定身份，刷新与进程重启后可以恢复。历史名称式任务 ID 继续兼容读取。
-- Run、样本推理、Bundle 构建和下载都使用一次性授权，不会因为 Agent 文字说明而越过人工确认。
+- 从零训练、预训练微调和现成推理是不同路线，保留用户已明确的选择。
+- 生成/第三方训练代码只在已验证的受限 OCI worker 内执行；没有隔离环境时只允许静态分析并报告实际环境缺口。
+- 训练、评估、试用和交付均绑定任务、版本、摘要与实际证据；上传不代表批准执行。
+- 训练/验证用于候选选择，最终测试保持独立；不能为了通过而下调门槛或重复利用已曝光测试选模。
+- 运行完成、模型效果达标、公开发布是不同判断。Agent 应说明失败与下一步，不能把有声音或有预测值说成效果合格。
 
-## 使用环节与界面状态
+语音、OCR、NLP、时序与未注册的学习排序已经用于代表性真实页面验证。这些是测试样本，不是支持类型清单。排序样例通过；语音/OCR存在质量失败，NLP有否定语义反例，时序新输入存在旧历史上下文问题，详见对应验收记录。
 
-第 1、4、5 张图来自已发布的 [v1.0.0-rc.1](https://github.com/wanghui2323/specialist-model-studio/releases/tag/v1.0.0-rc.1) PC 验收，精确提交是 `ee17ed9`。房价任务使用 120 行公开合成 CSV；语音任务固定公开来源后停在类型化阻断，没有创建训练 Run。
+本预览版的实测训练后端为本地 CPU OCI，实测协调模型服务为 Codex CLI。远程 GPU、其他服务等价实测、环境自主构建、总实验预算和完整检查点恢复仍在建设；不以接口存在推定已经验证。
 
-首页只有一句「想训练一个什么模型？」和「说说你想解决的问题。」点示例卡片会直接开始对话。
+三个内置的用户数据 Recipe（图片目录分类、表格回归、表格分类）继续提供复用路径；音频关键词分类（动态注册）仍保留其声明式验证。这些历史实现不定义通用 Agent 的能力边界。
 
-第 2、3 张图是当前界面的页头和主按钮。锁定合同显示「等待锁定合同」，启动训练显示「等待启动训练」。这两张批准卡现在会在按钮上方列出预测列、数据行数和验收门槛；截图拍摄时卡片还没有这三行。等待确认时，执行过程收成「本轮已经做了什么」。v1.0.0-rc.1 的真实 Run 与交付结论仍以第 4 张和发布附件为准。
+## 安装与启动
 
-| 环节 | 界面状态 | 验收 |
-| --- | --- | --- |
-| 导入数据并确认预测列 | 「确认要预测的字段」，推荐列 `price` | v1.0.0-rc.1 已通过 |
-| 锁定训练合同 | 页头「等待锁定合同」，动作「确认并锁定」 | v1.0.0-rc.1 已通过；截图为当前页头 |
-| 启动训练 | 页头「等待启动训练」，动作「批准并启动训练」 | v1.0.0-rc.1 已通过，产生真实 Run；截图为当前页头 |
-| 评测与交付 | 页头「本轮已完成」，写出交付 ZIP 和 SHA-256 | v1.0.0-rc.1 已通过；评测可进入发布审阅，不代表生产发布 |
-| 不支持的任务 | 页头「任务当前受阻」，证据 `blocked_security` | v1.0.0-rc.1 已通过；没有训练 Run |
-
-当前界面里，已导入的文件条显示「已导入」；阻断证据的角标是「阻断证据」；消息中的本机结果地址显示为「结果面板」。第 4、5 张仍是 rc.1 验收画面，页头结论没有变。
-
-表格分类、图片分类和音频关键词分类不在这组截图里。前两者已有引擎自动化测试；音频关键词必须先经 Recipe Factory 注册。Digits 只用于教学。
-
-### 1. 确认预测字段
-
-导入 `housing-regression-120.csv` 后，系统列出字段并推荐 `price`。未确认前不会把文件写进训练任务。
-
-![确认要预测的字段，推荐列为 price](docs/images/usage/01-confirm-target.png)
-
-### 2. 锁定训练合同
-
-当前界面在锁定合同前停在「等待锁定合同」。执行过程默认收起，主按钮是「确认并锁定」。卡片上同时列出预测列、行数、特征数和验收门槛。锁定只对当前合同版本有效；继续讨论不会自动批准。
-
-![等待锁定合同，主按钮为确认并锁定](docs/images/usage/02-lock-contract.png)
-
-### 3. 批准并启动训练
-
-启动训练前，页头是「等待启动训练」，主按钮是「批准并启动训练」。批准后才按已冻结的数据和合同启动一次真实 Run。
-
-![等待启动训练，主按钮为批准并启动训练](docs/images/usage/03-approve-training.png)
-
-### 4. 交付完成
-
-页头变为「本轮已完成」。交付 ZIP 写在本机工作区，并给出与打包清单一致的 SHA-256。原始数据和测试集引用不在包内。
-
-![本轮已完成并写出交付文件](docs/images/usage/04-delivery-complete.png)
-
-### 5. 不支持任务停在阻断
-
-语音任务的页头是「任务当前受阻」。证据面板给出 `blocked_security`：来源可审查，但不能创建计划或启动训练。
-
-![任务当前受阻，展示 blocked_security 阻断证据](docs/images/usage/05-unsupported-blocker.png)
-
-## 一个产品，三层能力
-
-| 层级 | 对外角色 | 职责 |
-| --- | --- | --- |
-| Specialist Model Studio | 唯一产品入口 | 对话、确认、执行状态、结果与证据体验 |
-| Model Harness | 内部训练引擎 | Task、Data、Contract、Run、Evaluation、Inference 和 Artifact 生命周期 |
-| DeepSeek Harness | 内部多智能体插件 | 根协调器、五个专家子会话、工具白名单和 provider 连接 |
-
-本项目不是 DeepSeek Harness 的整体改造或前端换皮。DeepSeek Harness 只提供内部 Agent Loop、原生子智能体、工具调用和会话运行时；产品交互、领域对象、状态真值、训练与证据仍由 Specialist Model Studio / Model Harness 定义。
-
-```text
-Specialist Model Studio（对话、确认、过程、结果）
-                    │ Conversation API / SSE
-                    ▼
-Training Orchestrator + 5 specialists
-DeepSeek Harness（会话、委派、工具调度）
-                    │ model_harness_* 工具白名单
-                    ▼
-Model Harness（Task、Data、Run、Evaluation、Bundle 真值）
-```
-
-多智能体不能绕过 Recipe、Data Adapter、机器资源、安全隔离和人工发布门。
-
-## 当前能力边界
-
-| 状态 | 能力 | 当前准确表述 |
-| --- | --- | --- |
-| v1 RC 真实端到端验收 | 表格回归 | 已验证数据检查、合同确认、训练、独立评测、新样本推理、Bundle 与下载 |
-| 引擎已实现并有自动化测试 | 表格分类 | 支持分类目标 CSV、类别均衡优化、评测、推理与 Bundle；不等于本次 v1 浏览器旅程重新验收 |
-| 引擎已实现并有自动化测试 | 图片分类 | 支持图片目录 ZIP、轻量分类器、评测、推理与 Bundle；不等于本次 v1 浏览器旅程重新验收 |
-| 引擎已实现并有自动化测试 | 声明式音频关键词分类 | 需由 Recipe Factory 构建、验证、批准和注册；不是 ASR、TTS 或流式唤醒词引擎 |
-| 教学 | Digits 分类 | 使用 scikit-learn 内置数据完成教学闭环，不代表用户数据落地能力 |
-| Analysis-only | 任意公开 Hugging Face / GitHub 训练仓库 | 可发现、固定版本、静态分析、规划和资源判断；不保证能训练 |
-| 当前未支持 | OCR、ASR、TTS、检测、分割、时序预测、文本分类等 | 返回类型化阻断或能力建设请求，不创建假的 Run |
-
-当前可直接承接用户数据的基础闭环是**三个内置的用户数据 Recipe**：图片目录分类、表格回归与表格分类；音频关键词分类（动态注册）必须先经过 Recipe Factory 构建、验证和人工批准，不能与内置能力混为一谈。
-
-2026-09-10 的独立工作区使用 120 行公开合成 CSV，从真实浏览器对话完成 Dataset、合同、Run、评测、新样本推理、Bundle 与下载；运行完整性 14/14、指标门 5/5，24 条独立测试样本，评测允许进入发布审阅，但不等于已经发布。新样本预测只证明推理链路可执行，不代替准确率验收。无效替换 CSV 返回 HTTP 422，原数据、合同和当前 Run 保持不变。ASR 来源固定到不可变 commit，返回 `recipe_unavailable` 和静态分析 `blocked_security`，没有创建训练 Run。PC 1280×800、1440×900、1920×1080 已检查，手机不在本次范围。完整对象身份、摘要、取消/恢复和证据边界见[最新 PC 收尾记录](plans/v1.0-conversation-native/FINAL-PC-RELEASE-20260910.md)。
-
-## “通用训练”意味着什么
-
-用户可以从 Hugging Face 或 GitHub 搜索公开模型与训练仓库，显式选择候选并固定到不可变 commit。系统随后可以执行来源快照、许可证检查、仓库静态分析、训练计划和本机资源诊断。
-
-“通用”表示不同模型方向可以进入同一套 `discover → analyze → plan → qualify → train/evaluate or block` 协议，**不表示任意仓库一定能在当前机器训练**：
-
-- 只有已注册、已验证并与 TaskSpec / Data Adapter 匹配的 Recipe 才能创建真实 Run；
-- 没有经过验证的 OCI 或等价隔离运行时，只允许静态分析，不执行第三方安装脚本、生成 Python 或模型 remote code；
-- 私有仓库需要用户显式提供凭据；没有凭据不会声称已验证；
-- 本机算力、内存、磁盘、许可证或数据不满足要求时，系统必须停止并给出类型化恢复建议。
-
-例如，当前 ASR 任务会先通过对话确认“普通话录音转文字”的目标，再生成 `recipe_unavailable` 阻断和能力建设请求；它不会冒充已经训练出语音识别模型。
-
-## 真实训练与交付证据
-
-训练完成不只看一个成功标签：
-
-- `EvaluationReport` 分开记录运行完整性、指标门槛、证据充分性和最终发布结论；
-- 新样本试跑会重新加载模型并执行真实特征处理与预测，同时校验输入和模型哈希；
-- Artifact Bundle 只包含可交付白名单文件，并显式排除原始数据、测试引用、内部状态和绝对路径；
-- 原始 Run 不会被优化覆盖；读取 held-out test 证据的优化子 Run 会标记为 `test_contaminated`，不能冒充独立发布证据；
-- 未支持能力、无效数据和资源不足都有可持久化的失败关闭路径。
-
-Recipe Factory 当前只允许可信、白名单化的声明式构建。候选和验证都有 digest，注册前必须人工批准；可下载的 Code Agent scaffold 只是待实现契约，不是可执行 Recipe 的证明。
-
-## 快速开始：启动完整的本地 Studio
-
-首选方式会同时预检并启动 Specialist Model Studio、真实多智能体运行时与本地工作台：
-普通 wheel 安装只承诺 backend-only 的 `serve` 能力；完整 `start` 必须绑定包含锁定 DSH runtime 与启动脚本的源码 checkout。
-
-前置条件：Python `>=3.11`、[`uv`](https://docs.astral.sh/uv/)、Node.js / npm，以及可调用的 DeepSeek provider 凭据。
+需要 Git、Python 3.12、[uv](https://docs.astral.sh/uv/)、Node.js 24 LTS/npm，以及可用的 Docker 兼容 Linux 容器服务。当前实测为 macOS + Linux ARM64 worker；原生 Windows 完整旅程尚未验证。
 
 ```bash
-git clone --branch codex/v1.0-conversation-native \
-  https://github.com/wanghui2323/specialist-model-studio.git
+git clone https://github.com/wanghui2323/specialist-model-studio.git
 cd specialist-model-studio
+# 发布后使用固定 Tag；发布前以验收记录中的精确 candidate commit 为准。
+git checkout v1.0.0-rc.2
 uv sync --frozen --extra server --extra test
 npm ci --prefix integrations/deepseek-harness --ignore-scripts
 npm ci --prefix acceptance/dsh-runtime --ignore-scripts
-export DEEPSEEK_API_KEY="<your-key>"
 ```
 
-`DEEPSEEK_API_KEY` 只交给 DSH 的 provider/credential 层，不进入浏览器、训练合同或任务证据。也可以先用 DSH 的 Models 设置页写入其本地凭据存储。启动器会隔离会话、设置与运行状态，同时把 credentials provider 连接到凭据文件：可通过 `MODEL_HARNESS_DSH_CREDENTIALS_FILE` 显式选择；未设置时若标准用户 DSH 凭据文件存在，则直接复用该 store。连接不会复制密钥、不会输出文件路径或内容，也不会把密钥写入模型工具环境。然后启动完整产品：
+等价的 Python 安装入口为 `uv pip install '.[server,test]'`；发布复现以 `uv.lock` 的冻结安装为准。
+
+准备可复现 CPU 镜像（只有审阅 recipe 和哈希校验的依赖 wheel 进入断网构建上下文，不含模型权重或用户训练数据）：
 
 ```bash
-uv run specialist-model-studio start \
-  --runs-dir runs \
-  --host 127.0.0.1 \
-  --port 8765
+uv run python scripts/prepare_cpu_worker.py --configure
 ```
 
-- Specialist Model Studio：<http://127.0.0.1:8765/app>
-- 命令只展示产品工作台地址，并通过 `--no-open` 禁止 DSH 自动打开浏览器；DeepSeek Harness 端口属于内部运行时，不作为第二个产品入口。Studio 使用其会话、模型调用、子 Agent 和审批服务，不依赖打开 DSH 页面；自研训练工具以插件注册到该运行时。
-- DeepSeek Harness CLI 由 `acceptance/dsh-runtime/package-lock.json` 精确锁定为 `0.1.0-rc.6`；启动器只使用仓库内 `acceptance/dsh-runtime/node_modules/.bin/dsh`，不依赖机器上碰巧安装的全局版本。
-- DSH 的 session、settings、preset 与运行状态默认隔离在所选运行目录的 `runs/.dsh`；凭据 store 是唯一独立连接的 provider 状态。需要多套完全隔离的验收环境时，可把 `MODEL_HARNESS_DSH_CREDENTIALS_FILE` 指向该环境自己的凭据文件，并显式设置 `MODEL_HARNESS_RUNS_DIR` 或 `DSH_HOME`。
-- 启动器会校验当前 checkout、runs 工作区、Agent 合同与 DSH 连接；端口被其他实例占用或身份不一致时会拒绝复用，不会终止未知进程。
-- 首个真实对话回合仍是 provider/API Key 的最终可调用性验证；仅看到端口健康不等于大模型调用成功。
+若已有 operator 配置，脚本会保留它并拒绝默认覆盖。可以使用输出中的不可变 image ID 设置 `MODEL_HARNESS_EXECUTION_IMAGE`，或明确选择 `--replace-config`。macOS 使用 Colima 时，启动服务前先选择正确 `DOCKER_CONTEXT`，并把隔离作业目录共享给 Linux VM；见[完整指南](docs/v1.0-source-release-candidate.md)。
 
-当前服务没有多用户鉴权，不应直接暴露到公网。
-
-## 可选：训练引擎 CLI
-
-如果你只需要操作兼容训练引擎、编写自动化脚本或复核已有 Run，可以不启动对话 Agent：
+选择可用的协调模型服务。已有 Codex CLI ChatGPT 登录时，可使用目前已实测的路由：
 
 ```bash
-uv sync --extra server --extra test
-
-uv run specialist-model-studio --version
-uv run specialist-model-studio list-recipes
-uv run specialist-model-studio init \
-  --recipe digit-classification \
-  --output workspaces/my-first-model
-uv run specialist-model-studio run \
-  workspaces/my-first-model/task_contract.json
+codex login status
+export MODEL_HARNESS_AGENT_PROVIDER=codex-cli
+export MODEL_HARNESS_AGENT_MODEL=gpt-5.6-sol
+uv run specialist-model-studio start
 ```
 
-没有安装 `uv` 时，可以创建虚拟环境，再运行 `python -m pip install -e '.[server,test]'`。Node.js 和 DeepSeek Harness 不是后端 CLI 的启动前提，但完整的对话式 Studio 需要仓库锁定的 DSH runtime。
+也可配置 DeepSeek 或其他 DSH 已安装的服务适配器；配置后须验证真实调用，不把配置存在当作已接通。DeepSeek API 路由可在本机设置 `DEEPSEEK_API_KEY`，不要把密钥发到聊天、提交到仓库或放进模型包。
 
-检查一个真实 Run：
+`start` 输出一个 Studio `/app` 地址。普通 wheel 的 `uv run specialist-model-studio serve` 仅为 backend-only 开发入口，完整 `start` 仍要求源码 checkout 的运行时、插件和启动器；`agent_required` 为 `false` 的后台演示不能代替真实 Agent 验收。
+
+运行时的 `source_preview_rc` 标记只描述实验源码范围，功能轨道为 `v1.0-conversation-native`；旧版 `unreleased_rc` 同样不是实时 GitHub 发布状态。
+
+## 体验与反馈
+
+1. 用自己的话描述希望得到的模型效果；不需要先选一个系统预设类型。
+2. 通过页面上传材料，查看结构与数据问题，再确认会影响下一步的必要决定。
+3. 在真实确认卡核对训练/试用/交付范围；发送消息不会代替批准。
+4. 查看独立指标与限制，用未参与实验的新输入体验，保存可重载模型包。
+
+模型包排除原始数据文件与内部运行文件；模型状态仍可能保存数据上下文，需要另外审查才能分享。默认保持实验数据、下载的权重、生成声音、凭据与 `runs/` 在版本控制外。代码许可、权重许可、数据许可分别核对。
+
+页面刷新不应丢失任务和已完成产物；停止需要以实际进程与任务状态确认。服务重启后，已中断的执行应如实显示，不能制造“继续运行”的状态。确定性复验覆盖协议行为，它不冒充真实 PID 重启；发布验收另检查实际重启。
+
+反馈请附版本/提交、目标、操作步骤和脱敏现象；不要发送密钥、私人声音、客户原始材料或包含它们的运行目录。
+
+## 开发验证与发布
 
 ```bash
-uv run specialist-model-studio status runs/<run-id>
-uv run specialist-model-studio events runs/<run-id>
-uv run specialist-model-studio explain runs/<run-id>
-uv run specialist-model-studio strategies runs/<run-id>
-uv run specialist-model-studio verify runs/<run-id> --deep
+uv run python -m unittest discover -s tests
+npm test --prefix integrations/deepseek-harness
+npm run check --prefix integrations/deepseek-harness
+uv run python scripts/verify_project.py
 ```
 
-`--deep` 只应对哈希已匹配、由本地可信 Run 生成的 Joblib 模型使用。不要加载来源不明的 Pickle/Joblib。
+[当前发布门槛](acceptance/v1.0-gates.json)要求已注册基线回归和未知目标完整页面链；仅返回“未支持”的阻断不算通用能力通过。历史 rc.1 门槛保存在 `acceptance/archive/v1.0-rc.1-gates.json`，旧报告不自动覆盖新代码。
 
-### 高级入口：只启动后端
-
-```bash
-uv run specialist-model-studio serve \
-  --runs-dir runs \
-  --host 127.0.0.1 \
-  --port 8765
-```
-
-`serve` 只启动后端 HTTP/SSE API，保留给自动化、诊断或不需要自然语言协作的兼容场景。`/health` 的 `scope` 为 `backend` 且 `agent_required` 为 `false`；后端健康不代表真实对话 Agent 已连接。需要完整产品体验时应使用 `start`。
-
-开发者仍可直接运行 `./scripts/start_conversation_harness.sh` 查看内部运行时地址与详细启动日志。只有这个非公开开发入口允许显式设置 `MODEL_HARNESS_ALLOW_SYSTEM_DSH=1` 退回 PATH 上的系统 CLI；默认公开 `start` 和 L6 验收都会拒绝这种未锁定 fallback。
-
-DeepSeek Harness 对 Model Harness 后端和 CLI 是可选适配层，但对完整 conversation-native Studio 是必需的内部运行时；它不是训练核心的 fork。当前 preset 创建一个 `Training Orchestrator` 根会话和五个独立、可续跑的原生子智能体：`research_source`、`data_experiment`、`resource_safety`、`build_training`、`evaluation_delivery`。每个子智能体都有独立 DSH session、角色提示词和显式 `model_harness_*` 工具白名单；前端只呈现一个协调器对话，并把专家调用折叠为可检查的团队执行过程。所有任务状态和结果仍来自本地真实 HTTP 对象；Agent 投影会剥离本机绝对路径。当前 `research_source` 负责模型来源研究与候选整理；完整论文检索、证据抽取、引用追踪及 Universal-SciAgent 协议接入仍是规划能力。详见 [DeepSeek Harness Adapter](integrations/deepseek-harness/README.md)。
-
-同一个 `runs/` 工作区只允许一个后端写入者；第二个服务会在启动阶段因 writer lease 失败退出，避免两个 Agent/服务并发改写 `TrainingTask`。多智能体不会把未注册算法变成可训练能力：只要缺少已验证 Recipe、Data Adapter、隔离执行或机器资源，就必须返回可审查的类型化阻断，不能展示伪训练进度。
-
-### v1.0 对话与事件合同
-
-- 新对话通过 `POST /conversations` 原子保存并提交首条消息。它先写入独立的 `workspace/conversations/`，不会创建 TaskSpec、不会出现在 `GET /tasks`，也不会因为一句问候显示训练状态。
-- 当真实 Agent 判断业务结果、主要输入和期望输出已经明确时，只能调用 `model_harness_promote_conversation`，再由 `POST /conversations/{conversation_id}/promote` 幂等创建 `TrainingTask`。后端不使用关键词或正则伪装意图判断；晋升沿用同一 ID、DSH session、AgentTurn 和事件血缘。
-- 未绑定阶段使用 `/conversations/{id}/...` 的消息、快照、SSE、取消和问题回答接口；晋升后切换到 `/tasks/{same-id}/conversation/...`。两类 SSE 都输出 `snapshot / delta / state / error / heartbeat`，断线后依据 cursor 对账，版本变化或 gap 会返回全量 snapshot。
-- 已有任务的对话入口仍是 `POST /tasks/{task_id}/conversation/messages`。旧的无会话任务显示“任务已保存，尚未发送”及恢复入口；连接检查有超时和自动重连，草稿保留。旧 `POST /chat` 固定返回 HTTP 410 和 canonical endpoint，不再运行关键词流程。
-- 当前合同是 conversation schema `2.0`、projector revision `3.3`、action schema `1.0`、synthesis verdict `1.0`。`3.3` 以完整分页历史、父调用回执和子会话接收记录确定续跑区间，避免将历史动作归给新调用；旧检查点仅能在精确五元身份匹配时重投影为只读审计，不会重新授权。
-- 前端只把真实 tool call/result 配对为 Action；执行过程挂在产生它的 AI 回合下。健康会话不显示常驻“当前由某智能体处理”横幅，内部角色仅在真实动作或委派中出现；协调器文字说明不是完成证据，失败、受控阻断和观察降级不使用成功语义。
-- DSH provider 的非成功 `turn/end` 会投影为类型化失败并结束当前 Agent run，但不会改写 `TrainingTask`；已经被终止轮次遗留的 question/approval 会持久化为失效审计记录，不再显示成可反复提交的人工检查点。
-- 人工问题不预选答案；用户必须显式选择后才能提交。完成的真实训练、未检查资源、需要调整计划和环境阻断是四种不同状态。
-
-页面结构参考了用户提供的 Figma 智能体设计稿：对话为主区、真实执行过程按智能体分组、证据工作区按需展开。Figma 只影响布局和视觉 token，不定义运行状态或完成语义。详见 [Figma 参考映射](plans/v1.0-conversation-native/FIGMA-REFERENCE.md)。
-
-## 真实验收命令
-
-### 1. v1.0 RC 报告合同与发布门
-
-先从当前 checkout 生成一份**全部为 `blocked`** 的报告模板。报告写入被 Git 忽略的 `runs/`，因此不会因为生成报告本身把候选源码变脏：
-
-```bash
-SMS_V10_SHA="$(git rev-parse HEAD)"
-SMS_V10_REPORT="runs/acceptance/v1.0/acceptance-report.json"
-
-uv run python scripts/verify_v10_rc.py template \
-  --output "${SMS_V10_REPORT}" \
-  --source-root "${PWD}" \
-  --expected-source-commit "${SMS_V10_SHA}"
-```
-
-模板不是通过证明。每个改为 `passed` 的 gate 都必须引用位于报告目录下的真实证据文件，并写入该文件的 SHA-256；绝对路径、`..` 逃逸、软链接、缺失文件、摘要不匹配、`skipped`、伪造 summary、commit 不一致和 dirty 状态不一致都会失败关闭。先只校验报告结构和所有证据摘要：
-
-```bash
-uv run python scripts/verify_v10_rc.py validate \
-  --report "${SMS_V10_REPORT}" \
-  --source-root "${PWD}" \
-  --expected-source-commit "${SMS_V10_SHA}"
-```
-
-完成 L0–L6 的真实本地、浏览器、provider 和远程 detached cold-clone 旅程后，再要求 public RC 门通过。此命令还要求报告与当前 checkout 都是同一个精确 commit，且 `source_dirty=false`：
-
-```bash
-uv run python scripts/verify_v10_rc.py validate \
-  --report "${SMS_V10_REPORT}" \
-  --source-root "${PWD}" \
-  --expected-source-commit "${SMS_V10_SHA}" \
-  --require-public-rc
-```
-
-只有精确候选已合并、Tag、GitHub Prerelease 和源码 checksum 证据也被 release gate 引用后，才可运行 `--require-github-release`。门定义见 `acceptance/v1.0-gates.json`，报告结构见 `acceptance/v1.0-report.schema.json`。
-
-### 2. v0.9 L1 真实来源闭环（显式选择联网）
-
-默认运行不会联网，只用于确认门禁保持关闭：
-
-```bash
-uv run python scripts/verify_v09_l1_live.py
-```
-
-只有显式设置 `MH_LIVE_ACCEPTANCE=1` 才会访问 Hugging Face/GitHub 官方 API。下面的命令把证据写入 Git 忽略的 `runs/`，并运行安全的真实不存在仓库、无效 revision 负例：
-
-```bash
-MH_LIVE_ACCEPTANCE=1 \
-MH_L1_EVIDENCE_PATH=runs/acceptance/v09-l1-live.json \
-uv run python scripts/verify_v09_l1_live.py --negatives
-```
-
-公共正例只读取固定仓库的元数据与小型静态文档，不下载 Hugging Face LFS 权重，也不执行来源代码。rate-limit 只验证合成 transport 契约，不主动耗尽官方额度。没有显式私库 fixture 时，证据必须写 `not_run`，不能声称私库已验证。
-
-### 3. 官方 Hugging Face 固定 commit 场景
-
-```bash
-.venv/bin/python scripts/run_hf_real_scenario.py
-```
-
-该脚本会真实联网，使用官方 HF 客户端读取模型卡和下载默认公开模型的固定 commit，然后完成显式批准、哈希验证、CPU ONNX 特征提取、图片分类训练、深度验证、EvaluationReport、全新图片试跑、隐私 Bundle 和应用实例重建查询。它不冒充真实 PID 重启；进程级重启由 L5 独立门禁验证。报告默认写入 `runs/acceptance/hf-real/<timestamp>/report.json`，数据和下载制品不进入 Git。
-
-可显式指定公开仓库与 40 位 commit：
-
-```bash
-.venv/bin/python scripts/run_hf_real_scenario.py \
-  --repo-id pyronear/mobilenet_v3_small \
-  --commit a6a0b39ca1f5b0a247eb0a2e83f06cd95fc03674
-```
-
-### 4. v0.7 L0–L5 fail-closed 验收
-
-```bash
-.venv/bin/python scripts/verify_v07_beta.py \
-  --user-approval-checkpoint-id "<user-confirmed-checkpoint-id>" \
-  --output runs/acceptance/manual-v07/acceptance-report.json
-```
-
-门槛契约位于 `acceptance/v0.7-gates.json`。脚本只接受 `passed` / `failed` / `blocked`，不允许用 `skipped` 伪装完成。它不接受人工填写的验收结论：每次运行都会生成新 challenge，由受控 producer 实际运行固定 HF 场景、两个浏览器视口、两个服务 PID 和冷克隆，再由聚合器重算制品哈希并实时查询对象。工作树不干净、旧证据目录、缺少联网依赖或任何原始证据不一致都会失败关闭。
-
-如需指定受控制品位置，只能传入一个尚不存在的新目录：
-
-```bash
-.venv/bin/python scripts/verify_v07_beta.py \
-  --user-approval-checkpoint-id "<user-confirmed-checkpoint-id>" \
-  --controlled-evidence-dir /absolute/path/to/fresh-evidence-dir
-```
-
-GitHub commit、PR、CI、tag 和 Release 由 `gh api` 独立查询；发布链缺失不会冒充失败的本地 Beta，也不会被手写 URL 补齐。
-
-仅检查仓库单元/集成测试：
-
-```bash
-.venv/bin/python scripts/verify_project.py
-```
-
-更完整的能力账本和发布语义见 [v0.7 Beta 能力与边界](docs/v0.7-beta-boundaries.md)。
-
-## 项目结构
-
-```text
-model_harness/task_specs.py       TaskSpec 修订与能力决策
-model_harness/plugin_api.py       Recipe 协议
-model_harness/data_adapters.py    数据导入与体检协议
-model_harness/recipe_factory.py   可信声明式 Recipe Factory
-model_harness/model_assets.py     固定版本模型资产和哈希
-model_harness/model_sources.py    HF/GitHub 通用来源合同与不可变快照
-model_harness/model_source_store.py  搜索、选择、绑定和重启恢复
-model_harness/repository_analysis.py 仓库静态分析合同
-model_harness/training_plans.py   版本化训练计划与人工批准
-model_harness/resource_feasibility.py 本机资源探测和 CPU-only 适配结论
-model_harness/runner.py           真实训练执行与验证
-model_harness/evidence.py         评测、推理和 Bundle 证据
-model_harness/sample_inference.py 用户新样本试跑
-model_harness/service.py          Run 服务与父子谱系
-model_harness/workspace.py        Task/Data/Contract/Run 所有权
-model_harness/server.py           本地 HTTP/SSE 适配层
-model_harness/web/                对话式训练任务工作台
-model_harness/recipes/            内置 Recipe
-integrations/deepseek-harness/    内部 DSH 多智能体 profile bundle
-tests/                            单元与端到端测试
-runs/                             本地数据/运行/验收证据，不入 Git
-```
-
-## 安全与开源边界
-
-- 用户数据、客户合同、个人语音、凭证和下载模型不进入仓库；
-- 生产数据、成本、门槛修改、优化、注册和发布仍由人批准；
-- 公开数据高分不等于真实现场、影子测试或生产验收；
-- 加载未知 Joblib/Pickle、执行生成代码或远程模型代码均不在当前可信边界内；
-- 第三方框架、数据集和模型权重保留各自许可，详见 `THIRD_PARTY.md`。
-
-## 下一步（未实现）
-
-- 在真正隔离的构建环境中验证第三方/生成 Recipe，而不是在主进程执行 Python；
-- 按独立 Recipe + Data Adapter + 真实验收数据增加 OCR、检测、ASR/TTS、时序和文本能力；
-- 将 HF 资产边界扩展到经单独审查的其他 Recipe；
-- 补齐多用户鉴权、远程计算隔离、生产影子评测和部署。
+开源分发范围为源代码、小型合成数据生成器、依赖锁与验收方法。不会默认分发实际模型权重或系统合成声音；没有宣称任意模型都能训练成功。

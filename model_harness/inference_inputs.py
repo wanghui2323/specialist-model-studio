@@ -19,7 +19,7 @@ from .io_utils import read_json, write_json
 INFERENCE_INPUT_SCHEMA_VERSION = "0.1"
 MAX_INFERENCE_INPUT_BYTES = 25 * 1024 * 1024
 _INPUT_ID = re.compile(r"^inference-input-[a-f0-9]{12}$")
-_SAMPLE_TYPES = frozenset({"image", "audio", "tabular"})
+_SAMPLE_TYPES = frozenset({"image", "audio", "tabular", "generic"})
 _EXTENSIONS = {
     "image": frozenset({".jpg", ".jpeg", ".png", ".webp", ".bmp"}),
     "audio": frozenset({".wav"}),
@@ -54,7 +54,7 @@ def _safe_id(value: Any, label: str) -> str:
     return selected
 
 
-def _safe_filename(value: Any, sample_type: str) -> str:
+def _safe_filename(value: Any, sample_type: str, declaration: Mapping[str, Any] | None = None) -> str:
     selected = str(value or "").strip()
     normalized = selected.replace("\\", "/")
     if (
@@ -65,8 +65,9 @@ def _safe_filename(value: Any, sample_type: str) -> str:
     ):
         raise InferenceInputError("invalid inference input filename")
     suffix = Path(normalized).suffix.lower()
-    if suffix not in _EXTENSIONS[sample_type]:
-        expected = ", ".join(sorted(_EXTENSIONS[sample_type]))
+    allowed = declaration.get("extensions", []) if sample_type == "generic" and isinstance(declaration, Mapping) else _EXTENSIONS.get(sample_type, [])
+    if suffix not in allowed:
+        expected = ", ".join(sorted(allowed))
         raise InferenceInputError(
             f"{sample_type} inference input requires one of: {expected}"
         )
@@ -121,7 +122,7 @@ class InferenceInputStore:
         sample_type = str(record.get("sample_type") or "")
         if sample_type not in _SAMPLE_TYPES:
             raise InferenceInputError("invalid inference input type")
-        _safe_filename(record.get("filename"), sample_type)
+        _safe_filename(record.get("filename"), sample_type, record.get("generic_declaration"))
         if record.get("status") not in _STATUSES:
             raise InferenceInputError("invalid inference input status")
         digest = str(record.get("sha256") or "").lower()
@@ -168,19 +169,26 @@ class InferenceInputStore:
         payload: bytes,
         filename: str,
         sample_type: str,
+        generic_declaration: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         selected_task = _safe_id(task_id, "task id")
         selected_run = _safe_id(run_id, "run id")
         selected_type = str(sample_type or "").strip().lower()
         if selected_type not in _SAMPLE_TYPES:
             raise InferenceInputError(
-                "sample_type must be image, audio, or tabular"
+                "sample_type must match the declared model input"
             )
         if not isinstance(payload, bytes) or not payload:
             raise InferenceInputError("inference input payload must be non-empty bytes")
         if len(payload) > MAX_INFERENCE_INPUT_BYTES:
             raise InferenceInputError("inference input exceeds 25MB")
-        safe_name = _safe_filename(filename, selected_type)
+        if selected_type == "generic":
+            if not isinstance(generic_declaration, Mapping) or not generic_declaration.get("extensions"):
+                raise InferenceInputError("generic inference input requires its frozen declaration")
+            maximum = generic_declaration.get("max_bytes")
+            if type(maximum) is not int or not 1 <= maximum <= MAX_INFERENCE_INPUT_BYTES or len(payload) > maximum:
+                raise InferenceInputError("generic input exceeds its frozen byte limit")
+        safe_name = _safe_filename(filename, selected_type, generic_declaration)
         digest = hashlib.sha256(payload).hexdigest()
         inference_input_id = f"inference-input-{uuid4().hex[:12]}"
         parent = self._inputs_dir(selected_task)
@@ -193,6 +201,7 @@ class InferenceInputStore:
                 "task_id": selected_task,
                 "run_id": selected_run,
                 "sample_type": selected_type,
+                **({"generic_declaration": deepcopy(dict(generic_declaration))} if selected_type == "generic" else {}),
                 "filename": safe_name,
                 "sha256": digest,
                 "size_bytes": len(payload),

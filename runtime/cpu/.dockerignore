@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!requirements-linux-arm64.lock
+!requirements-linux-amd64.lock
+!wheels/
+!wheels/*.whl

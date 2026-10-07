@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import os
 import re
 import sys
 import time
@@ -20,6 +21,8 @@ from .io_utils import read_json, sha256_file, write_json
 from .launch_preflight import evaluate_launch_resource_preflight
 from .optimization import attach_provenance, propose_strategies_with_provenance
 from .plugins import PluginRegistry, default_registry
+from .plugin_api import ContextualRecipePlugin, RunExecutionContext
+from .execution_runtime import execution_root
 from .state import RunState
 
 
@@ -53,6 +56,7 @@ def _write_manifest(
     artifact_dir: Path,
     state: RunState,
     plugin_version: str,
+    execution_environment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     artifacts = {
         path.relative_to(artifact_dir).as_posix(): {
@@ -81,6 +85,14 @@ def _write_manifest(
         "artifacts": artifacts,
         "reproduce": "specialist-model-studio run <task_contract.json>",
     }
+    if execution_environment is not None:
+        # An OCI backend's environment is not the Python process orchestrating
+        # it. Do not publish host sklearn/joblib versions as model dependencies.
+        manifest["execution_environment"] = deepcopy(execution_environment)
+        image = execution_environment.get("image") or {}
+        manifest["python"] = execution_environment.get("python")
+        manifest["platform"] = "/".join(str(image.get(key) or "unknown") for key in ("os", "architecture"))
+        manifest["dependencies"] = deepcopy(execution_environment.get("dependencies", {}))
     write_json(run_dir / "run_manifest.json", manifest)
     return manifest
 
@@ -191,7 +203,7 @@ def execute_run(
             {
                 "recipe": raw["recipe"],
                 "mode": raw["interaction"]["mode"],
-                "candidate_count": len(raw["model_selection"]["candidates"]),
+                "candidate_count": len(raw.get("model_selection", {}).get("candidates", [])),
                 "launch_resource_decision": launch_resource_preflight[
                     "decision"
                 ],
@@ -202,7 +214,16 @@ def execute_run(
         _check_cancel(state, cancel_check)
         state.transition("training")
         stage_started = time.perf_counter()
-        training = plugin.train(raw)
+        if isinstance(plugin, ContextualRecipePlugin):
+            context = RunExecutionContext(
+                task_id=str(raw["task_id"]), run_id=str(state.data["run_id"]), run_dir=resolved,
+                isolated_root=execution_root(resolved / "isolated_execution"),
+                event_sink=lambda event_type, payload: state.event(event_type, dict(payload)),
+                cancel_check=lambda: bool(read_json(state.state_path).get("cancel_requested")) or bool(cancel_check and cancel_check()),
+            )
+            training = plugin.train_with_context(raw, context)
+        else:
+            training = plugin.train(raw)
         timings_ms["training"] = (time.perf_counter() - stage_started) * 1000
         candidate_results = getattr(training, "validation_results", {})
         state.event(
@@ -212,6 +233,7 @@ def execute_run(
                 "candidates": [
                     {
                         "name": name,
+                        "metrics": values,
                         "macro_f1": values.get("macro_f1"),
                         "accuracy": values.get("accuracy"),
                         "mae": values.get("mae"),
@@ -227,7 +249,7 @@ def execute_run(
             "training.model_selected",
             {
                 "selected_model": training.selected_name,
-                "selection_metric": raw["model_selection"]["primary_metric"],
+                "selection_metric": getattr(training, "selection_metric", None) or raw.get("model_selection", {}).get("primary_metric"),
                 "duration_ms": timings_ms["training"],
             },
         )
@@ -254,6 +276,11 @@ def execute_run(
             inherited_contamination
             or evaluation.metrics.get("test_contaminated", False)
         )
+        if raw.get("recipe") == "generic-isolated-execution":
+            contamination_reasons = list(dict.fromkeys([
+                *contamination_reasons,
+                *[str(value) for value in evaluation.metrics.get("contamination_reasons", []) if str(value).strip()],
+            ]))
         evaluation.metrics["contamination_reasons"] = contamination_reasons
         timings_ms["evaluating"] = (time.perf_counter() - stage_started) * 1000
         state.event(
@@ -320,6 +347,7 @@ def execute_run(
             artifact_dir,
             state,
             plugin.manifest.version,
+            execution_environment=getattr(training, "execution_environment", None),
         )
         timings_ms["packaging"] = (time.perf_counter() - stage_started) * 1000
         state.event(
@@ -342,7 +370,7 @@ def execute_run(
             timings_ms=timings_ms,
             total_duration_ms=total_duration_ms,
         )
-        minimum_test_samples = raw.get("diagnostics", {}).get(
+        minimum_test_samples = getattr(training, "minimum_test_samples", None) or raw.get("diagnostics", {}).get(
             "minimum_test_samples",
             20,
         )

@@ -24,6 +24,15 @@ from model_harness.task_specs import (
 
 
 class CapabilityDecisionCandidateTests(unittest.TestCase):
+    def test_unlisted_goal_is_preserved_as_an_explicit_requirement(self) -> None:
+        decision = capability_decision("图关系排序", "根据节点关系对候选链接排序", {
+            "modality": "graph", "objective": "link_ranking",
+            "training_route": "contrastive_adaptation",
+        })
+        self.assertEqual(decision["status"], "resolved")
+        self.assertEqual(decision["selected_family"], "link_ranking")
+        self.assertIsNone(decision["question"])
+
     def test_home_starter_prompts_route_to_relevant_backend_families(
         self,
     ) -> None:
@@ -385,6 +394,33 @@ class CapabilityAdapterNameTests(unittest.TestCase):
 
 @unittest.skipIf(TestClient is None, "server extra is not installed")
 class TaskSpecRevisionTests(unittest.TestCase):
+    def test_unlisted_task_persists_input_output_and_route_without_substitution(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with TestClient(create_app(Path(temp_dir) / "runs")) as client:
+                response = client.post("/tasks", json={
+                    "name": "图关系排序",
+                    "business_goal": "从图的历史链接预测新的候选链接排序",
+                    "capability_request": {
+                        "modality": "graph", "objective": "link_ranking",
+                        "input_description": "Graph JSON with NodeIDs",
+                        "output_description": "候选边及 Score",
+                        "training_route": "contrastive_adaptation",
+                    },
+                })
+                self.assertEqual(response.status_code, 201, response.text)
+                task = response.json()["task"]
+                self.assertEqual(task["capability_decision"]["status"], "resolved")
+                self.assertEqual(task["capability_request"]["input_description"], "Graph JSON with NodeIDs")
+                self.assertEqual(task["capability_request"]["training_route"], "contrastive_adaptation")
+                self.assertIsNone(task["recipe_id"])
+                self.assertEqual(task["run_ids"], [])
+                changed = client.patch(f"/tasks/{task['task_id']}/spec", json={
+                    "base_revision": 1, "selected_family": "graph_link_prediction",
+                })
+                self.assertEqual(changed.status_code, 200, changed.text)
+                self.assertEqual(changed.json()["task"]["capability_request"]["objective"], "graph_link_prediction")
+                self.assertEqual(changed.json()["task"]["task_id"], task["task_id"])
+
     def test_temporal_exclusion_survives_repeated_revision_and_keeps_goal(self) -> None:
         goal = "每行独立房屋 CSV 用面积预测价格，不是时间序列，不使用历史序列、也不需要未来的时间窗口。"
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -556,6 +592,11 @@ class TaskSpecRevisionTests(unittest.TestCase):
                     "confirm_task_spec",
                 )
                 self.assertEqual(len(task["control"]["blocked_by"]), 1)
+                confirmation_gate = task["control"]["blocked_by"][0]
+                self.assertEqual(confirmation_gate["code"], "task_spec_confirmation_required")
+                self.assertIn("实际导入数据或执行", confirmation_gate["message"])
+                self.assertIn("仍可继续", confirmation_gate["message"])
+                self.assertIn("准备建议", confirmation_gate["message"])
 
                 confirmed = client.patch(
                     f"/tasks/{task_id}/spec",

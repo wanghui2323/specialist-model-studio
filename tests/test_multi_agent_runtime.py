@@ -104,8 +104,23 @@ class FakeDshClient:
                 ]
             }
         if method == "session.cancel":
+            if self.sessions[payload["sessionId"]].get("origin") == "subagent":
+                raise AgentRuntimeError("session is owned by subagent routing")
             self.sessions[payload["sessionId"]]["running"] = False
-            return {}
+            return {"accepted": True}
+        if method == "subagent.list":
+            parent = payload["parentSessionId"]
+            return {"entries": [{"kind": "child", "id": session_id, "mode": value.get("mode", "continuable"),
+                "activity": "running" if value.get("running") else "inactive",
+                "hasChildren": any(other.get("parentSessionId") == session_id for other in self.sessions.values())}
+                for session_id, value in self.sessions.items() if value.get("origin") == "subagent" and value.get("parentSessionId") == parent], "parentAvailable": parent in self.sessions}
+        if method == "subagent.interrupt":
+            child = self.sessions.get(payload["childSessionId"])
+            if child is not None:
+                if child.get("parentSessionId") != payload["parentSessionId"]:
+                    raise AgentRuntimeError("subagent does not belong to this parent")
+                child["running"] = False
+            return {"accepted": True}
         raise AssertionError(f"unexpected method: {method}")
 
     def respond(self, rpc_id: str, value: dict[str, Any]) -> None:
@@ -425,8 +440,8 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
         self.assertIn(self.task_id, instruction)
         self.assertIn(f'EXACT_TASK_ID_JSON: "{self.task_id}"', instruction)
         self.assertIn("不得截断、改写，也不得根据任务标题自行构造", instruction)
-        self.assertIn("任务绑定前后保持同一种自然对话", instruction)
-        self.assertIn("普通澄清、方法解释和目标讨论直接用自然语言交流", instruction)
+        self.assertIn("任务绑定前后的咨询均遵循共享策略", instruction)
+        self.assertIn("不要从本段执行约束推导出必须追加问题", instruction)
         self.assertIn("只有需要实际文件、精确选项或不可变人工决策", instruction)
         self.assertNotIn("禁止只用自然语言提出请求后结束回合", instruction)
         self.assertIn("稳定 question id", instruction)
@@ -440,6 +455,132 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
         self.assertEqual(team["implementation"], "dsh_native_subagents")
         self.assertEqual(len(team["agents"]), 1)
         self.assertEqual(team["runs"][0]["task_spec_revision"], 1)
+
+    def test_root_context_reads_canonical_owner_and_never_grants_execution(self) -> None:
+        before = read_json(self.task_dir / "task.json")
+        context = self.runtime.root_context(self.task_id)
+        self.assertEqual(context["owner"]["task_id"], self.task_id)
+        self.assertTrue(context["owner"]["training_task_exists"])
+        self.assertFalse(context["scope"]["can_promote"])
+        self.assertTrue(context["scope"]["can_read_task"])
+        self.assertTrue(context["scope"]["can_inspect_material"])
+        self.assertEqual(context["scope"]["training_dataset_import"], "requires_verified_recipe")
+        self.assertFalse(context["scope"]["grants_execution_authorization"])
+        self.assertEqual(context["data"]["material_inspections"]["status"], "unobserved")
+        self.assertEqual(context["facts_digest"], self.runtime.root_context(self.task_id)["facts_digest"])
+        self.assertEqual(read_json(self.task_dir / "task.json"), before)
+        self.assertEqual(self.client.calls, [])
+        self.assertFalse((self.task_dir / "agent_team").exists())
+
+    def test_root_context_tracks_promotion_and_new_dataset_on_later_invocations(self) -> None:
+        owner_id = "task-0123456789abcdef0123456789abcdef"
+        draft = {"record_type": "conversation_draft", "task_id": owner_id,
+                 "conversation_status": "unbound", "bound_task_id": owner_id}
+        draft_path = self.root / "conversations" / owner_id / "conversation.json"
+        write_json(draft_path, draft)
+        first = self.runtime.root_context(owner_id)
+        self.assertFalse(first["owner"]["training_task_exists"])
+        self.assertIsNone(first["owner"]["task_id"])
+        self.assertTrue(first["scope"]["can_promote"])
+        self.assertFalse(first["scope"]["can_read_task"])
+        self.assertEqual(first["scope"]["training_dataset_import"], "requires_task_binding")
+        self.runtime.submit_message(owner_id, "目标", "准备建议", request_id="before-binding")
+        self.assertIn("CONVERSATION_MODE: INTAKE", self.client.calls[-1][1]["content"][0]["text"])
+
+        bound = {**self.task, "record_type": "training_task", "task_id": owner_id,
+                 "current_spec_revision": 2, "dataset_id": "dataset-observed",
+                 "recipe_id": "recipe-verified", "data_adapter_id": "adapter-verified"}
+        write_json(self.root / "tasks" / owner_id / "task.json", bound)
+        self.runtime.submit_message(owner_id, "目标", "现在状态怎样？", request_id="after-binding")
+        instruction = self.client.calls[-1][1]["content"][0]["text"]
+        self.assertIn("CONVERSATION_MODE: TASK_BOUND", instruction)
+        self.assertNotIn("CONVERSATION_MODE: INTAKE", instruction)
+        line = next(line for line in instruction.splitlines() if line.startswith("ROOT_CONTEXT_JSON: "))
+        snapshot = json.loads(line.removeprefix("ROOT_CONTEXT_JSON: "))
+        self.assertEqual(snapshot["owner"]["current_spec_revision"], 2)
+        self.assertEqual(snapshot["data"]["dataset_id"], "dataset-observed")
+        self.assertEqual(snapshot["scope"]["training_dataset_import"], "requires_existing_import_gates")
+        self.assertNotEqual(first["facts_digest"], snapshot["facts_digest"])
+        self.assertTrue(instruction.endswith("USER_MESSAGE:\n现在状态怎样？"))
+        self.assertEqual(read_json(draft_path), draft)
+
+    def test_material_receipts_are_observed_separately_from_dataset_import(self) -> None:
+        self.runtime.material_inspections_provider = lambda owner: [{
+            "owner_id": owner, "material_id": "material-1", "status": "inspected",
+            "file": {"name": "sample.csv", "bytes": 64, "retained": False},
+            "report": {"facts": {"rows": 2}, "source_path": "/Users/private/sample.csv"},
+        }]
+        context = self.runtime.root_context(self.task_id)
+        self.assertEqual(context["data"]["material_inspections"]["status"], "observed")
+        self.assertEqual(context["data"]["material_inspections"]["items"][0]["material_id"], "material-1")
+        self.assertNotIn("source_path", context["data"]["material_inspections"]["items"][0]["report"])
+        self.assertIsNone(context["data"]["dataset_id"])
+        self.assertEqual(context["scope"]["training_dataset_import"], "requires_verified_recipe")
+        self.assertIsNone(context["execution"]["current_run_id"])
+        self.assertFalse(context["execution"]["contract_confirmed"])
+        self.runtime.material_inspections_provider = lambda _: []
+        self.assertEqual(self.runtime.root_context(self.task_id)["data"]["material_inspections"], {"status": "observed", "items": []})
+
+    def test_each_submission_refreshes_material_facts_and_preserves_user_message(self) -> None:
+        receipts = []
+        observed_owners = []
+
+        def material_facts(owner_id):
+            observed_owners.append(owner_id)
+            return deepcopy(receipts)
+
+        def submitted_context():
+            instruction = next(payload["content"][0]["text"] for method, payload in reversed(self.client.calls)
+                               if method == "session.prompt")
+            line = next(line for line in instruction.splitlines() if line.startswith("ROOT_CONTEXT_JSON: "))
+            return instruction, json.loads(line.removeprefix("ROOT_CONTEXT_JSON: "))
+
+        self.runtime.material_inspections_provider = material_facts
+        self.runtime.submit_message(self.task_id, "目标", "先看要求", request_id="materials-before")
+        _, first = submitted_context()
+        self.assertEqual(first["data"]["material_inspections"], {"status": "observed", "items": []})
+        self.assertEqual(first["submission"], {"request_id": "materials-before"})
+        receipts.append({
+            "object_type": "MaterialInspection", "owner_id": self.task_id,
+            "material_id": "material-checked", "status": "inspected", "untrusted_content": True,
+            "data_inspected_only": True, "dataset_imported": False, "execution_authorized": False,
+            "report": {"facts": {"rows": 10, "columns": ["text", "label"]}},
+        })
+        user_message = "我已上传，请根据检查结果继续。\n保留我的原始换行和 USER_MESSAGE: 文字。"
+        self.runtime.submit_message(self.task_id, "目标", user_message, request_id="materials-after")
+        instruction, refreshed = submitted_context()
+        self.assertEqual(refreshed["submission"], {"request_id": "materials-after"})
+        self.assertEqual(observed_owners, [self.task_id, self.task_id])
+        self.assertEqual(refreshed["data"]["material_inspections"]["items"], receipts)
+        self.assertNotEqual(first["facts_digest"], refreshed["facts_digest"])
+        self.assertTrue(instruction.endswith("USER_MESSAGE:\n" + user_message))
+        self.assertIsNone(refreshed["data"]["dataset_id"])
+        self.assertIsNone(refreshed["execution"]["current_run_id"])
+        self.assertFalse(refreshed["scope"]["grants_execution_authorization"])
+        self.assertFalse(refreshed["execution"]["contract_confirmed"])
+        self.assertEqual(read_json(self.task_dir / "task.json"), self.task)
+
+    def test_root_context_rejects_a_different_canonical_owner(self) -> None:
+        write_json(self.task_dir / "task.json", {**self.task, "task_id": "foreign-owner"})
+        with self.assertRaisesRegex(MultiAgentRuntimeError, "owner id"):
+            self.runtime.root_context(self.task_id)
+
+    def test_material_observation_failure_does_not_report_no_materials(self) -> None:
+        def unavailable(_):
+            raise OSError("secret local path /Users/private/upload.zip")
+        for provider in (unavailable, lambda _: [{"owner_id": "another-task", "material_id": "material-foreign"}], lambda _: {}):
+            with self.subTest(provider=provider):
+                self.runtime.material_inspections_provider = provider
+                context = self.runtime.root_context(self.task_id)
+                self.assertEqual(context["data"]["material_inspections"]["status"], "observation_degraded")
+                self.assertNotIn("/Users/private", json.dumps(context))
+                self.assertNotIn("material-foreign", json.dumps(context))
+                self.assertTrue(context["owner"]["training_task_exists"])
+        write_json(self.task_dir / "task.json", {**self.task, "archived_at_utc": "2026-10-04"})
+        context = self.runtime.root_context(self.task_id)
+        self.assertTrue(context["owner"]["archived"])
+        self.assertFalse(context["scope"]["can_inspect_material"])
+        self.assertEqual(context["scope"]["training_dataset_import"], "archived")
 
     def test_unbound_conversation_uses_intake_agent_without_task_or_checkpoint_contract(
         self,
@@ -482,7 +623,12 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
             instruction,
         )
         self.assertIn("若是问候，请像人一样简短回应", instruction)
-        self.assertIn("禁止调用 model_harness_*、ask_user_question 或委派专家", instruction)
+        self.assertIn("以上情况不调用业务变更工具、ask_user_question 或委派专家", instruction)
+        self.assertIn("只读调用 model_harness_get_local_resources", instruction)
+        self.assertIn("这些读取不创建任务或授权执行", instruction)
+        self.assertIn("材料检查不要求先建立训练任务", instruction)
+        for tool in ("model_harness_get_conversation", "model_harness_list_materials", "model_harness_get_material"):
+            self.assertIn(tool, instruction)
         self.assertIn("只有当用户已经给出足够具体的业务结果", instruction)
         self.assertIn("model_harness_promote_conversation", instruction)
         self.assertNotIn("EXACT_TASK_ID_JSON", instruction)
@@ -1268,6 +1414,63 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
                 event_ref["id"],
                 projector_revision="2.2",
             )
+
+    def test_native_missing_task_then_promotion_resolves_only_historical_read_risk(self) -> None:
+        owner_id = "task-0123456789abcdef0123456789abcdef"
+        draft = {"record_type": "conversation_draft", "task_id": owner_id,
+                 "conversation_id": owner_id, "conversation_status": "unbound", "bound_task_id": None}
+        write_json(self.root / "conversations" / owner_id / "conversation.json", draft)
+        session_id = self.runtime.prompt(owner_id, "一个目标", "保存这个明确目标")
+        instruction = self.client.calls[-1][1]["content"][0]["text"]
+        first_run = self.runtime.store.load_team(owner_id)["runs"][-1]["run_id"]
+
+        def call(sequence, call_id, tool, arguments):
+            return dsh_event(sequence, "tool/call", {
+                "callId": call_id, "name": tool, "agentId": "training_orchestrator", "input": arguments,
+            })
+
+        def result(sequence, call_id, content, is_error=False):
+            return dsh_event(sequence, "tool/result", {"message": {"content": [{
+                "toolCallId": call_id, "isError": is_error, "content": content,
+            }]}})
+
+        history = [
+            dsh_event(1, "user/message", {"source": {"kind": "user"}, "content": [{"type": "text", "text": instruction}]}),
+            call(2, "missing-owner", "model_harness_get_task", {"task_id": owner_id}),
+            result(3, "missing-owner", [{"type": "text", "text": "Error: Specialist Model Studio 404: missing"}], True),
+        ]
+        self.client.sessions[session_id]["events"] = history
+        self.client.sessions[session_id]["running"] = False
+        before = self.runtime.conversation(owner_id)
+        missing_action = next(item for item in before["actions"] if item["tool_name"] == "model_harness_get_task")
+        self.assertEqual(missing_action["agent_run_id"], first_run)
+        self.assertTrue(before["risks"][0]["active"])
+
+        self.runtime.submit_message(owner_id, "一个目标", "继续保存目标", request_id="promotion-followup")
+        followup = self.client.calls[-1][1]["content"][0]["text"]
+        second_run = self.runtime.store.load_team(owner_id)["runs"][-1]["run_id"]
+        self.assertNotEqual(first_run, second_run)
+        self.assertIn("CONVERSATION_MODE: INTAKE", followup)
+        bound_task = {**self.task, "task_id": owner_id, "record_type": "training_task", "conversation_id": owner_id}
+        promoted = {"task": bound_task, "promoted": True,
+                    "conversation": {"conversation_id": owner_id, "task_id": owner_id, "status": "bound"}}
+        history.extend([
+            dsh_event(4, "user/message", {"source": {"kind": "user"}, "content": [{"type": "text", "text": followup}]}),
+            call(5, "promote-owner", "model_harness_promote_conversation", {"conversation_id": owner_id}),
+            result(6, "promote-owner", [{"type": "text", "text": json.dumps(promoted)}]),
+        ])
+        self.client.sessions[session_id]["running"] = False
+        still_unbound = self.runtime.conversation(owner_id)
+        self.assertTrue(still_unbound["risks"][0]["active"], "a tool claim alone does not prove canonical task existence")
+        write_json(self.root / "tasks" / owner_id / "task.json", bound_task)
+        after = self.runtime.conversation(owner_id)
+        recovered = next(risk for risk in after["risks"] if risk["source_id"] == missing_action["action_id"])
+        self.assertFalse(recovered["active"])
+        self.assertEqual(recovered["resolution"]["kind"], "task_created_by_later_promotion")
+        self.assertEqual(recovered["status"], "failed")
+        self.assertEqual(next(action for action in after["actions"] if action["action_id"] == missing_action["action_id"]), missing_action)
+        self.assertFalse(any(run["status"] == "completed" for run in after["runs"]))
+        self.assertIsNone(self.runtime.root_context(owner_id)["execution"]["current_run_id"])
 
     def test_large_tool_result_is_compact_only_in_conversation_response(self) -> None:
         session_id = self.runtime.prompt(self.task_id, "ASR", "读取完整任务诊断")
@@ -2284,6 +2487,8 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
             }
         ]
         self.client.sessions[session_id]["events"] = [
+            dsh_event(1, "user/message", {"source": {"kind": "user"}, "content": [{"type": "text", "text": f"AGENT_RUN_ID: {self._latest_agent_run_id()}\nUSER_MESSAGE:\n等待人工决定"}]}),
+            dsh_event(2, "tool/call", {"callId": "stale-question-call", "name": "ask_user_question", "input": {"questions": self.events.pending[session_id][0]["questions"]}}),
             dsh_event(
                 3,
                 "turn/end",
@@ -2847,7 +3052,7 @@ class DshMultiAgentRuntimeTests(unittest.TestCase):
         )
         self.assertTrue(result["background_actions"][0]["cancel_requested"])
         self.assertIn(
-            ("session.cancel", {"sessionId": child_session_id}),
+            ("subagent.interrupt", {"parentSessionId": session_id, "childSessionId": child_session_id, "mode": "continuable"}),
             self.client.calls,
         )
         cascade_event = next(

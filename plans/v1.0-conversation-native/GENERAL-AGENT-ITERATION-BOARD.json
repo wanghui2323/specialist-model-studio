@@ -1,0 +1,172 @@
+{
+  "schema_version": "0.1",
+  "updated_date": "2026-10-06",
+  "plan": "GENERAL-AGENT-BUILD-PLAN-20261004.md",
+  "objective": "通用模型训练Agent：无需新增平台场景分支，由页面对话完成目标、模型与代码获取、数据、训练调优、独立评估、新输入试用和交付",
+  "completion_rule": "里程碑仅在对应完整页面验收通过后accepted；代码完成、底层试跑、正确阻断不得代替产品完成",
+  "baseline": {
+    "open_goal_code": "implemented_not_full_product_acceptance",
+    "oci_stage_executor": "real_local_stage_integration_verified",
+    "byom_product_execution": "integration_in_progress",
+    "registered_recipe_regression": "preserve",
+    "python_tests_last_recorded": 919,
+    "node_tests_last_recorded": 455
+  },
+  "next_milestone": "R1",
+  "milestones": [
+    {
+      "id": "R1",
+      "title": "首个未知目标完整页面闭环",
+      "status": "in_progress",
+      "depends_on": [],
+      "acceptance": "Agent在页面任务中生成并修正实现，完成Dataset、资格、同一Run、独立评估、新输入预测与可重载包；不补人工脚本",
+      "page_workflow": "verified_local_cpu",
+      "remaining_verification": "Complete formal hidden-task/fault-repair contract evidence rather than equating aggregate closure with all milestone requirements."
+    },
+    {
+      "id": "R2",
+      "title": "开源模型和环境复用",
+      "status": "in_progress",
+      "depends_on": [
+        "R1"
+      ],
+      "acceptance": "固定来源与完整模型依赖，真实预训练微调与随机初始化训练，环境重建和工程故障恢复"
+    },
+    {
+      "id": "R3",
+      "title": "预算内自主实验与恢复",
+      "status": "in_progress",
+      "depends_on": [
+        "R2"
+      ],
+      "acceptance": "验证集指导候选选择，预算与授权有效，停止/刷新/服务重启恢复，不重复启动、不用最终test调优"
+    },
+    {
+      "id": "R4",
+      "title": "远程GPU算力扩展",
+      "status": "planned",
+      "depends_on": [
+        "R3"
+      ],
+      "acceptance": "用户提供并授权的实际GPU环境经同协议训练、日志、取消、恢复和重载；真实资源与产物证据",
+      "resource_status": "actual_gpu_environment_not_provided; user question pending"
+    },
+    {
+      "id": "R5",
+      "title": "通用产品发布验收",
+      "status": "in_progress",
+      "depends_on": [
+        "R4"
+      ],
+      "acceptance": "语音/OCR/NLP/时序和版本冻结后隐藏的新领域完成真实页面链，分别报告流程与效果；安装文档和干净环境重载通过"
+    }
+  ],
+  "r1_work_packages": [
+    {
+      "id": "W1",
+      "title": "验收合同与隐藏任务机制",
+      "owner_role": "product_qa",
+      "status": "prepared",
+      "depends_on": []
+    },
+    {
+      "id": "W2",
+      "title": "通用数据和执行协议",
+      "owner_role": "core",
+      "status": "awaiting_page_acceptance",
+      "depends_on": [
+        "W1"
+      ]
+    },
+    {
+      "id": "W3",
+      "title": "Agent工程工具与修错",
+      "owner_role": "agent_tools",
+      "status": "awaiting_page_acceptance",
+      "depends_on": [
+        "W2"
+      ]
+    },
+    {
+      "id": "W4",
+      "title": "唯一Run和OCI可信桥接",
+      "owner_role": "execution",
+      "status": "awaiting_page_acceptance",
+      "depends_on": [
+        "W2"
+      ]
+    },
+    {
+      "id": "W5",
+      "title": "评估制品与新输入推理",
+      "owner_role": "evidence_inference",
+      "status": "awaiting_page_acceptance",
+      "depends_on": [
+        "W2"
+      ],
+      "integration_requires": [
+        "W4"
+      ]
+    },
+    {
+      "id": "W6",
+      "title": "页面与连续对话",
+      "owner_role": "interaction",
+      "status": "awaiting_page_acceptance",
+      "depends_on": [
+        "W2"
+      ],
+      "integration_requires": [
+        "W3",
+        "W4",
+        "W5"
+      ]
+    },
+    {
+      "id": "W7",
+      "title": "真实页面验收与修复",
+      "owner_role": "qa_all",
+      "status": "in_progress",
+      "depends_on": [
+        "W3",
+        "W4",
+        "W5",
+        "W6"
+      ]
+    }
+  ],
+  "evidence": {
+    "prior_worker": "runs/acceptance/20261004-generic-worker/real-oci-evidence.json",
+    "architecture": "ADR-002-GENERAL-TRAINING-EXECUTION.md",
+    "audit": "GENERIC-TRAINING-EXECUTION-AUDIT-20261004.md",
+    "r1_acceptance": null,
+    "current_acceptance": "OVERALL-ACCEPTANCE-20261006.md",
+    "delivery_replay": "runs/acceptance/20261006-whole-acceptance/delivery-replay-index.json"
+  },
+  "acceptance_scope": "语音、OCR、NLP、时序为代表性样本；新增目标不得修改核心业务类型分支，还需未知任务冷启动验证。",
+  "ui_acceptance_scope": {
+    "surface": "PC only",
+    "viewports": [
+      [
+        1280,
+        800
+      ],
+      [
+        1440,
+        900
+      ],
+      [
+        1920,
+        1080
+      ]
+    ],
+    "mobile": "out_of_scope_per_user_20261004"
+  },
+  "local_page_progress": {
+    "representative_training_trials_deliveries_and_replay": 5,
+    "cases_are_examples_not_allowlist": true,
+    "unknown_ranking_workflow": "page_verified",
+    "whole_product_acceptance_complete": false,
+    "note": "Milestone acceptance remains pending full required evidence; five successful workflow closures do not imply complete environment, experiment recovery or GPU acceptance."
+  }
+}

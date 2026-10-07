@@ -4,12 +4,18 @@
   "expected_product_name": "Specialist Model Studio",
   "expected_distribution_name": "specialist-model-studio",
   "canonical_console_script": "specialist-model-studio",
-  "compatibility_console_scripts": ["small-model-harness"],
-  "expected_package_version": "1.0.0rc1",
-  "expected_api_version": "1.0.0-rc.1",
+  "compatibility_console_scripts": [
+    "small-model-harness"
+  ],
+  "expected_package_version": "1.0.0rc2",
+  "expected_api_version": "1.0.0-rc.2",
   "distribution_kind": "source_checkout_rc",
   "wheel_scope": "backend_only",
-  "allowed_gate_statuses": ["passed", "failed", "blocked"],
+  "allowed_gate_statuses": [
+    "passed",
+    "failed",
+    "blocked"
+  ],
   "aggregation_contract": {
     "required_gate_pass_condition": "status must equal passed",
     "level_pass_condition": "every required gate in the level must equal passed",
@@ -41,32 +47,46 @@
       "level_id": "L3",
       "gate_id": "V10-L3-REAL-REGISTERED-TRAINING",
       "required": true,
-      "description": "A conversation-created tabular task imports user CSV, confirms the contract and creates a real Run, evaluation and artifact."
+      "description": "A registered baseline completes a real page-created task, uploaded Dataset, immutable approval, Run, independent evaluation, new input and delivery; existing recipes remain regression coverage."
     },
     {
       "level_id": "L4",
-      "gate_id": "V10-L4-HONEST-UNSUPPORTED-BOUNDARY",
+      "gate_id": "V10-L4-GENERIC-TRAINING",
       "required": true,
-      "description": "An unregistered task ends in a typed, digest-bound BlockerEvidence with no simulated Run."
+      "description": "A goal without a pre-existing domain Recipe completes page preparation, isolated qualification, an actual Run, independent evaluation, fresh input, package download and clean offline reload. Blockers alone do not pass. Model quality failures remain visible and separately assessed."
     },
     {
       "level_id": "L5",
       "gate_id": "V10-L5-AI-HUMAN-BROWSER",
       "required": true,
-      "description": "AI turn ownership, one authoritative state, stop/recovery, evidence opening, refresh and task re-entry pass on PC at 1280x800, 1440x900 and 1920x1080. PC-only scope explicitly confirmed by the product owner on 2026-09-10."
+      "description": "PC dialogue/actions at 1280x800,1440x900,1920x1080; refresh/re-entry, real stop and service-restart status without duplicate execution, preserved approvals/artifacts, readable evidence and no false success."
     },
     {
       "level_id": "L6",
       "gate_id": "V10-L6-REMOTE-COLD-REPRODUCTION",
       "required": true,
-      "description": "A remote detached clone of the exact commit installs from locks, starts the complete source RC, repeats the two journeys and survives restart."
+      "description": "A remote detached clone of the exact candidate installs from committed locks, rebuilds the CPU image from the included recipe, starts a fresh runs/profile directory, repeats registered and generic page journeys, verifies package reload and restart."
     },
     {
       "level_id": "release",
       "gate_id": "V10-RELEASE-CHAIN",
       "required": false,
       "required_for_github_release": true,
-      "description": "The exact verified commit is merged, tagged v1.0.0-rc.1 and published as a GitHub Prerelease with source checksums; no backend-only wheel is labeled as the complete Studio."
+      "description": "The exact verified candidate passes remote CI, is merged, tagged v1.0.0-rc.2 and published as a GitHub Prerelease with source checksums and sanitized evidence; backend-only wheel is not the complete Studio."
     }
-  ]
+  ],
+  "release_scope": {
+    "kind": "developer_source_preview",
+    "training_runtime": "local CPU OCI",
+    "model_service": "configurable adapter; real preview evidence names the exact verified provider",
+    "model_quality": "Reported independently; failed model quality must remain failed and does not invalidate an honest completed platform workflow",
+    "examples": "Representative tests, not a capability allowlist",
+    "not_claimed": [
+      "production readiness",
+      "remote GPU execution",
+      "all providers live-tested",
+      "autonomous environment building",
+      "experiment-wide tuning/recovery budget"
+    ]
+  }
 }

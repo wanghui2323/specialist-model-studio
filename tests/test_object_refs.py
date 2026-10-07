@@ -20,6 +20,7 @@ class ObjectRefRegistryTests(unittest.TestCase):
         self.assertEqual(
             set(OBJECT_REF_DESCRIPTORS),
             {
+                "execution_proposal",
                 "model_source_search",
                 "model_source_resolution",
                 "model_binding",

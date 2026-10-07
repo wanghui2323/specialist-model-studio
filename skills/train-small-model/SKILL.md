@@ -7,6 +7,12 @@ description: Turn a concrete task and permitted data into an auditable specialis
 
 Operate delegation-first and learning-visible. Advance the task independently when the goal, data rights, acceptance criteria and execution environment are clear. Pause only when user input or authorization changes the meaning, risk or cost of the run.
 
+## Current Studio source preview
+
+The v1.0 source Studio is a general training Agent. Registered Recipes are reusable implementations, not a model-family allowlist. Follow its task-owned execution workspace, immutable source/data/runtime bundle, isolated qualification, native approval, real Run, independent evaluation, new-input and delivery tools. Generate and repair task code only inside that workflow; keep model quality separate from execution success. Missing isolation is blocked_environment, not a verdict that the user goal is impossible.
+
+The sections below retain the v0.7 standalone recipe procedures and their historical boundary. Their narrower model catalogue does not override the v1.0 source protocol. Do not run external or Agent-generated Python, remote code or installers on the host. Current Agent code may execute only in verified, resource-bounded OCI stages with the exact approval and immutable evidence.
+
 ## Start with task fit
 
 Before training, decide whether parameter training is actually needed. Prefer rules, ordinary software, Prompt/RAG or an existing model API when they satisfy the task more safely and cheaply. A contract-review product may combine OCR/layout models with rules, RAG and an LLM; do not describe the entire system as one small model.

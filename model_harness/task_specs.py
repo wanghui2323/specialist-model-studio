@@ -170,7 +170,14 @@ FAMILY_ALIASES = {
 
 def normalize_family(value: Any) -> str | None:
     selected = str(value or "").strip().lower()
-    return FAMILY_ALIASES.get(selected)
+    known = FAMILY_ALIASES.get(selected)
+    if known:
+        return known
+    # This vocabulary describes a goal; it is not an executable-engine
+    # allowlist. New domains must remain representable without a core change.
+    if re.fullmatch(r"[a-z][a-z0-9_-]{0,95}", selected):
+        return selected
+    return None
 
 
 def modality_from_candidate_families(values: list[Any]) -> str | None:
@@ -253,7 +260,12 @@ def capability_for_family(
         result["objective"] = family
     elif family == "custom":
         result.setdefault("modality", "specialist")
-        result["objective"] = "custom"
+        if not result.get("objective") or previous_family not in {None, "custom"}:
+            result["objective"] = "custom"
+    else:
+        result.setdefault("modality", "specialist")
+        if not result.get("objective") or previous_family not in {None, family}:
+            result["objective"] = family
     return result
 
 
@@ -300,6 +312,8 @@ def capability_decision(
     objective = str(capability_request.get("objective", "")).strip().lower()
     if explicit is None:
         explicit = _family_from_capability(modality, objective)
+    if explicit and explicit not in FAMILY_DETAILS:
+        return _resolved(explicit, "explicit_open_capability", 1.0, ["structured_objective_preserved"])
 
     strong_families: set[str] = set()
     reason_codes: list[str] = []
@@ -671,7 +685,7 @@ def _family_from_capability(modality: str, objective: str) -> str | None:
         return "tabular_regression" if modality in {"tabular", "table", "csv"} else "regression"
     if objective in {"custom", "other"}:
         return "custom"
-    return None
+    return normalize_family(objective)
 
 
 def _family_compatible(explicit: str, inferred: set[str]) -> bool:

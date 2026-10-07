@@ -58,7 +58,9 @@ class FakeDshClient:
             }
         if method == "session.cancel":
             self.sessions[payload["sessionId"]]["running"] = False
-            return {}
+            return {"accepted": True}
+        if method == "subagent.list":
+            return {"entries": [], "parentAvailable": True}
         raise AssertionError(f"unexpected method: {method}")
 
     def respond(self, rpc_id: str, value: dict[str, Any]) -> None:

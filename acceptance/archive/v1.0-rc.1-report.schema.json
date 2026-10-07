@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wanghui2323/specialist-model-studio/acceptance/v1.0-report.schema.json",
+  "title": "Specialist Model Studio v1.0 RC Acceptance Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "iteration",
+    "generated_at_utc",
+    "candidate",
+    "source",
+    "gates",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "iteration": {"const": "v1.0-conversation-native"},
+    "generated_at_utc": {"type": "string", "format": "date-time"},
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "product_name",
+        "distribution_name",
+        "package_version",
+        "api_version",
+        "distribution_kind",
+        "wheel_scope"
+      ],
+      "properties": {
+        "product_name": {"const": "Specialist Model Studio"},
+        "distribution_name": {"const": "specialist-model-studio"},
+        "package_version": {"const": "1.0.0rc1"},
+        "api_version": {"const": "1.0.0-rc.1"},
+        "distribution_kind": {"const": "source_checkout_rc"},
+        "wheel_scope": {"const": "backend_only"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_commit", "source_dirty", "repository_url"],
+      "properties": {
+        "source_commit": {"$ref": "#/$defs/commit"},
+        "source_dirty": {"type": "boolean"},
+        "repository_url": {"type": ["string", "null"]}
+      }
+    },
+    "gates": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": {"$ref": "#/$defs/gateResult"}
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate_counts",
+        "passed_gate_ids",
+        "failed_gate_ids",
+        "blocked_gate_ids",
+        "local_review_status",
+        "public_rc_status",
+        "github_release_status"
+      ],
+      "properties": {
+        "gate_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["total", "passed", "failed", "blocked"],
+          "properties": {
+            "total": {"const": 8},
+            "passed": {"type": "integer", "minimum": 0, "maximum": 8},
+            "failed": {"type": "integer", "minimum": 0, "maximum": 8},
+            "blocked": {"type": "integer", "minimum": 0, "maximum": 8}
+          }
+        },
+        "passed_gate_ids": {"$ref": "#/$defs/gateIdList"},
+        "failed_gate_ids": {"$ref": "#/$defs/gateIdList"},
+        "blocked_gate_ids": {"$ref": "#/$defs/gateIdList"},
+        "local_review_status": {"$ref": "#/$defs/status"},
+        "public_rc_status": {"$ref": "#/$defs/status"},
+        "github_release_status": {"$ref": "#/$defs/status"}
+      }
+    }
+  },
+  "$defs": {
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "status": {"enum": ["passed", "failed", "blocked"]},
+    "gateIdList": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "evidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "description": {"type": "string", "minLength": 1}
+      }
+    },
+    "gateResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "level_id",
+        "gate_id",
+        "required",
+        "required_for_github_release",
+        "status",
+        "summary",
+        "evidence_refs",
+        "blockers"
+      ],
+      "properties": {
+        "level_id": {"enum": ["L0", "L1", "L2", "L3", "L4", "L5", "L6", "release"]},
+        "gate_id": {"type": "string", "pattern": "^V10-(?:L[0-6]|RELEASE)-[A-Z0-9-]+$"},
+        "required": {"type": "boolean"},
+        "required_for_github_release": {"type": "boolean"},
+        "status": {"$ref": "#/$defs/status"},
+        "summary": {"type": "string", "minLength": 1},
+        "evidence_refs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/evidenceRef"}
+        },
+        "blockers": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "passed"}}},
+          "then": {
+            "properties": {
+              "evidence_refs": {"minItems": 1},
+              "blockers": {"maxItems": 0}
+            }
+          },
+          "else": {"properties": {"blockers": {"minItems": 1}}}
+        }
+      ]
+    }
+  }
+}

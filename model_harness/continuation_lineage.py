@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from copy import deepcopy
-from typing import Any, Callable, Mapping
+from typing import Any, Callable
 
 
 def complete_history(call: Callable[..., Any], session_id: str) -> dict[str, Any]:
@@ -78,6 +79,11 @@ def bind_child_invocations(*, team: Mapping[str, Any], child_session_id: str,
         if not isinstance(entry, Mapping) or not isinstance(entry.get("event"), Mapping):
             continue
         event = entry.get("event", {})
+        # Only native user-message relays establish a continuation. Token
+        # chunks can outnumber messages by thousands and have no ownership
+        # effect; do not recursively inspect their payload on every refresh.
+        if event.get("type") != "user/message":
+            continue
         data = event.get("data", {})
         if not isinstance(data, Mapping):
             continue
@@ -85,7 +91,7 @@ def bind_child_invocations(*, team: Mapping[str, Any], child_session_id: str,
         if not isinstance(source, Mapping):
             continue
         seq = event.get("seq")
-        if event.get("type") == "user/message" and source.get("kind") == "coordinator" and isinstance(seq, int) and not isinstance(seq, bool):
+        if source.get("kind") == "coordinator" and isinstance(seq, int) and not isinstance(seq, bool):
             relays.append({"seq": seq, "sender": source.get("senderSessionId"),
                 "text": content_text(data.get("content")), "message_id": data.get("id")})
     relays.sort(key=lambda item: item["seq"])

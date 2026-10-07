@@ -42,6 +42,7 @@ function executableTerminalResultModel(app, state) {
     topLevelFunction(app, "terminalResultRefs"),
     topLevelFunction(app, "reportForTerminalRef"),
     topLevelFunction(app, "bundleForTerminalRef"),
+    topLevelFunction(app, "metricPresentation"),
     topLevelFunction(app, "terminalResultMetrics"),
     topLevelFunction(app, "terminalResultCardModel"),
     "return terminalResultCardModel;",
@@ -58,6 +59,23 @@ function openingTagForId(html, id) {
   assert.ok(match, `#${id} must exist`);
   return match[0];
 }
+
+test("completed evaluation stays visible before new-input approval without completing the Agent turn", async () => {
+  const { app } = await sources();
+  const report = { task_id: "task-1", run_id: "run-1", report_sha256: "a".repeat(64), run_status: "completed", release_ready: true };
+  const task = { task_id: "task-1", status: "completed", current_run_id: "run-1", contract: {}, current_result: { run_id: "run-1", status: "completed", metrics: { clean_test: { accuracy: 0.91 } }, evaluation_report: report } };
+  const state = { task, evidenceRunId: null };
+  const model = new Function("state", "statusLabel", 'const EVIDENCE_SHA256=/^[a-f0-9]{64}$/;\n' + topLevelFunction(app, "metricPresentation") + topLevelFunction(app, "terminalResultMetrics") + topLevelFunction(app, "runCheckpointSummaryModel") + "return runCheckpointSummaryModel;")(state, String);
+  assert.equal(model().metrics[0].value, "0.910");
+  assert.match(model().summary, /独立测试/);
+  assert.equal(model().completion_eligible, undefined);
+  for (const wrongReport of [{ ...report, task_id: "other" }, { ...report, run_id: "old-run" }, { ...report, report_sha256: "unknown" }, { ...report, run_status: "running" }]) {
+    task.current_result.evaluation_report = wrongReport; assert.equal(model(), null);
+  }
+  task.current_result.evaluation_report = report;
+  task.status = "needs_dataset"; assert.equal(model(), null, "a revised task must not promote the old evaluation");
+  task.status = "completed"; task.current_run_id = "new-run"; assert.equal(model(), null);
+});
 
 function classTokens(node) {
   return String(node.className || "").split(/\s+/).filter(Boolean);

@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "id": "vague-outcome",
+  "scope": "consultation_only_not_training_acceptance",
+  "user_profile": "不熟悉模型与训练术语的普通PC用户",
+  "opening": "我想让电脑帮我看店里每天卖了多少，顺便告诉我后面该备多少货，我不懂模型这些。",
+  "followups": [
+    "我是想提前知道下周每天大概卖多少，不是统计昨天。先告诉我该准备什么，我还不会整理这些东西。"
+  ],
+  "constraints": {"max_actions": 20, "max_turns": 3, "max_seconds": 180, "approve_execution": false, "upload_files": []},
+  "checks": [
+    {"id": "opening_sent", "kind": "page_action", "action": "send", "dimension": "page_interaction"},
+    {"id": "composer_visible", "kind": "page_text", "text": "向 Specialist Model Studio 描述模型任务", "dimension": "page_interaction"}
+  ],
+  "reviews": [
+    {"id": "intent", "dimension": "dialogue", "criterion": "区分历史统计、未来销量预测和补货建议；不把它们默认为相同目标。可推荐起步方案，最多询问改变下一步的必要问题。"},
+    {"id": "preparation", "dimension": "dialogue", "criterion": "目标明确后直接给用户可照做的数据字段/样例、覆盖要求和小实验计划；不先问是否已有材料或要不要清单。"},
+    {"id": "truth", "dimension": "evidence", "criterion": "没有上传/执行就不宣称读过数据、已经训练或预测准确。资源建议注明假设，不用没有Recipe宣称目标不支持。"},
+    {"id": "clarity", "dimension": "ux", "criterion": "普通用户能看懂本轮内容与下一步；不暴露内部ID、技术错误串、重复确认历史，不追加无必要的边界声明。"}
+  ]
+}

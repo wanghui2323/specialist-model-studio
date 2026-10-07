@@ -71,7 +71,9 @@ fi
 # preflight subprocess, including its children, without logging partial config
 # output (which may contain provider settings). This is not a model-code worker.
 run_preflight() {
-  "${HARNESS_PYTHON}" - "${PREFLIGHT_TIMEOUT_SECONDS}" "$@" <<'PY'
+  local phase="$1"
+  shift
+  "${HARNESS_PYTHON}" - "${PREFLIGHT_TIMEOUT_SECONDS}" "${phase}" "$@" <<'PY'
 import os
 import signal
 import subprocess
@@ -89,7 +91,7 @@ def stop(process):
         process.communicate()
 
 try:
-    process = subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL,
+    process = subprocess.Popen(sys.argv[3:], stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
 except OSError:
     print("Runtime preflight command could not start.", file=sys.stderr)
@@ -98,7 +100,7 @@ try:
     output, errors = process.communicate(timeout=int(sys.argv[1]))
 except subprocess.TimeoutExpired:
     stop(process)
-    print("Runtime preflight timed out; check locally available dependencies and reinstall from the lockfile.", file=sys.stderr)
+    print(f"Runtime {sys.argv[2]} preflight timed out; check locally available dependencies and reinstall from the lockfile.", file=sys.stderr)
     sys.exit(124)
 except KeyboardInterrupt:
     stop(process)
@@ -108,6 +110,22 @@ sys.stderr.buffer.write(errors)
 sys.exit(process.returncode)
 PY
 }
+
+# The locked Agent runtime requires modern Node APIs. Fail before installing
+# profiles or starting services, with one actionable diagnostic.
+if ! command -v node >/dev/null 2>&1; then
+  echo "Node.js is required for Studio. Install Node.js 24 LTS and retry." >&2
+  exit 1
+fi
+if ! run_preflight "Node compatibility" node -e '
+const [major, minor] = process.versions.node.split(".").map(Number);
+if (major < 22 || (major === 22 && minor < 19)) {
+  console.error(`Unsupported Node.js ${process.versions.node}. Studio requires Node.js >=22.19; Node.js 24 LTS is recommended.`);
+  process.exit(1);
+}
+'; then
+  exit 1
+fi
 
 RUNS_DIR="$("${HARNESS_PYTHON}" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "${RUNS_DIR_INPUT}")"
 WORKSPACE_DIR="${RUNS_DIR}/_workspace"
@@ -151,7 +169,7 @@ else
   exit 1
 fi
 
-if ! OBSERVED_DSH_VERSION="$(run_preflight "${DSH_BIN}" --version 2>&1)"; then
+if ! OBSERVED_DSH_VERSION="$(run_preflight "CLI version" "${DSH_BIN}" --version 2>&1)"; then
   echo "Could not read the DeepSeek Harness CLI version from ${DSH_BIN}." >&2
   echo "${OBSERVED_DSH_VERSION}" >&2
   exit 1
@@ -164,27 +182,27 @@ if [[ "${OBSERVED_DSH_VERSION}" != "${EXPECTED_DSH_VERSION}" ]]; then
 fi
 
 if [[ "${PUBLIC_START}" == "1" ]]; then
-  run_preflight "${HARNESS_ROOT}/scripts/install_dsh_preset.sh" >/dev/null
+  run_preflight "preset synchronization" "${HARNESS_ROOT}/scripts/install_dsh_preset.sh" >/dev/null
 else
-  run_preflight "${HARNESS_ROOT}/scripts/install_dsh_preset.sh"
+  run_preflight "preset synchronization" "${HARNESS_ROOT}/scripts/install_dsh_preset.sh"
 fi
 
 status "Synchronizing the current Specialist Model Studio plugin..."
 if [[ -f "${DSH_WEB_PACKAGE}" ]] && grep -Fq "\"${LEGACY_DSH_PLUGIN}\"" "${DSH_WEB_PACKAGE}"; then
   if [[ "${PUBLIC_START}" == "1" ]]; then
-    run_preflight "${DSH_BIN}" plugin --profile web remove "${LEGACY_DSH_PLUGIN}" >/dev/null
+    run_preflight "plugin synchronization" "${DSH_BIN}" plugin --profile web remove "${LEGACY_DSH_PLUGIN}" >/dev/null
   else
-    run_preflight "${DSH_BIN}" plugin --profile web remove "${LEGACY_DSH_PLUGIN}"
+    run_preflight "plugin synchronization" "${DSH_BIN}" plugin --profile web remove "${LEGACY_DSH_PLUGIN}"
   fi
 fi
 if [[ "${PUBLIC_START}" == "1" ]]; then
-  run_preflight "${DSH_BIN}" plugin --profile web add "${HARNESS_ROOT}/integrations/deepseek-harness" >/dev/null
+  run_preflight "plugin synchronization" "${DSH_BIN}" plugin --profile web add "${HARNESS_ROOT}/integrations/deepseek-harness" >/dev/null
 else
-  run_preflight "${DSH_BIN}" plugin --profile web add "${HARNESS_ROOT}/integrations/deepseek-harness"
+  run_preflight "plugin synchronization" "${DSH_BIN}" plugin --profile web add "${HARNESS_ROOT}/integrations/deepseek-harness"
 fi
 
 status "Inspecting the DSH web profile..."
-if DSH_CONFIG="$(run_preflight "${DSH_BIN}" --profile web --dump-config 2>&1)"; then
+if DSH_CONFIG="$(run_preflight "configuration" "${DSH_BIN}" --profile web --dump-config 2>&1)"; then
   :
 else
   PREFLIGHT_EXIT="$?"
@@ -422,14 +440,26 @@ wait_for_real_agent_runtime() {
 }
 
 cleanup() {
+  # Stop only children created by this launcher, exactly once. A closed port
+  # is not shutdown completion: the backend may still own its writer lease.
+  trap - EXIT
+  trap '' INT TERM
   if [[ "${STARTED_AGENT}" == "1" ]] && kill -0 "${AGENT_PID}" 2>/dev/null; then
     kill "${AGENT_PID}" 2>/dev/null || true
   fi
   if [[ "${STARTED_BACKEND}" == "1" ]] && kill -0 "${BACKEND_PID}" 2>/dev/null; then
     kill "${BACKEND_PID}" 2>/dev/null || true
   fi
+  if [[ "${STARTED_AGENT}" == "1" ]]; then
+    wait "${AGENT_PID}" 2>/dev/null || true
+  fi
+  if [[ "${STARTED_BACKEND}" == "1" ]]; then
+    wait "${BACKEND_PID}" 2>/dev/null || true
+  fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if curl --fail --silent --max-time 2 "${BACKEND_URL}/health" >/dev/null 2>&1; then
   if [[ -z "${AGENT_BRIDGE_TOKEN}" ]]; then

@@ -1,5 +1,15 @@
 # DeepSeek Harness Conversation Adapter
 
+Local validation can use an existing **ChatGPT login in Codex CLI** instead of a DeepSeek API key. Set `MODEL_HARNESS_AGENT_PROVIDER=codex-cli` when starting Studio. The adapter uses `codex app-server` over private stdio and explicitly selects `gpt-5.6-sol`; it does not fall back to another model. Run `codex login status` first. A model catalog is not proof of account access: a completed inference is required.
+
+The Studio readiness/selection layer accepts runtime-registered provider IDs, rather than a two-vendor allowlist. For a configured API or local route set `MODEL_HARNESS_AGENT_PROVIDER`, `MODEL_HARNESS_AGENT_MODEL`, and its `MODEL_HARNESS_AGENT_CREDENTIAL_REF`. An explicitly configured local endpoint without authentication can declare `MODEL_HARNESS_AGENT_AUTH=none`; it still needs an active native adapter. This does not register a new protocol or prove connectivity. Credentials remain in the native credential store/environment. The model/effort can be selected with `MODEL_HARNESS_AGENT_MODEL` / `MODEL_HARNESS_AGENT_REASONING_EFFORT`; new specialists use the configured default, and an idle existing root adopts it before submission.
+
+`model-context.js` is the provider-neutral working-set projection. The CLI adapter currently consumes it; other adapters must integrate the same policy at their serialization boundary before claiming equivalent coverage. It never rewrites frozen native messages or durable evidence. Old large tool results and machine notifications become hash-bound historical references; actual user text, recent messages and rich media remain. Native compaction has no execution tools. Route traces under the configured runs workspace record counts/digests/references, never user content or credential values. See [ADR-003](../../plans/v1.0-conversation-native/ADR-003-CONTEXT-RUNTIME.md) for the remaining goal ledger, snapshot/diff, phased summarization and recovery work.
+
+DSH still owns conversation history, specialist roles, tool execution and native approval checkpoints. Codex supplies text and dynamic-tool requests only. Each request uses an ephemeral, read-only model session; shell, apps, plugins, browser and native delegation are disabled. API-key environment variables and the Studio bridge credential are excluded from that process. Codex owns its existing login storage and renewal; Studio never copies its OAuth tokens. Generated training code still runs exclusively through the approved OCI executor.
+
+The optional route was checked with Codex CLI `0.145.0`. Dynamic-tool and history-injection APIs are experimental: incompatible protocol responses fail the model call, rather than silently skipping tools or approvals. Existing DeepSeek sessions need an explicit model-selection change or a new Codex-backed specialist invocation when switching providers. This setting is local validation configuration; it does not replace the independent training, model-quality or release gates.
+
 This package is an optional conversation, multi-agent delegation and approval adapter for Specialist Model Studio. It registers **51** `model_harness_*` compatibility tools against the local Python server and a repository-managed DSH preset with one Training Orchestrator plus five role-scoped specialist agents. It was authored against `dsh` `0.1.0-rc.6`, `@deepseek-ai/dsh-tools` `0.1.0-rc.8` and the `@deepseek-ai/dsh-tool-subagent` `0.1.0-rc.6` schema.
 
 DeepSeek Harness is not forked, copied, or used as the training state store. `TrainingTask`, dataset, contract, `TrainingRun`, event, metric, artifact, lineage, and evidence facts remain in Specialist Model Studio's `model_harness` engine.
@@ -122,7 +132,7 @@ HF attachment, raw-sample upload, Bundle construction and Bundle download requir
 - The Python server has no multi-user authentication and must remain on a trusted local interface.
 - DSH is optional. The Python training and evidence runtime continues without it.
 - DSH is a developer preview; re-test the adapter after any upgrade.
-- `1.0.0-rc.1` is an unreleased source review candidate. The Python wheel remains backend-only and this README does not claim that the current local commit has been pushed, cold-cloned, tagged, or released on GitHub.
+- `1.0.0-rc.2` is a developer source preview candidate. The Python wheel remains backend-only and the actual publication state is recorded by the exact candidate commit, cold-clone/CI evidence and GitHub Prerelease receipt.
 
 ## Test
 

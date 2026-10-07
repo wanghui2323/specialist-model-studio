@@ -3343,7 +3343,7 @@ class TrainingWorkspace:
             if requested_family is not None:
                 family = normalize_family(requested_family)
                 if family is None:
-                    raise ContractError(f"未知能力类型：{requested_family}")
+                    raise ContractError("能力标识应为1至96位字母、数字、连字符或下划线，且以字母开头")
                 if family == "custom" and not capability.get("modality"):
                     inferred_modality = modality_from_candidate_families(
                         [
@@ -4004,7 +4004,10 @@ class TrainingWorkspace:
         *,
         request_id: str,
         options: dict[str, Any] | None = None,
+        expected_spec_revision: int | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any], bool]:
+        if expected_spec_revision is not None and (isinstance(expected_spec_revision, bool) or not isinstance(expected_spec_revision, int) or expected_spec_revision < 1):
+            raise ContractError("expected_spec_revision必须是正整数")
         selected_request_id = self._normalize_dataset_upload_request_id(request_id)
         selected_options = dict(options or {})
         payload_sha256, request_digest = self._dataset_upload_request_digest(
@@ -4044,6 +4047,11 @@ class TrainingWorkspace:
                 else:
                     return self.get_task(task_id), receipt, True
 
+            # Exact completed receipts replay before this gate: a successful
+            # import may itself advance the TaskSpec while its response is lost.
+            # New writes must still use the revision the caller actually saw.
+            if expected_spec_revision is not None and int(self._ensure_spec_revision(task_before)["revision"]) != expected_spec_revision:
+                raise HarnessError("任务规格已变化，请刷新后重新确认材料导入选项")
             now = _utc_now()
             pending_receipt = self._seal_dataset_upload_receipt(
                 {
@@ -4642,6 +4650,11 @@ class TrainingWorkspace:
         """
 
         task = read_json(self._task_path(task_id))
+        if task.get("recipe_id") == "generic-isolated-execution":
+            engine = getattr(self, "execution_workspace", None)
+            if engine is None:
+                raise HarnessError("isolated execution workspace is unavailable")
+            return engine.authorize_contract(task_id, read_json(self._contract_path(task_id)))
         plan = self.training_plan_store.current_revision(task_id)
         binding = self.model_source_store.current_binding(task_id)
         if plan is None and binding is None:
@@ -5102,6 +5115,10 @@ class TrainingWorkspace:
                     },
                 }
             )
+        engineering = getattr(self, "execution_workspace", None)
+        if engineering is not None:
+            actions.extend(engineering.background_actions(task_id))
+        actions.extend(self.runs.sample_inference_background_actions(task_id))
         return sorted(
             actions,
             key=lambda item: (
@@ -5152,6 +5169,10 @@ class TrainingWorkspace:
                         attempt_id,
                         reason=reason,
                     )
+            elif action.get("action_type") == "execution_qualification":
+                self.execution_workspace.cancel_task(task_id)
+            elif action.get("action_type") == "sample_inference":
+                self.runs.cancel_sample_inferences(task_id)
         return self.task_background_actions(task_id)
 
     def evaluation_report(self, task_id: str, run_id: str) -> dict[str, Any]:
@@ -5227,12 +5248,19 @@ class TrainingWorkspace:
                 raise InferenceInputError(
                     "inference input requires a completed task-owned run"
                 )
+            inference_contract = read_json(self.runs._run_dir(run_id) / "task_contract.json")
+            generic_schema = None
+            if inference_contract.get("recipe") == "generic-isolated-execution":
+                if sample_type != "generic":
+                    raise InferenceInputError("the current isolated model requires its declared generic input")
+                generic_schema = inference_contract["execution_spec"]["inference"]
             record = self.inference_input_store.stage(
                 task_id=task_id,
                 run_id=run_id,
                 payload=payload,
                 filename=filename,
                 sample_type=sample_type,
+                generic_declaration=generic_schema,
             )
         return {
             "task": self.get_task(task_id),
@@ -5404,85 +5432,85 @@ class TrainingWorkspace:
                     },
                 )
                 raise
-            try:
-                report = self.runs.sample_inference(
-                    run_id,
-                    sample_path,
-                    sample_type=str(input_record["sample_type"]),
-                )
-            except SampleInferenceBlocked as exc:
-                input_record = self.inference_input_store.complete(
-                    task_id=task_id,
-                    run_id=run_id,
-                    inference_input_id=inference_input_id,
-                    outcome={
-                        "status": "blocked",
-                        "sample_inference_check_id": exc.check_id,
-                    },
-                )
-                self.delivery_authorization_store.complete(
-                    task_id=task_id,
-                    authorization_id=sample_inference_authorization_id,
-                    succeeded=True,
-                    outcome={
-                        "status": "inference_blocked",
-                        "inference_input_id": inference_input_id,
-                        "sample_inference_check_id": exc.check_id,
-                    },
-                )
-                raise
-            except Exception as exc:
-                self.inference_input_store.complete(
-                    task_id=task_id,
-                    run_id=run_id,
-                    inference_input_id=inference_input_id,
-                    outcome={
-                        "status": "failed",
-                        "error_type": type(exc).__name__,
-                    },
-                )
-                self.delivery_authorization_store.complete(
-                    task_id=task_id,
-                    authorization_id=sample_inference_authorization_id,
-                    succeeded=False,
-                    outcome={
-                        "status": "inference_failed",
-                        "inference_input_id": inference_input_id,
-                        "error_type": type(exc).__name__,
-                    },
-                )
-                raise
+        try:
+            report = self.runs.sample_inference(
+                run_id,
+                sample_path,
+                sample_type=str(input_record["sample_type"]),
+            )
+        except SampleInferenceBlocked as exc:
             input_record = self.inference_input_store.complete(
                 task_id=task_id,
                 run_id=run_id,
                 inference_input_id=inference_input_id,
                 outcome={
-                    "status": "passed",
-                    "sample_inference_check_id": report.get("check_id"),
+                    "status": "blocked",
+                    "sample_inference_check_id": exc.check_id,
                 },
             )
-            completed = self.delivery_authorization_store.complete(
+            self.delivery_authorization_store.complete(
                 task_id=task_id,
                 authorization_id=sample_inference_authorization_id,
                 succeeded=True,
                 outcome={
-                    "status": "inference_completed",
+                    "status": "inference_blocked",
                     "inference_input_id": inference_input_id,
-                    "sample_inference_check_id": report.get("check_id"),
+                    "sample_inference_check_id": exc.check_id,
                 },
             )
-            return {
-                "task": self.get_task(task_id),
-                "run_id": run_id,
-                "inference_input": input_record,
-                "object_refs": [
-                    self.inference_input_store.object_ref(input_record)
-                ],
-                "sample_inference": report,
-                "sample_inference_authorization": (
-                    self.delivery_authorization_store.public(completed)
-                ),
-            }
+            raise
+        except Exception as exc:
+            self.inference_input_store.complete(
+                task_id=task_id,
+                run_id=run_id,
+                inference_input_id=inference_input_id,
+                outcome={
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                },
+            )
+            self.delivery_authorization_store.complete(
+                task_id=task_id,
+                authorization_id=sample_inference_authorization_id,
+                succeeded=False,
+                outcome={
+                    "status": "inference_failed",
+                    "inference_input_id": inference_input_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
+        input_record = self.inference_input_store.complete(
+            task_id=task_id,
+            run_id=run_id,
+            inference_input_id=inference_input_id,
+            outcome={
+                "status": "passed",
+                "sample_inference_check_id": report.get("check_id"),
+            },
+        )
+        completed = self.delivery_authorization_store.complete(
+            task_id=task_id,
+            authorization_id=sample_inference_authorization_id,
+            succeeded=True,
+            outcome={
+                "status": "inference_completed",
+                "inference_input_id": inference_input_id,
+                "sample_inference_check_id": report.get("check_id"),
+            },
+        )
+        return {
+            "task": self.get_task(task_id),
+            "run_id": run_id,
+            "inference_input": input_record,
+            "object_refs": [
+                self.inference_input_store.object_ref(input_record)
+            ],
+            "sample_inference": report,
+            "sample_inference_authorization": (
+                self.delivery_authorization_store.public(completed)
+            ),
+        }
 
     def _record_delivery_authorization(
         self,
@@ -6376,6 +6404,12 @@ class TrainingWorkspace:
         task["resource_feasibility"] = self.current_resource_feasibility(
             task["task_id"]
         )
+        execution_workspace = getattr(self, "execution_workspace", None)
+        if execution_workspace is not None:
+            task["execution_proposals"] = [
+                {key: value.get(key) for key in ("proposal_id", "proposal_sha256", "status", "qualification", "failure", "base_spec_revision")}
+                for value in execution_workspace.list(task["task_id"])
+            ]
         task["blockers"] = self.blocker_store.list(
             task["task_id"], active_only=True
         )
@@ -6720,7 +6754,7 @@ class TrainingWorkspace:
             blocked_by.append(
                 {
                     "code": "task_spec_confirmation_required",
-                    "message": "候选能力已推断，需要用户确认后才能准备数据",
+                    "message": "候选能力已推断；进入实际导入数据或执行步骤前需要用户确认任务规格，仍可继续说明数据规格、准备建议与检查方法",
                 }
             )
             return {
@@ -7069,7 +7103,7 @@ class TrainingWorkspace:
             blocked_by.append(
                 {
                     "code": "training_contract_confirmation_required",
-                    "message": "数据授权、标签和验收门槛尚未确认",
+                    "message": "数据授权、标签和验收门槛尚未确认，暂不能启动训练；数据准备建议与验收方案讨论仍可继续",
                 }
             )
             return {
@@ -7158,9 +7192,18 @@ class TrainingWorkspace:
             "target_column",
             "primary_metric",
             "data_adapter",
+            "training_route",
         ):
             selected = str(value.get(key, "")).strip().lower()
             if selected:
+                if len(selected) > 256 or any(ord(char) < 32 for char in selected):
+                    raise ContractError(f"capability_request.{key}过长或含控制字符")
+                result[key] = selected
+        for key in ("input_description", "output_description"):
+            selected = str(value.get(key, "")).strip()
+            if selected:
+                if len(selected) > 4000:
+                    raise ContractError(f"capability_request.{key}不能超过4000字符")
                 result[key] = selected
         tags = sorted(
             {
@@ -7378,7 +7421,14 @@ class TrainingWorkspace:
         task = read_json(self._task_path(task_id))
         current_spec = self._ensure_spec_revision(task)
         self.runs.registry.get_recipe(recipe_id)
-        if recipe_id not in self._eligible_recipe_ids_for_capability(
+        qualified_generic = False
+        if recipe_id == "generic-isolated-execution":
+            engineering = getattr(self, "execution_workspace", None)
+            if engineering is None:
+                raise ContractError("generic execution activation evidence is unavailable")
+            engineering.authorize_contract(task_id, read_json(self._contract_path(task_id)), require_activated=False)
+            qualified_generic = True
+        if not qualified_generic and recipe_id not in self._eligible_recipe_ids_for_capability(
             deepcopy(current_spec.get("capability_request", {}))
         ):
             raise ContractError("所选Recipe与已确认的原始能力规格不匹配")
@@ -7401,7 +7451,7 @@ class TrainingWorkspace:
             original_capability = deepcopy(
                 facts.get("original_capability_request", {})
             )
-            if recipe_id not in self._eligible_recipe_ids_for_capability(
+            if not qualified_generic and recipe_id not in self._eligible_recipe_ids_for_capability(
                 original_capability
             ):
                 raise ContractError(

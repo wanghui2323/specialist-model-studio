@@ -8,6 +8,10 @@ anyio==4.14.2
     # via
     #   httpx2
     #   starlette
+attrs==26.1.0
+    # via
+    #   jsonschema
+    #   referencing
 certifi==2026.7.22
     # via
     #   requests
@@ -49,6 +53,10 @@ idna==3.19
     #   requests
 joblib==1.5.3
     # via scikit-learn
+jsonschema==4.26.0
+    # via specialist-model-studio
+jsonschema-specifications==2025.9.1
+    # via jsonschema
 narwhals==2.24.0
     # via scikit-learn
 numpy==2.4.6 ; python_full_version < '3.12'
@@ -77,8 +85,16 @@ pydantic-core==2.46.4
     # via pydantic
 pyyaml==6.0.3
     # via huggingface-hub
+referencing==0.37.0
+    # via
+    #   jsonschema
+    #   jsonschema-specifications
 requests==2.34.2
     # via huggingface-hub
+rpds-py==2026.6.3
+    # via
+    #   jsonschema
+    #   referencing
 scikit-learn==1.9.0
     # via specialist-model-studio
 scipy==1.17.1 ; python_full_version < '3.12'
@@ -107,6 +123,7 @@ typing-extensions==4.16.0
     #   huggingface-hub
     #   pydantic
     #   pydantic-core
+    #   referencing
     #   starlette
     #   typing-inspection
 typing-inspection==0.4.4

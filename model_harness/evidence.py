@@ -325,6 +325,9 @@ class EvaluationReport:
                 or metrics.get("test_contaminated")
                 or metrics.get("test_set_used_for_selection") is True
             )
+            release_restrictions = integrity.get("contract", {}).get("release_restrictions", [])
+            if not isinstance(release_restrictions, list):
+                release_restrictions = ["invalid_release_restriction_policy"]
             evidence_reasons: list[str] = []
             if test_sample_count < minimum_test_samples:
                 evidence_reasons.append(
@@ -345,6 +348,7 @@ class EvaluationReport:
                 and integrity["status"] == "passed"
                 and metric_gate_status == "passed"
                 and evidence_status == "sufficient"
+                and not release_restrictions
             )
             if run_status != "completed":
                 conclusion = "run_incomplete"
@@ -356,6 +360,8 @@ class EvaluationReport:
                 conclusion = "quality_failed"
             elif metric_gate_status == "not_evaluated":
                 conclusion = "metrics_missing"
+            elif release_restrictions:
+                conclusion = "release_restricted"
             else:
                 conclusion = "release_ready"
 
@@ -377,6 +383,7 @@ class EvaluationReport:
                 "evidence_status": evidence_status,
                 "conclusion": conclusion,
                 "release_ready": release_ready,
+                "release_restrictions": release_restrictions,
                 "test_sample_count": test_sample_count,
                 "minimum_test_samples": minimum_test_samples,
                 "test_contaminated": contamination_detected,
@@ -705,6 +712,8 @@ class ArtifactBundleBuilder:
                     .get("model.joblib", {})
                     .get("sha256")
                 )
+                if integrity["manifest"].get("recipe") == "generic-isolated-execution":
+                    expected_model_hash = read_json(self.run_dir / "artifacts/generic_model.json")["model_sha256"]
                 if (
                     inference.get("run_id") != integrity["state"].get("run_id")
                     or inference.get("model", {}).get("sha256") != expected_model_hash
@@ -718,11 +727,13 @@ class ArtifactBundleBuilder:
             payload_dir.mkdir(parents=True, exist_ok=False)
             try:
                 included: list[dict[str, Any]] = []
-                excluded = self._exclusion_ledger(integrity["manifest"])
+                deliverable_names = self._deliverable_names(integrity["manifest"])
+                code_context = self._verified_generic_code_context(integrity)
+                excluded = self._exclusion_ledger(integrity["manifest"], deliverable_names)
                 manifest_artifacts = integrity["manifest"]["artifacts"]
-                for name in sorted(DELIVERABLE_ALLOWLIST & set(manifest_artifacts)):
+                for name in sorted(deliverable_names & set(manifest_artifacts)):
                     source = (self.run_dir / "artifacts" / name).resolve()
-                    if self._contains_absolute_reference(source):
+                    if self._contains_absolute_reference(source, code_context=code_context):
                         excluded.append(
                             {"path": f"artifacts/{name}", "reason": "absolute path content"}
                         )
@@ -731,7 +742,17 @@ class ArtifactBundleBuilder:
                     target = payload_dir / target_name
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(source, target)
-                    included.append(self._file_record(target_name, target))
+                    copied = self._file_record(target_name, target)
+                    frozen = manifest_artifacts[name]
+                    if copied["sha256"] != frozen.get("sha256") or copied["size_bytes"] != frozen.get("bytes", frozen.get("size_bytes")):
+                        raise EvidenceError("deliverable changed after Run integrity verification")
+                    included.append(copied)
+
+                if integrity["manifest"].get("recipe") == "generic-isolated-execution":
+                    required = self._required_generic_files() | set(code_context["sources"] if code_context else ())
+                    missing = required - {item["path"].removeprefix("artifacts/") for item in included}
+                    if missing:
+                        raise EvidenceError("generic delivery is missing required model or inference dependencies: " + ", ".join(sorted(missing)))
 
                 generated = {
                     "evidence/evaluation_report.json": evaluation,
@@ -832,7 +853,7 @@ class ArtifactBundleBuilder:
             raise EvidenceError("artifact bundle archive hash mismatch")
         return path
 
-    def _exclusion_ledger(self, manifest: dict[str, Any]) -> list[dict[str, str]]:
+    def _exclusion_ledger(self, manifest: dict[str, Any], deliverable_names: set[str] | None = None) -> list[dict[str, str]]:
         excluded = [
             {"path": "task_contract.json", "reason": "internal training contract"},
             {"path": "run_state.json", "reason": "internal run state"},
@@ -840,8 +861,9 @@ class ArtifactBundleBuilder:
             {"path": "datasets/**", "reason": "raw or normalized user data"},
         ]
         artifacts = manifest.get("artifacts", {})
+        allowed = self._deliverable_names(manifest) if deliverable_names is None else deliverable_names
         for name in sorted(artifacts):
-            if name in DELIVERABLE_ALLOWLIST:
+            if name in allowed:
                 continue
             excluded.append(
                 {
@@ -852,6 +874,28 @@ class ArtifactBundleBuilder:
                 }
             )
         return excluded
+
+    def _deliverable_names(self, manifest: dict[str, Any]) -> set[str]:
+        if manifest.get("recipe") != "generic-isolated-execution":
+            return set(DELIVERABLE_ALLOWLIST)
+        from .generic_recipe import GenericIsolatedRecipePlugin
+        artifact_dir = self.run_dir / "artifacts"
+        errors = GenericIsolatedRecipePlugin().deep_verify(artifact_dir)
+        if errors:
+            raise EvidenceError("generic delivery manifest failed integrity verification")
+        model = read_json(artifact_dir / "generic_model.json")
+        names = {"generic_model.json", "model_card.md", "metrics.json", "learning_report.md", "optimization_strategies.json"}
+        for item in model["artifacts"]:
+            path = item["path"]
+            if item.get("export") is True and path not in PRIVATE_OR_INTERNAL_ARTIFACTS and item.get("role") not in {"raw_data", "dataset", "test_reference", "private_log"} and not path.startswith(("train/", "validation/", "test/", "datasets/", "logs/")):
+                names.add(path)
+        return names
+
+    def _required_generic_files(self) -> set[str]:
+        model = read_json(self.run_dir / "artifacts/generic_model.json")
+        names = {"generic_model.json", "generic_execution.json", "config.json", *model["model_files"]}
+        names.update(item["path"] for item in model["artifacts"] if item.get("role") in {"inference_source", "base_model_dependency"})
+        return names
 
     def _require_current_evaluation(self, evaluation: dict[str, Any]) -> None:
         inputs = evaluation.get("inputs", {})
@@ -878,15 +922,123 @@ class ArtifactBundleBuilder:
             "size_bytes": path.stat().st_size,
         }
 
-    def _contains_absolute_reference(self, path: Path) -> bool:
-        if path.suffix.lower() not in {".json", ".md", ".py", ".csv", ".txt"}:
+    def _verified_generic_code_context(self, integrity: dict[str, Any]) -> dict[str, Any] | None:
+        """Bind the only code-aware privacy exception to the frozen Run.
+
+        A role label or a source-looking extension is not authority. Both the
+        portable bundle and exact source bytes must equal the contract snapshot
+        already verified against the canonical run manifest.
+        """
+        if integrity["manifest"].get("recipe") != "generic-isolated-execution":
+            return None
+        from .isolated_execution import ExecutionBundle
+        try:
+            contract = integrity["contract"]
+            spec = contract["execution_spec"]
+            bundle = ExecutionBundle.from_dict(spec["bundle"])
+            if bundle.digest != spec.get("bundle_sha256"):
+                raise EvidenceError("frozen generic source bundle digest mismatch")
+            artifact_dir = self.run_dir / "artifacts"
+            portable = read_json(artifact_dir / "generic_execution.json")
+            model = read_json(artifact_dir / "generic_model.json")
+            if (portable.get("bundle_sha256") != bundle.digest
+                    or ExecutionBundle.from_dict(portable["bundle"]).to_dict() != bundle.to_dict()
+                    or portable.get("config", {}) != spec.get("config", {})
+                    or portable.get("inference", {}) != spec.get("inference", {})
+                    or model.get("bundle_sha256") != bundle.digest
+                    or model.get("task_id") != integrity["state"].get("task_id")
+                    or model.get("run_id") != integrity["state"].get("run_id")
+                    or contract.get("task_id") != integrity["state"].get("task_id")):
+                raise EvidenceError("portable generic source does not match the frozen Run contract")
+            sources = {}
+            for filename, text in bundle.files:
+                name = "source/" + filename
+                source = _manifest_artifact_path(artifact_dir.resolve(), name)
+                expected = integrity["manifest"]["artifacts"].get(name, {})
+                encoded = text.encode("utf-8")
+                if source is None or source.read_bytes() != encoded or expected.get("sha256") != hashlib.sha256(encoded).hexdigest() or expected.get("bytes", expected.get("size_bytes")) != len(encoded):
+                    raise EvidenceError("packaged source bytes differ from the frozen execution bundle")
+                sources[name] = text
+            private_roots = {str(self.run_dir)}
+            home = str(Path.home().expanduser().resolve())
+            if home != "/":
+                private_roots.add(home)
+            dataset = contract.get("dataset", {})
+            for key in ("root", "csv_path", "manifest_path", "report_path"):
+                if isinstance(dataset.get(key), str) and Path(dataset[key]).is_absolute():
+                    private_roots.add(dataset[key])
+            for asset in contract.get("execution_assets", []):
+                if isinstance(asset, dict) and isinstance(asset.get("root"), str):
+                    private_roots.add(asset["root"])
+            return {"sources": sources, "portable": portable, "private_roots": private_roots}
+        except EvidenceError:
+            raise
+        except (KeyError, TypeError, ValueError, OSError) as exc:
+            raise EvidenceError("generic source provenance could not be verified") from exc
+
+    @staticmethod
+    def _private_host_reference(text: str, private_roots: set[str]) -> bool:
+        for root in private_roots:
+            if root and re.search(re.escape(root.rstrip("/")) + r"(?=$|[/\\\s\"'])", text):
+                return True
+        # Container code is Linux-scoped. These identify user/host storage,
+        # unlike ordinary /tmp, /usr, /opt or image-specific container paths.
+        return bool(re.search(r"(?:/(?:Users|home|Volumes)(?=/|[\s\"'`]|$)|/private/var(?=/|[\s\"'`]|$)|/var/folders(?=/|[\s\"'`]|$)|(?<![A-Za-z0-9])[A-Za-z]:[\\/])", text))
+
+    def _contains_absolute_reference(self, path: Path, *, code_context: dict[str, Any] | None = None) -> bool:
+        try:
+            relative = path.relative_to(self.run_dir / "artifacts").as_posix()
+        except ValueError:
+            relative = ""
+        frozen_source = code_context is not None and relative in code_context["sources"]
+        if not frozen_source and path.suffix.lower() not in {".json", ".md", ".py", ".csv", ".txt"}:
             return False
         try:
-            text = path.read_text(encoding="utf-8")
+            # Decode bytes directly: universal newline rewriting would break
+            # comparison with a legitimate CRLF source bundle.
+            text = path.read_bytes().decode("utf-8")
         except (OSError, UnicodeDecodeError):
             return True
-        if str(self.run_dir) in text:
+        private_roots = code_context["private_roots"] if code_context else {str(self.run_dir)}
+        portable_source = code_context is not None and relative == "generic_execution.json"
+        # Serialized source contains JSON escapes (e.g. "else:\\n"). Inspect
+        # its exact decoded code below, rather than interpreting that escape as
+        # a Windows drive path. Non-code metadata still uses the normal guard.
+        if not portable_source and self._private_host_reference(text, private_roots):
             return True
+        if code_context is not None:
+            expected = code_context["sources"].get(relative)
+            if expected is not None:
+                if text != expected:
+                    raise EvidenceError("frozen source changed during delivery inspection")
+                # Exact approved code executes only inside OCI. Keep legitimate
+                # container path literals intact, without trusting role labels.
+                return False
+            if relative == "generic_execution.json":
+                try:
+                    value = json.loads(text)
+                except ValueError as exc:
+                    raise EvidenceError("portable generic source JSON changed") from exc
+                if value != code_context["portable"]:
+                    raise EvidenceError("portable generic source changed during delivery inspection")
+                for source_text in value["bundle"]["files"].values():
+                    if self._private_host_reference(source_text, private_roots):
+                        return True
+                for argv in value["bundle"]["stages"].values():
+                    if any(self._private_host_reference(arg, private_roots) for arg in argv):
+                        return True
+                # This is a scan-only copy. Shipping bytes and their digests
+                # remain untouched; all non-code metadata still faces the
+                # ordinary absolute-path policy below.
+                value = deepcopy(value)
+                value["bundle"]["files"] = {name: "VERIFIED_OCI_SOURCE" for name in value["bundle"]["files"]}
+                value["bundle"]["stages"] = {name: ["VERIFIED_OCI_ARGV"] for name in value["bundle"]["stages"]}
+                text = json.dumps(value, ensure_ascii=False)
+                if self._private_host_reference(text, private_roots):
+                    return True
+            # Preserve the pre-existing narrowly defined virtual mount roots in
+            # metadata, without allowing arbitrary /tmp or /usr metadata paths.
+            text = re.sub(r"/workspace/(?:source|input|output)(?:/[A-Za-z0-9_.{}\-/$]+)*", "CONTAINER_PATH", text)
         return bool(re.search(r"(?:^|[\s\"'=])(?:/[A-Za-z0-9_.-]+/|[A-Za-z]:[\\/])", text))
 
     @staticmethod
@@ -895,6 +1047,7 @@ class ArtifactBundleBuilder:
             "schema_version": EVIDENCE_SCHEMA_VERSION,
             "recipe": manifest.get("recipe"),
             "plugin_version": manifest.get("plugin_version"),
+            **({"execution_environment": deepcopy(manifest["execution_environment"])} if isinstance(manifest.get("execution_environment"), dict) else {}),
             "dependencies": {
                 str(name): str(version)
                 for name, version in manifest.get("dependencies", {}).items()

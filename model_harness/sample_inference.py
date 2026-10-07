@@ -11,7 +11,7 @@ import wave
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 import joblib
@@ -20,8 +20,10 @@ from PIL import Image
 
 from .audio_keyword import extract_audio_feature
 from .evidence import EvidenceError, InferenceBlocked, InferenceCheck
+from .errors import ContractError
 from .io_utils import read_json, sha256_file, write_json
 from .recipes.image_folder_classification import extract_packaged_image_feature
+from .tabular_values import normalize_tabular_value
 
 
 SAMPLE_INFERENCE_SCHEMA_VERSION = "0.1"
@@ -100,7 +102,15 @@ class SampleInference:
         *,
         sample_type: str | None = None,
         expected: Any | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
+        try:
+            generic = read_json(self.run_dir / "task_contract.json").get("recipe") == "generic-isolated-execution"
+        except (OSError, ValueError, TypeError, AttributeError):
+            generic = False
+        if generic:
+            from .generic_inference import run_generic_sample
+            return run_generic_sample(self, sample, sample_type=sample_type, expected=expected, cancel_check=cancel_check)
         check_id = f"sample-{uuid4().hex[:12]}"
         started = time.perf_counter()
         source_name = self._safe_source_name(sample)
@@ -550,12 +560,19 @@ class SampleInference:
                 row = decoded
             elif suffix == ".csv":
                 reader = csv.DictReader(io.StringIO(text, newline=""))
-                if not reader.fieldnames or any(not name for name in reader.fieldnames):
+                headers = [name.strip() for name in (reader.fieldnames or [])]
+                if (
+                    not headers or any(not name for name in headers)
+                    or len(set(headers)) != len(headers)
+                ):
                     raise EvidenceError("tabular CSV header is missing or invalid")
+                reader.fieldnames = headers
                 rows = list(reader)
                 if len(rows) != 1:
                     raise EvidenceError("tabular CSV must contain exactly one data row")
                 row = rows[0]
+                if None in row or any(value is None for value in row.values()):
+                    raise EvidenceError("tabular CSV row width does not match its header")
             else:
                 raise EvidenceError("tabular sample must use a .json or .csv extension")
         if not row:
@@ -583,10 +600,14 @@ class SampleInference:
             )
         supplied_columns = [str(name) for name in row]
         ignored = [name for name in supplied_columns if name not in feature_columns]
-        features = np.asarray(
-            [[row[name] for name in feature_columns]],
-            dtype=object,
-        )
+        numeric = set(model.get("numeric_columns", []))
+        values = [row[name] for name in feature_columns]
+        if model.get("feature_value_policy") == "typed_values_missing_none_v1":
+            values = [
+                normalize_tabular_value(row[name], name in numeric)
+                for name in feature_columns
+            ]
+        features = np.asarray([values], dtype=object)
         return features.reshape(-1), {
             "type": "tabular",
             "source_name": source_name,
@@ -612,6 +633,8 @@ class SampleInference:
     def _public_error(exc: Exception) -> str:
         if isinstance(exc, EvidenceError):
             return str(exc)
+        if isinstance(exc, ContractError):
+            return "model execution or its contract failed; inspect execution evidence before changing the input"
         if isinstance(exc, (TypeError, ValueError, OverflowError)):
             return "sample input is invalid"
         return f"sample inference failed during {type(exc).__name__}"

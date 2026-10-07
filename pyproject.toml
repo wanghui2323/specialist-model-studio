@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "specialist-model-studio"
-version = "1.0.0rc1"
+version = "1.0.0rc2"
 description = "A conversation-native studio for evidence-backed specialist-model research, training, evaluation, and delivery."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,6 +15,7 @@ authors = [
 dependencies = [
   "certifi>=2024.8.30",
   "huggingface-hub>=0.34,<1.0",
+  "jsonschema>=4.23,<5.0",
   "onnxruntime>=1.20,<2.0",
   "Pillow>=11.0,<13.0",
   "scikit-learn>=1.5,<2.0",

@@ -564,6 +564,46 @@ test("a persisted task-spec confirmation gate remains a waiting state after its 
   assert.equal(result.observation.task_blocker, false);
 });
 
+test("data-ready image and tabular tasks awaiting contract confirmation are not blocked or completed", () => {
+  for (const recipe of ["image-folder-classification", "tabular-classification", "tabular-regression"]) {
+    const task = {
+      task_id: "task-1", status: "data_ready", recipe_id: recipe,
+      dataset_id: "replacement-dataset", current_run_id: null, current_result: null,
+      confirmations: {}, blockers: [],
+      control: { current_stage: "contract_review", blocked_by: [{ code: "training_contract_confirmation_required", message: "数据授权、标签和验收门槛尚未确认" }] },
+    };
+    const conversation = {
+      interaction_projection: { schema_version: "1.0", phase: "idle" },
+      running: false, execution_running: false, agent_response_running: false,
+      agent_turns: [{ object_type: "AgentTurn", agent_turn_id: "new-turn", agent_run_id: "new-run", status: "idle_without_final" }],
+      items: [{ kind: "coordinator_note", event_id: "plan-note", agent_run_id: "new-run", turn_id: "root:turn:2", seq: 1, text: "方案已讲完，等你确认后才训练" }],
+      actions: [], risks: [], pending: [],
+    };
+    const waiting = projection(task, conversation);
+    assert.equal(waiting.phase, "idle", recipe);
+    assert.equal(waiting.observation.task_blocker, false, recipe);
+    assert.equal(waiting.result.ready, false, "natural-language planning is not a completed training result");
+    assert.equal(waiting.checkpoint, null, "a missing native approval must not be invented");
+    const approval = projection(task, { ...conversation, items: [...conversation.items, {
+      kind: "approval", event_id: "native-contract", agent_run_id: "new-run",
+      turn_id: "root:turn:2", seq: 2, rpc_id: "contract-rpc", status: "pending",
+    }] });
+    assert.equal(approval.phase, "awaiting_approval", recipe);
+    assert.equal(approval.observation.task_blocker, false, recipe);
+    assert.equal(projection({ ...task, control: { blocked_by: [...task.control.blocked_by, { code: "dataset_label_conflict" }] } }, conversation).phase, "blocked");
+    assert.equal(projection({ ...task, status: "failed" }, conversation).phase, "failed");
+  }
+});
+
+test("known human approval gates stay distinct from unknown blocker codes", () => {
+  for (const code of ["training_plan_approval_required", "model_source_binding_approval_required", "recipe_registration_approval_required"]) {
+    const task = { task_id: "task-1", control: { blocked_by: [{ code }] } };
+    assert.equal(projection(task, { items: [], actions: [] }).phase, "idle", code);
+    assert.equal(projection({ ...task, status: "blocked" }, { items: [], actions: [] }).phase, "blocked", code);
+  }
+  assert.equal(projection({ task_id: "task-1", control: { blocked_by: [{ code: "unverified_training_environment" }] } }, { items: [] }).phase, "blocked");
+});
+
 test("authoritative live work stays above blocker and failure facts", () => {
   const blockedTask = {
     task_id: "task-1",

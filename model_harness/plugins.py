@@ -21,11 +21,13 @@ class PluginRegistry:
                 PLUGIN as TABULAR_CLASSIFICATION_PLUGIN,
             )
             from .recipes.tabular_regression_plugin import PLUGIN as TABULAR_REGRESSION_PLUGIN
+            from .generic_recipe import PLUGIN as GENERIC_PLUGIN
 
             self.register_recipe(PLUGIN)
             self.register_recipe(IMAGE_FOLDER_PLUGIN)
             self.register_recipe(TABULAR_CLASSIFICATION_PLUGIN)
             self.register_recipe(TABULAR_REGRESSION_PLUGIN)
+            self.register_recipe(GENERIC_PLUGIN)
 
     def register_recipe(self, plugin: RecipePlugin) -> None:
         if not isinstance(plugin, RecipePlugin):
@@ -68,6 +70,7 @@ class PluginRegistry:
         objective = str(capability.get("objective", "")).strip().lower()
         target_kind = str(capability.get("target_kind", "")).strip().lower()
         data_adapter = str(capability.get("data_adapter", "")).strip().lower()
+        training_route = str(capability.get("training_route", "")).strip().lower()
         requested_tags = {
             str(tag).strip().lower()
             for tag in capability.get("tags", [])
@@ -92,6 +95,11 @@ class PluginRegistry:
             reasons: list[str] = []
             score = 0
             blocked = False
+            if training_route:
+                if training_route not in {value.lower() for value in manifest.training_routes}:
+                    continue
+                score += 5
+                reasons.append(f"training_route={training_route}")
             for label, requested, supported, weight in (
                 ("modality", modality, manifest.modalities, 5),
                 ("objective", objective, manifest.objectives, 5),
